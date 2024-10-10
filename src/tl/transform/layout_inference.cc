@@ -81,6 +81,15 @@ class BufferUseDefCollector : public StmtExprVisitor {
           }
         }
       }
+      // std::cout << "Printing layout for " << cur_infer_id << std::endl;
+      // for (const auto& [buffer, layout] : layout_map) {
+      //   std::cout << buffer << " : " << layout->GetForwardIndex() << std::endl;
+      //   if (buffer.scope() == "local.fragment") {
+      //     auto fragment_node = (FragmentNode*)layout.get();
+      //     std::cout << "  " << buffer << " : " << fragment_node->GetForwardThread() << std::endl;
+      //   }
+      // }
+      // std::cout << "Layout printing completed." << std::endl;
     };
     auto finish_infer_queue = [&]() {
       while (!q.empty()) {
