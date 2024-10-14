@@ -91,14 +91,13 @@ class GemmTensorOp {
                              partition_shape_C(tiled_mma, Shape<Int<M>, Int<N>>{}));
 
     warpgroup_fence_operand(acc);
+    warpgroup_arrive();
     CUTLASS_PRAGMA_UNROLL
     for (int k_block = 0; k_block < size<2>(tCrA); ++k_block) {
-      warpgroup_arrive();
+      // warpgroup_arrive();
       // (V,M) x (V,N) => (V,M,N)
       gemm(tiled_mma, tCrA(_, _, k_block), tCrB(_, _, k_block), acc);
-      if(k_block == 0) {
-        tiled_mma.accumulate_ = GMMA::ScaleOut::One;
-      }
+      tiled_mma.accumulate_ = GMMA::ScaleOut::One;
     }
 
     warpgroup_commit_batch();
@@ -136,14 +135,13 @@ class GemmTensorOp {
 
     warpgroup_fence_operand(tCrA);
     warpgroup_fence_operand(acc);
+    warpgroup_arrive();
     CUTLASS_PRAGMA_UNROLL
     for (int k_block = 0; k_block < size<2>(tCrA); ++k_block) {
-      warpgroup_arrive();
+      // warpgroup_arrive();
       // (V,M) x (V,N) => (V,M,N)
       gemm(tiled_mma, tCrA(_, _, k_block), tCrB(_, _, k_block), acc);
-      if(k_block == 0) {
-        tiled_mma.accumulate_ = GMMA::ScaleOut::One;
-      }
+      tiled_mma.accumulate_ = GMMA::ScaleOut::One;
     }
     warpgroup_commit_batch();
     if constexpr (wg_wait >= 0) { warpgroup_wait<wg_wait>(); }
