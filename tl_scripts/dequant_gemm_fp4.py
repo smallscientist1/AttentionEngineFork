@@ -3,7 +3,6 @@ from tvm import tir
 from tvm import tl
 from tvm.tl.autotuner import *
 import itertools
-from lop3 import *
 import torch
 
 def interleave_weight(qweight, nbits=4, target_dtype="float16"):

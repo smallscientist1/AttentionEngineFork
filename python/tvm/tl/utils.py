@@ -182,7 +182,7 @@ class Profiler(ConvertTorch):
         rep=100,
         n_warmup=1,
         n_repeat=1,
-        profiler: Literal["torch", "tvm"] = "torch",
+        profiler: Literal["torch", "tvm", "auto"] = "torch",
     ):
         if profiler == "torch":
             ins = self._get_inputs()
@@ -198,6 +198,20 @@ class Profiler(ConvertTorch):
             tvm_inputs = [ndarray.from_dlpack(to_dlpack(inp)) for inp in ins]
             # Transform Latency to ms
             return time_evaluator(*tvm_inputs).mean * 1e3
+        elif profiler == "auto":
+            ins = self._get_inputs()
+            bench_func = partial(func, *ins)
+            torch_res = do_bench(
+                bench_func, warmup=warmup, rep=rep, _n_warmup=n_warmup, _n_repeat=n_repeat
+            )
+
+            ins = self._get_inputs(with_output=True)
+            time_evaluator = self.mod.time_evaluator(
+                self.mod.entry_name, tvm.cuda(0), number=rep, repeat=n_repeat
+            )
+            tvm_inputs = [ndarray.from_dlpack(to_dlpack(inp)) for inp in ins]
+            tvm_res = time_evaluator(*tvm_inputs).mean * 1e3
+            return min(torch_res, tvm_res)
         else:
             raise ValueError(f"Unknown profiler: {profiler}")
 

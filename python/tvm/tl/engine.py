@@ -110,6 +110,8 @@ def lower(func, target="cuda", runtime_only=False):
         mod = tl.transform.InjectSoftwarePipeline()(mod)
         mod = tir.transform.LowerOpaqueBlock()(mod)
         # mod = tl.transform.WarpSpecializedPipeline()(mod)
+        # TODO(yu): Some fence.proxy.async.shared::cta is
+        # unnecessary, and can be removed for better performance.
         mod = tl.transform.InjectFenceProxy()(mod)
     else:
         mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)

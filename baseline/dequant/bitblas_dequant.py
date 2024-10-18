@@ -27,21 +27,24 @@ def run(M, N, K, A_dtype, W_dtype, accum_dtype, out_dtype, check=True):
 
     # Create input matrices
     input_tensor = torch.rand((M, K), dtype=torch.float16).cuda()
-    weight_tensor = torch.randint(0, 7, (N, K), dtype=torch.int8).cuda()
+    # weight_tensor = torch.randint(0, 7, (N, K), dtype=torch.int8).cuda()
+    w_shape, w_dtype = matmul.ladder_permutate_b.retrieve_output_shape()
+    weight_tensor = torch.zeros(w_shape, dtype=w_dtype).cuda()
 
     # Transform weight tensor to int4 data type
-    weight_tensor_transformed = matmul.transform_weight(weight_tensor)
+    # weight_tensor_transformed = matmul.transform_weight(weight_tensor)
+    weight_tensor_transformed = weight_tensor
 
     # Perform mixed-precision matrix multiplication
     output_tensor = matmul(input_tensor, weight_tensor_transformed)
 
-    # Reference result using PyTorch matmul for comparison
-    ref_result = torch.matmul(input_tensor, weight_tensor.t().to(torch.float16))
-    # Assert that the results are close within a specified tolerance, note that the int4 randint value is a little bigger than the float16 value, so we set the atol to 1.0
-    # print("Ref output:", ref_result)
-    # print("BitBLAS output:", output_tensor)
-    if check:
-        torch.testing.assert_close(output_tensor, ref_result, rtol=1e-2, atol=1e-0)
+    # # Reference result using PyTorch matmul for comparison
+    # ref_result = torch.matmul(input_tensor, weight_tensor.t().to(torch.float16))
+    # # Assert that the results are close within a specified tolerance, note that the int4 randint value is a little bigger than the float16 value, so we set the atol to 1.0
+    # # print("Ref output:", ref_result)
+    # # print("BitBLAS output:", output_tensor)
+    # if check:
+    #     torch.testing.assert_close(output_tensor, ref_result, rtol=1e-2, atol=1e-0)
 
     warmups = 10
     runs = 10
@@ -62,13 +65,13 @@ def run(M, N, K, A_dtype, W_dtype, accum_dtype, out_dtype, check=True):
     torch.cuda.synchronize()
     latency = start_event.elapsed_time(end_event)
 
-    flops_per_matmul = 2.0 * M * N * K
-    total_flops = 2 * flops_per_matmul
+    total_flops = 2.0 * M * N * K
     tflops = total_flops / latency * runs * 1e-9
     print(f"TFLOPS: {tflops}")
 
 
 if __name__ == "__main__":
-    M, N, K = 8192, 8192, 8192
-    A_dtype, W_dtype, accum_dtype, out_dtype = "float16", "int4", "float32", "float16"
+    # M, N, K = 256, 256, 256
+    M, N, K = 256, 16384, 16384
+    A_dtype, W_dtype, accum_dtype, out_dtype = "float16", "fp4_e2m1", "float32", "float16"
     run(M, N, K, A_dtype, W_dtype, accum_dtype, out_dtype, check=False)

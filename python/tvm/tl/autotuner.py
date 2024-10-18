@@ -122,10 +122,13 @@ def jit(
         def decorator(*args, **kwargs) -> float:
             nonlocal ref_latency_cache
             # Enabling Efficient Fusion
-            with tvm.transform.PassContext(config={
-                "tir.merge_static_smem": True
-            }):
-                mod, params = tl.lower(fn(*args, **kwargs))
+            # However, this can affect the performance in some cases like mamba2 chunk_scan
+            # with tvm.transform.PassContext(config={
+            #     "tir.merge_static_smem": True
+            # }):
+            #     mod, params = tl.lower(fn(*args, **kwargs))
+
+            mod, params = tl.lower(fn(*args, **kwargs))
             
             mod = tl.Profiler(mod, params, out_idx, supply_type)
             if (not skip_check) and (ref_prog is not None):
