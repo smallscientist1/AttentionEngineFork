@@ -1,8 +1,10 @@
-import create_block_mask
-import attention_engine
+from core import AttentionEngine
 import torch
+import math
 from core import OnlineFunc
-
+from core import CustomIO
+from core import create_block_mask
+from core import SymbolicArray, SymbolScalar
 """
 AttentionEngine: o = attention_engine(query: Tensor, key: Tensor, value: Tensor,
                             query_mod, key_mod, value_mod,
@@ -97,6 +99,12 @@ value = torch.randn(
         B, H, S, D, device="cuda", dtype=torch.float16, requires_grad=True
     )
 
+do = torch.randn(
+        B, H, S, D, device="cuda", dtype=torch.float16, requires_grad=True
+    )
+
+custom_fwd_inputs = CustomIO()
+custom_bwd_inputs = CustomIO()
 
 # mask on attention score
 def causal_mask(b, h, q_idx, kv_idx):
@@ -105,11 +113,11 @@ def causal_mask(b, h, q_idx, kv_idx):
 block_mask = create_block_mask(causal_mask, 1, 1, S, S, device="cuda")
 
 # elementwise on attention score
-def score_mod(score: scalar, b, h, q_idx, kv_idx):
-    return score / sqrt(D)
+@custom_fwd_inputs("softmax_scale",(1,))
+def score_mod(score, b, h, q_idx, kv_idx, softmax_scale):
+    return score / softmax_scale
 
 
-dppsum = torch.sum(do * o, dim=-1)
 
 class online_softmax(OnlineFunc):
     """
@@ -129,18 +137,17 @@ class online_softmax(OnlineFunc):
         define online_rowscales and final_rowscales
         """
         online_rowscales = {
-            "m": -torch.inf,
-            "r": 0.0,
-            "m_new": 0,
+            "m": SymbolScalar("m", "float m = -inf"), # TODO
+            "r": SymbolScalar("r", "float r = 0"),
         }
         final_rowscales = {
-            "lse": -torch.inf,
+            "lse": SymbolScalar("lse", "float lse = 0"),
         }
         super().__init__(online_rowscales, final_rowscales)
     
 
     @staticmethod
-    def online_fwd(scores:Array,online_rowscales, b, h, q_idx):
+    def online_fwd(scores, o_scale, online_rowscales, b, h, q_idx):
         """
         input: 
         scores: 一维向量, 仅包含reduce(),elementwise()操作
@@ -150,26 +157,24 @@ class online_softmax(OnlineFunc):
             o_scale:  for online rescale o
         """
         m , r = online_rowscales["m"], online_rowscales["r"]
-        m_new = max(m, scores.getreduce("max"))
-        r = r * exp(m - m_new)
+        m_new = m.max(scores.get_reduce("max"))
+        r = r * (m - m_new).exp()
         
-        scores.data() = exp(scores.data() - m_new)
-        r = r + scores.getreduce("sum")
+        scores = (scores - m_new).exp()
+        r = r + scores.get_reduce("sum")
 
         online_rowscales["m"] = m_new
         online_rowscales["r"] = r
         # TODO: check m ,r is updated.
-        # decorator
 
-        o_scale = exp(m - m_new)
-        return o_scale
+        o_scale = (m - m_new).exp()
     
     @staticmethod
     def set_final_rowscales(final_rowscales, online_rowscales, b, h, q_idx):
         """
         compute final_rowscales at the end of online attention forward
         """
-        lse = log(online_rowscales["r"]) + online_rowscales["m"]
+        lse = (online_rowscales["r"]).log() + online_rowscales["m"]
         final_rowscales["lse"] = lse
 
     @staticmethod
@@ -185,22 +190,32 @@ class online_softmax(OnlineFunc):
         compute scores : scores = g(scores, scale)
         """
         lse = final_rowscales["lse"]
-        scores = exp(scores-lse)
+        scores = (scores-lse).exp()
     
     @staticmethod
-    def backward(dp:scalar, scores:scalar, final_rowscales, b, h, q_idx, kv_idx):
+    @custom_bwd_inputs("dppsum",(B,H,S))
+    def backward(dscores, dp, scores, final_rowscales:dict, b, h, q_idx, kv_idx, dppsum):
         """
         compute bwd scores: dscores = g_bwd(dp, scores)
         only support elementwise: 只支持这样写；报错；readme
         """
-        dscores = scores*dp*dppsum[b,h,q_idx,kv_idx]
-
-        return dscores
+        dscores = scores*dp*dppsum
 
 
 
 
-attention_engine(
-    query, key, value, score_mod=score_mod, block_mask=block_mask,
-    online_func=online_softmax
+mod = AttentionEngine(
+    query, key, value, custom_fwd_inputs, custom_bwd_inputs, score_mod=score_mod, block_mask=block_mask,
+    online_func=online_softmax(),
 )
+# check
+online_softmax.online_fwd(SymbolicArray(),SymbolScalar('o_scale'),online_softmax().online_rowscales,1,1,1)
+online_softmax.backward(SymbolScalar('dscores'),SymbolScalar('dp'),SymbolScalar('scores'),online_softmax().final_rowscales,1,1,1,1, SymbolScalar('dppsum'))
+
+
+print(custom_fwd_inputs.input_tensors)
+softmax_scale = math.sqrt(D)
+o = mod(query, key, value, softmax_scale=softmax_scale)
+print(custom_bwd_inputs.input_tensors)
+dppsum = torch.sum(do * o, dim=-1)
+mod.backward(do, dppsum=dppsum)
