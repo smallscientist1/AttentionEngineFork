@@ -35,7 +35,7 @@ block_mask = create_block_mask(causal_mask, 1, 1, S, S, device="cuda")
 
 # elementwise on attention scores
 def score_mod(score, custom_fwd_inputs, b, h, q_idx, kv_idx):
-    softmax_scale = custom_fwd_inputs["softmax_scale"]
+    softmax_scale = custom_fwd_inputs.input_tensors["softmax_scale"]
     return score / softmax_scale
 
 class OnlineSoftmax(OnlineFunc):
@@ -110,7 +110,7 @@ mod = AttentionEngine(
     online_func=online,
 )
 # check
-
+score_mod(SymbolScalar("score",Var("score")), custom_fwd_inputs, 1, 1, 1, 1) # TODO: check bwd
 scores,online_rowscales,o_scale = online.online_fwd(SymbolicArray(), online.online_rowscales, 1, 1, 1)
 o, final_scales = online.online_fwd_epilogue(SymbolScalar("o",Var("o")), online.online_rowscales, 1, 1, 1)
 scores2 = online.forward(SymbolicArray(), online.final_rowscales, 1, 1, 1, 1)

@@ -13,6 +13,8 @@ class SymbolScalar:
         assert isinstance(other, SymbolScalar)
         # return SymbolScalar(self.varname,f'{self.varname} = ({self.varname}+{other.varname})')
         return SymbolScalar(self.varname, Add(self.code, other.code))
+    def __neg__(self):
+        return SymbolScalar(self.varname, Neg(self.code))
     def __sub__(self, other):
         assert isinstance(other, SymbolScalar)
         return SymbolScalar(self.varname, Sub(self.code, other.code))
