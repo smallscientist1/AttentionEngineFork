@@ -34,33 +34,21 @@ def causal_mask(b, h, q_idx, kv_idx):
 block_mask = create_block_mask(causal_mask, 1, 1, S, S, device="cuda")
 
 # elementwise on attention scores
-def score_mod(score, custom_fwd_inputs, b, h, q_idx, kv_idx, softmax_scale):
+def score_mod(score, custom_fwd_inputs, b, h, q_idx, kv_idx):
     softmax_scale = custom_fwd_inputs["softmax_scale"]
     return score / softmax_scale
 
 class OnlineSoftmax(OnlineFunc):
-    """
-    __init__: define online_rowscales and final_rowscales
-        online_rowscales: intermediate scale results for online algorithm
-        final_rowscales: final scale results for online algorithm
-
-    online_fwd: online algorithm for generate attention forward
-
-    set_final_rowscales: set final rowscales at the end of attention forward, save it for backward
-
-    forward: forward algorithm g(scores, scale) for backward recompute
-    backward: backward algorithm
-    """
     def __init__(self):
         """
         define online_rowscales and final_rowscales
         """
         online_rowscales = {
-            "m": SymbolScalar("m", "float m = -inf"), # TODO
-            "r": SymbolScalar("r", "float r = 0"),
+            "m": SymbolScalar("m", Var("-inf")), # -inf # TODO: init value
+            "r": SymbolScalar("r", Var("0.0")),
         }
         final_rowscales = {
-            "lse": SymbolScalar("lse", "float lse = 0"),
+            "lse": SymbolScalar("lse", Var("0.0")), # 0
         }
         external_fwd_inputs = CustomIO()
         external_bwd_inputs = CustomIO({

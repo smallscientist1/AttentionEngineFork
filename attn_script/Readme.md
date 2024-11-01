@@ -47,7 +47,7 @@ for i in range(kv_len//BLOCK_N):
     scores = q @ k
     scores = block_mask(scores)
     scores = score_mod(scores)
-    scores, o_scale, online_rowscales = online_func.online_fwd(scores, online_rowscales)
+    scores, online_rowscales, o_scale = online_func.online_fwd(scores, online_rowscales)
     o = o*o_scale
     o += scores @ v
     k.advance(BLOCK_N)
