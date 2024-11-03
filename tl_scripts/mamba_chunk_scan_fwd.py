@@ -20,7 +20,7 @@ def chunk_scan_triton(cb, x, dt, dA_cumsum, C, states):
     out, _ =  _chunk_scan_fwd(cb, x, dt, dA_cumsum, C, states)
     return out
 
-def chunk_scan_ref(cb, x, dt, dA_cumsum, C, prev_states):
+def chunk_scan_ref(cb, x, dt, dA_cumsum, C, prev_states, D):
     from einops import rearrange, repeat
     """
     Argument:
@@ -60,6 +60,11 @@ def chunk_scan_ref(cb, x, dt, dA_cumsum, C, prev_states):
                             prev_states.to(C.dtype)) * state_decay_out
     out = out + out_prev
     out = rearrange(out, "b c l h p -> b (c l) h p")
+    if D is not None:
+        if D.dim() == 1:
+            D = rearrange(D, "h -> h 1")
+        out = out + x * D
+    return out
 
     return out
 
@@ -76,6 +81,7 @@ def chunk_scan_fwd(batch, seqlen, ngroups, nheads, headdim, dstate, block_M, blo
         dA_cumsum: T.Buffer((batch, nheads, nchunks, chunk_size), dtype),
         C: T.Buffer((batch, seqlen, ngroups, dstate), dtype),
         prev_states: T.Buffer((batch, nchunks, nheads, headdim, dstate), dtype),
+        D: T.Buffer((nheads), dtype),
         Output: T.Buffer((batch, seqlen, nheads, headdim), dtype)
     ):
         with T.Kernel(nheads, T.ceildiv(chunk_size, block_M) * T.ceildiv(headdim, block_N), batch * nchunks, threads=128) as (bz, bx, by):
@@ -96,6 +102,9 @@ def chunk_scan_fwd(batch, seqlen, ngroups, nheads, headdim, dstate, block_M, blo
             scale_m_local = T.alloc_fragment((block_M), accum_dtype)
             C_shared = T.alloc_shared((block_M, block_Dstate), dtype)
             prev_state_shared = T.alloc_shared((block_N, block_Dstate), dtype)
+            D_local = T.alloc_fragment((1), accum_dtype)
+            x_residual_shared = T.alloc_shared((block_M, block_N), dtype, scope="shared.dyn")
+            x_residual_local = T.alloc_fragment((block_M, block_N), accum_dtype)
 
 
             batch_idx = by % batch
@@ -107,7 +116,8 @@ def chunk_scan_fwd(batch, seqlen, ngroups, nheads, headdim, dstate, block_M, blo
 
             T.annotate_layout({
                 acc_o_shared: tl.layout.make_swizzled_layout(acc_o_shared),
-                cb_shared: tl.layout.make_swizzled_layout(cb_shared)
+                cb_shared: tl.layout.make_swizzled_layout(cb_shared),
+                x_residual_shared: tl.layout.make_swizzled_layout(x_residual_shared)
                 # cb_shared_prev: tl.layout.make_swizzled_layout(cb_shared_prev)
             })
             
@@ -179,6 +189,13 @@ def chunk_scan_fwd(batch, seqlen, ngroups, nheads, headdim, dstate, block_M, blo
                 # T.copy(cb_local, cb_shared_prev)
                 T.copy(cb_local, cb_local_prev)
                 T.gemm(cb_local_prev, x_shared, acc_o)
+            
+            D_local[0] = D[bz]
+            T.copy(x[batch_idx, chunk_idx * chunk_size + m_idx * block_M : chunk_idx * chunk_size + (m_idx + 1) * block_M, bz, n_idx * block_N : (n_idx + 1) * block_N], x_residual_shared)
+            T.copy(x_residual_shared, x_residual_local)
+            for i, j in T.Parallel(block_M, block_N):
+                acc_o[i, j] += x_residual_local[i, j] * D_local[0]
+
             T.copy(acc_o, acc_o_shared)
             T.copy(acc_o_shared, Output[batch_idx, chunk_idx * chunk_size + m_idx * block_M : chunk_idx * chunk_size + (m_idx + 1) * block_M, bz, n_idx * block_N : (n_idx + 1) * block_N])
 
@@ -339,11 +356,11 @@ if __name__ == "__main__":
     # print(f"Ref TFlops: {total_flops / ref_latency * 1e-9}")
     program = chunk_scan_fwd(BATCH, SEQLEN, NGROUPS, NHEADS, HEADDIM, DSTATE, block_M, block_N, block_K, block_Dstate) 
     mod, params = tl.lower(program)
-    mod = tl.Profiler(mod, params, [6], tl.TensorSupplyType.Normal)
-    # mod.assert_allclose(chunk_scan_ref, rtol=0.1, atol=0.1)
-    latency = mod.do_bench(chunk_scan_triton, n_warmup=10, n_repeat=10, profiler="torch")
-    print("{:.4f} ms".format(latency))
-    print("{:.2f} TFlops".format(total_flops / latency * 1e-9))
+    mod = tl.Profiler(mod, params, [7], tl.TensorSupplyType.Normal)
+    mod.assert_allclose(chunk_scan_ref, rtol=0.1, atol=0.1)
+    # latency = mod.do_bench(chunk_scan_triton, n_warmup=10, n_repeat=10, profiler="torch")
+    # print("{:.4f} ms".format(latency))
+    # print("{:.2f} TFlops".format(total_flops / latency * 1e-9))
     latency = mod.do_bench(mod, n_warmup=10, n_repeat=10, profiler="auto")
     print("{:.4f} ms".format(latency))
     print("{:.2f} TFlops".format(total_flops / latency * 1e-9))
