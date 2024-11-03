@@ -165,6 +165,11 @@ def lower(func, target="cuda", runtime_only=False):
     host_mod = tir.transform.LowerIntrin()(host_mod)
     host_mod = tir.transform.LowerDeviceStorageAccessInfo()(host_mod)
     host_mod = tir.transform.CombineContextCall()(host_mod)
+    # host_code = tvm._ffi.get_global_func("target.build.c")(host_mod, target_host).get_source()
+    # print("=" * 100)
+    # print("host code:")
+    # print("=" * 100)
+    # print(host_code)
     host_mod = tvm._ffi.get_global_func("target.build.llvm")(host_mod, target)
 
     device_mod = tir.transform.Filter(is_device_call)(mod)
@@ -172,6 +177,11 @@ def lower(func, target="cuda", runtime_only=False):
     device_mod = tir.transform.LowerIntrin()(device_mod)
     device_mod = tir.transform.Simplify()(device_mod)
     # code = tvm._ffi.get_global_func("target.build.tl_debug_codegen")(device_mod, target)
+    # device_code = tvm._ffi.get_global_func("target.build.tl_debug_codegen")(device_mod, target)
+    # print("=" * 100)
+    # print("device code:")
+    # print("=" * 100)
+    # print(device_code)
     device_mod = tvm._ffi.get_global_func("target.build.tl")(device_mod, target)
 
     host_mod.import_module(device_mod)
