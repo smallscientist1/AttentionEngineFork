@@ -13,33 +13,43 @@ def to_tl_op(type:str, *args:SymbolScalar):
             f"T.reduce_max({args[1].varname}, {args[0].varname},dim=1, clear=True)"
         )
     elif type == "Sub" or type == "Add" or type == "Mul" or type == "Div" or type == "Neg" or type == "Exp" or type == "Log" or type == "Abs" or type == "Max":
+        # args idx
+        # note: assume input shape is validate: ["1",...] or [arg0[0], ...]
+        idx_strs = []
+        for _, arg in enumerate(args):
+            input_idx = arg.shape_idx
+            idx_str = [f"i{i}" if idx!="1" else f"0" for i, idx in enumerate(input_idx)]
+            idx_str = ",".join(idx_str)
+            idx_strs.append(idx_str)
         # [block_M,block_N]
         loop_str = ",".join(args[0].shape_idx)
-        idx_list = [f"i{i}" for i in range(len(args[0].shape_idx))]
-        idx_str = ",".join(idx_list)
+        idx_str = idx_strs[0]
+
+        # for loop
         code.add_line(
             f"for {idx_str} in T.Parallel({loop_str}):"
         )
         code.more_indent()
+
         if type == "Sub":
             code.add_line(
-                f"{args[0].varname}[{idx_str}] = {args[1].varname}[{idx_str}] - {args[2].varname}[{idx_str}]"
+                f"{args[0].varname}[{idx_str}] = {args[1].varname}[{idx_strs[1]}] - {args[2].varname}[{idx_strs[2]}]"
             )
         elif type == "Add":
             code.add_line(
-                f"{args[0].varname}[{idx_str}] = {args[1].varname}[{idx_str}] + {args[2].varname}[{idx_str}]"
+                f"{args[0].varname}[{idx_str}] = {args[1].varname}[{idx_strs[1]}] + {args[2].varname}[{idx_strs[2]}]"
             )
         elif type == "Max":
             code.add_line(
-                f"{args[0].varname}[{idx_str}] = T.max({args[1].varname}[{idx_str}], {args[2].varname}[{idx_str}])"
+                f"{args[0].varname}[{idx_str}] = T.max({args[1].varname}[{idx_strs[1]}], {args[2].varname}[{idx_strs[2]}])"
             )
         elif type == "Exp":
             code.add_line(
-                f"{args[0].varname}[{idx_str}] = T.exp2({args[1].varname}[{idx_str}]*1.442695)"
+                f"{args[0].varname}[{idx_str}] = T.exp2({args[1].varname}[{idx_strs[1]}]*1.442695)"
             )
         elif type == "Mul":
             code.add_line(
-                f"{args[0].varname}[{idx_str}] = {args[1].varname}[{idx_str}] * {args[2].varname}[{idx_str}]"
+                f"{args[0].varname}[{idx_str}] = {args[1].varname}[{idx_strs[1]}] * {args[2].varname}[{idx_strs[2]}]"
             )
         else: # TODO
             raise NotImplementedError(str(type))
@@ -56,13 +66,13 @@ def generate_tl(x:SymbolScalar):
     if isinstance(x.code, Var):
         tl_code.add_line(f"{x.varname} = {x.code.name}")
         return tl_code
-    for i, input_item in enumerate(x.code.inputs):
-        tl_code += generate_tl(SymbolScalar(f"{x.varname}_i{i}", input_item))
-    # for i, input_item in enumerate(x.prev):
-    #     tl_code += generate_tl(input_item)
+    # for i, input_item in enumerate(x.code.inputs):
+    #     tl_code += generate_tl(SymbolScalar(f"{x.varname}_i{i}", input_item))
+    for i, input_item in enumerate(x.prev):
+        tl_code += generate_tl(input_item)
 
-    tl_code += to_tl_op(x.code.type, x, *[SymbolScalar(f"{x.varname}_i{i}", input_item) for i, input_item in enumerate(x.code.inputs)])
-    # tl_code += to_tl_op(x.code.type, x, *x.prev)
+    # tl_code += to_tl_op(x.code.type, x, *[SymbolScalar(f"{x.varname}_i{i}", input_item) for i, input_item in enumerate(x.code.inputs)])
+    tl_code += to_tl_op(x.code.type, x, *x.prev)
     return tl_code
 
 def lower_online_func(online_func: OnlineFunc):
@@ -82,8 +92,8 @@ def lower_online_func(online_func: OnlineFunc):
     # for k,v in new_online_rowscales.items():
     #     print(f"{k} = {v.code}")
     # print(o_scale.code)
-    # tl_code = generate_tl(new_online_rowscales["r"])
-    tl_code = generate_tl(scores_new)
+    tl_code = generate_tl(new_online_rowscales["r"])
+    tl_code += generate_tl(scores_new)
     print(tl_code)
 
 if __name__ == "__main__":

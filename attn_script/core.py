@@ -3,8 +3,16 @@ from typing import Literal
 import functools
 from graph import *
 from utils import IndentedCode
+import functools
 
 # TODO: support online_func extern_input_tensor
+
+def plus_count(func):
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        self.count += 1
+        return func(self, *args, **kwargs)
+    return wrapper
 
 class SymbolScalar:
     def __init__(self, varname:str, value:Node, prev=[], shape_idx:list=["block_M"]):
@@ -12,31 +20,45 @@ class SymbolScalar:
         self.code = value
         self.prev = prev
         self.shape_idx = shape_idx
+
+        self.count = 0
     
+
+
+    
+    @plus_count
     def __add__(self, other):
         assert isinstance(other, SymbolScalar)
-        return self.__class__(self.varname, Add(self.code, other.code), [self, other])
+        self.count += 1
+        return self.__class__(f"{self.varname}_{self.count}", Add(self.code, other.code), [self, other])
+    @plus_count
     def __neg__(self):
-        return self.__class__(self.varname, Neg(self.code), [self])
+        return self.__class__(f"{self.varname}_{self.count}", Neg(self.code), [self])
+    @plus_count
     def __sub__(self, other):
         assert isinstance(other, SymbolScalar)
-        return self.__class__(self.varname, Sub(self.code, other.code), [self, other])
-    
+        return self.__class__(f"{self.varname}_{self.count}", Sub(self.code, other.code), [self, other])
+    @plus_count
     def __mul__(self, other):
         assert isinstance(other, SymbolScalar)
-        return self.__class__(self.varname, Mul(self.code, other.code), [self, other])
+        return self.__class__(f"{self.varname}_{self.count}", Mul(self.code, other.code), [self, other])
+    @plus_count
     def __truediv__(self, other):
         assert isinstance(other, SymbolScalar)
-        return self.__class__(self.varname, Div(self.code, other.code), [self, other])
+        return self.__class__(f"{self.varname}_{self.count}", Div(self.code, other.code), [self, other])
+    @plus_count
     def abs(self):
-        return self.__class__(self.varname, Abs(self.code), [self])
+        return self.__class__(f"{self.varname}_{self.count}", Abs(self.code), [self])
+    @plus_count
     def exp(self):
-        return self.__class__(self.varname, Exp(self.code), [self]) # TODO
+        return self.__class__(f"{self.varname}_{self.count}", Exp(self.code), [self]) # TODO
+    @plus_count
     def log(self):
-        return self.__class__(self.varname, Log(self.code), [self]) # TODO
+        return self.__class__(f"{self.varname}_{self.count}", Log(self.code), [self]) # TODO
+    @plus_count
     def max(self, other):
         assert isinstance(other, SymbolScalar)
-        return self.__class__(self.varname, Max(self.code, other.code), [self, other])
+        return self.__class__(f"{self.varname}_{self.count}", Max(self.code, other.code), [self, other])
 
 
 class SymbolicArray(SymbolScalar):
