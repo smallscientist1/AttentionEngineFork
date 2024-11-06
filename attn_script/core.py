@@ -2,65 +2,59 @@ import torch
 from typing import Literal
 import functools
 from graph import *
+from utils import IndentedCode
 
 # TODO: support online_func extern_input_tensor
 
 class SymbolScalar:
-    def __init__(self, varname:str, value:Node):
+    def __init__(self, varname:str, value:Node, prev=[], shape_idx:list=["block_M"]):
         self.varname = varname
         self.code = value
+        self.prev = prev
+        self.shape_idx = shape_idx
+    
     def __add__(self, other):
         assert isinstance(other, SymbolScalar)
-        # return SymbolScalar(self.varname,f'{self.varname} = ({self.varname}+{other.varname})')
-        return SymbolScalar(self.varname, Add(self.code, other.code))
+        return self.__class__(self.varname, Add(self.code, other.code), [self, other])
     def __neg__(self):
-        return SymbolScalar(self.varname, Neg(self.code))
+        return self.__class__(self.varname, Neg(self.code), [self])
     def __sub__(self, other):
         assert isinstance(other, SymbolScalar)
-        return SymbolScalar(self.varname, Sub(self.code, other.code))
+        return self.__class__(self.varname, Sub(self.code, other.code), [self, other])
     
     def __mul__(self, other):
         assert isinstance(other, SymbolScalar)
-        return SymbolScalar(self.varname, Mul(self.code, other.code))
+        return self.__class__(self.varname, Mul(self.code, other.code), [self, other])
     def __truediv__(self, other):
         assert isinstance(other, SymbolScalar)
-        return SymbolScalar(self.varname, Div(self.code, other.code))
+        return self.__class__(self.varname, Div(self.code, other.code), [self, other])
     def abs(self):
-        return SymbolScalar(self.varname, Abs(self.code))
+        return self.__class__(self.varname, Abs(self.code), [self])
     def exp(self):
-        return SymbolScalar(self.varname, Exp(self.code)) # TODO
+        return self.__class__(self.varname, Exp(self.code), [self]) # TODO
     def log(self):
-        return SymbolScalar(self.varname, Log(self.code)) # TODO
+        return self.__class__(self.varname, Log(self.code), [self]) # TODO
     def max(self, other):
         assert isinstance(other, SymbolScalar)
-        return SymbolScalar(self.varname, Max(self.code, other.code))
+        return self.__class__(self.varname, Max(self.code, other.code), [self, other])
 
 
 class SymbolicArray(SymbolScalar):
     """
     Array for OnlineFunc.online_fwd
     """
-    def __init__(self):
-        self.code = ""
-    def __add__(self, other):
-        return SymbolicArray()
-    def __sub__(self, other):
-        return SymbolicArray()
-    def __mul__(self, other):
-        return SymbolicArray()
-    def __truediv__(self, other):
-        return SymbolicArray()
-    def abs(self):
-        return SymbolicArray()
-    def exp(self):
-        return SymbolicArray()
-    def log(self):
-        return SymbolicArray()
+    def __init__(self, varname:str="", code:Node=Var(" "), prev=[], shape_idx:list=["block_M", "block_N"]):
+        super().__init__(varname, code, prev, shape_idx)
     def get_reduce(self,op:Literal["sum", "max"]):
         """
         get reduce result of array
         """
-        return SymbolScalar(f' ', Var(' ')) # TODO
+        if op == "sum":
+            return SymbolScalar(f'{self.varname}_rs', ReduceSum(self.code), prev=[self],shape_idx=self.shape_idx[:-1])
+        elif op == "max":
+            return SymbolScalar(f'{self.varname}_rm', ReduceMax(self.code), prev=[self],shape_idx=self.shape_idx[:-1])
+        else:
+            raise NotImplementedError
     
 class SymbolicTensor(SymbolScalar):
     """
@@ -167,19 +161,6 @@ class OnlineFunc:
 
 def create_block_mask(causal_mask, B, H, QLen, KVLen, device):
     pass
-
-class AttentionEngine:
-    def __init__(self, query, key, value, custom_fwd_inputs, custom_bwd_inputs, score_mod, block_mask,
-    online_func,):
-        pass
-
-    def __call__(self, *args, **kargs):
-        
-        o = torch.tensor(1)
-        return o
-
-    def backward(self, *args, **kargs):
-        pass
         
 if __name__ == "__main__":
     online = OnlineFunc({},{}, CustomIO(), CustomIO())

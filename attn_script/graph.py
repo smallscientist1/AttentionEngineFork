@@ -122,6 +122,23 @@ class Max(Node):
     def _backward(self, grad:Node):
         pass
 
+# reduce ops
+class ReduceSum(Node):
+    def __init__(self, node:Node):
+        super().__init__("ReduceSum")
+        self.inputs = [node]
+
+    def _backward(self, grad:Node):
+        pass
+
+class ReduceMax(Node):
+    def __init__(self, node:Node):
+        super().__init__("ReduceMax")
+        self.inputs = [node]
+
+    def _backward(self, grad:Node):
+        pass
+
 if __name__ == "__main__":
     a = Var("a")
     b = Var("b")
