@@ -80,7 +80,7 @@ class Sub(Node):
         self.inputs = [left, right]
 
     def _backward(self, grad:Node):
-        pass
+        raise NotImplementedError
 
 class Div(Node):
     def __init__(self, left:Node, right:Node):
@@ -88,7 +88,17 @@ class Div(Node):
         self.inputs = [left, right]
 
     def _backward(self, grad:Node):
-        pass
+        grad0 = Div(grad, self.inputs[1])
+        grad1 = Mul(grad0, Neg(self.inputs[0]))
+        grad1 = Div(grad1, self.inputs[1])
+        if self.inputs[0].grad:
+            grad0 = Add(grad0, self.inputs[0].grad)
+        if self.inputs[1].grad:
+            grad1 = Add(grad1, self.inputs[1].grad)
+        self.inputs[0].grad = grad0
+        self.inputs[1].grad = grad1
+
+
 
 class Exp(Node):
     def __init__(self, node:Node):
@@ -96,7 +106,7 @@ class Exp(Node):
         self.inputs = [node]
 
     def _backward(self, grad:Node):
-        pass
+        raise NotImplementedError
 
 class Log(Node):
     def __init__(self, node:Node):
@@ -104,7 +114,7 @@ class Log(Node):
         self.inputs = [node]
 
     def _backward(self, grad:Node):
-        pass
+        raise NotImplementedError
 
 class Abs(Node):
     def __init__(self, node:Node):
@@ -112,7 +122,7 @@ class Abs(Node):
         self.inputs = [node]
 
     def _backward(self, grad:Node):
-        pass
+        raise NotImplementedError
 
 class Max(Node):
     def __init__(self, left:Node, right:Node):
@@ -120,7 +130,7 @@ class Max(Node):
         self.inputs = [left, right]
 
     def _backward(self, grad:Node):
-        pass
+        raise NotImplementedError
 
 # reduce ops
 class ReduceSum(Node):
@@ -129,7 +139,7 @@ class ReduceSum(Node):
         self.inputs = [node]
 
     def _backward(self, grad:Node):
-        pass
+        raise NotImplementedError
 
 class ReduceMax(Node):
     def __init__(self, node:Node):
@@ -137,7 +147,7 @@ class ReduceMax(Node):
         self.inputs = [node]
 
     def _backward(self, grad:Node):
-        pass
+        raise NotImplementedError
 
 if __name__ == "__main__":
     a = Var("a")

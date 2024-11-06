@@ -22,43 +22,42 @@ class SymbolScalar:
         self.shape_idx = shape_idx
 
         self.count = 0
-    
-
-
+        # for lower
+        self.lowered = False
     
     @plus_count
     def __add__(self, other):
         assert isinstance(other, SymbolScalar)
         self.count += 1
-        return self.__class__(f"{self.varname}_{self.count}", Add(self.code, other.code), [self, other])
+        return self.__class__(f"{self.varname}_{self.count}", Add(self.code, other.code), [self, other], self.shape_idx)
     @plus_count
     def __neg__(self):
-        return self.__class__(f"{self.varname}_{self.count}", Neg(self.code), [self])
+        return self.__class__(f"{self.varname}_{self.count}", Neg(self.code), [self], self.shape_idx)
     @plus_count
     def __sub__(self, other):
         assert isinstance(other, SymbolScalar)
-        return self.__class__(f"{self.varname}_{self.count}", Sub(self.code, other.code), [self, other])
+        return self.__class__(f"{self.varname}_{self.count}", Sub(self.code, other.code), [self, other], self.shape_idx)
     @plus_count
     def __mul__(self, other):
         assert isinstance(other, SymbolScalar)
-        return self.__class__(f"{self.varname}_{self.count}", Mul(self.code, other.code), [self, other])
+        return self.__class__(f"{self.varname}_{self.count}", Mul(self.code, other.code), [self, other], self.shape_idx)
     @plus_count
     def __truediv__(self, other):
         assert isinstance(other, SymbolScalar)
-        return self.__class__(f"{self.varname}_{self.count}", Div(self.code, other.code), [self, other])
+        return self.__class__(f"{self.varname}_{self.count}", Div(self.code, other.code), [self, other], self.shape_idx)
     @plus_count
     def abs(self):
-        return self.__class__(f"{self.varname}_{self.count}", Abs(self.code), [self])
+        return self.__class__(f"{self.varname}_{self.count}", Abs(self.code), [self], self.shape_idx)
     @plus_count
     def exp(self):
-        return self.__class__(f"{self.varname}_{self.count}", Exp(self.code), [self]) # TODO
+        return self.__class__(f"{self.varname}_{self.count}", Exp(self.code), [self], self.shape_idx) # TODO
     @plus_count
     def log(self):
-        return self.__class__(f"{self.varname}_{self.count}", Log(self.code), [self]) # TODO
+        return self.__class__(f"{self.varname}_{self.count}", Log(self.code), [self], self.shape_idx) # TODO
     @plus_count
     def max(self, other):
         assert isinstance(other, SymbolScalar)
-        return self.__class__(f"{self.varname}_{self.count}", Max(self.code, other.code), [self, other])
+        return self.__class__(f"{self.varname}_{self.count}", Max(self.code, other.code), [self, other], self.shape_idx)
 
 
 class SymbolicArray(SymbolScalar):
@@ -83,7 +82,8 @@ class SymbolicTensor(SymbolScalar):
     Tensor for CustomIO
     """
     def __init__(self, varname:str, shape:tuple):
-        super().__init__(varname, Var(varname))
+        # convert shape to shape_idx
+        super().__init__(varname, Var(varname), shape_idx=[str(i) for i in shape])
         self.shape = shape
     
 class CustomIO:
