@@ -11,6 +11,9 @@ def plus_count(func):
     @functools.wraps(func)
     def wrapper(self, *args, **kwargs):
         self.count += 1
+        for arg in args:
+            if isinstance(arg, SymbolScalar):
+                arg.count += 1
         return func(self, *args, **kwargs)
     return wrapper
 
@@ -22,42 +25,52 @@ class SymbolScalar:
         self.shape_idx = shape_idx
 
         self.count = 0
+        self.use_list = []
         # for lower
         self.lowered = False
+        self.visit_count = 0
     
     @plus_count
+    def op(self, code:Node, others:list=[], shape_idx:list=None, varname_suffix:str=None):
+        for other in others:
+            assert isinstance(other, SymbolScalar)
+        if shape_idx is None:
+            shape_idx = self.shape_idx
+        output_varname = self.varname
+        if varname_suffix is not None:
+            output_varname = f"{output_varname}_{varname_suffix}"
+        output = self.__class__(f"{output_varname}_{self.count}", code, [self]+others, shape_idx)
+        self.use_list.append(output)
+        for other in others:
+            other.use_list.append(output)
+        return output
+
     def __add__(self, other):
-        assert isinstance(other, SymbolScalar)
-        self.count += 1
-        return self.__class__(f"{self.varname}_{self.count}", Add(self.code, other.code), [self, other], self.shape_idx)
-    @plus_count
+        return self.op(Add(self.code, other.code), [other])
+
     def __neg__(self):
-        return self.__class__(f"{self.varname}_{self.count}", Neg(self.code), [self], self.shape_idx)
-    @plus_count
+        return self.op(Neg(self.code))
+
     def __sub__(self, other):
-        assert isinstance(other, SymbolScalar)
-        return self.__class__(f"{self.varname}_{self.count}", Sub(self.code, other.code), [self, other], self.shape_idx)
-    @plus_count
+        return self.op(Sub(self.code, other.code), [other])
+
     def __mul__(self, other):
-        assert isinstance(other, SymbolScalar)
-        return self.__class__(f"{self.varname}_{self.count}", Mul(self.code, other.code), [self, other], self.shape_idx)
-    @plus_count
+        return self.op(Mul(self.code, other.code), [other])
+
     def __truediv__(self, other):
-        assert isinstance(other, SymbolScalar)
-        return self.__class__(f"{self.varname}_{self.count}", Div(self.code, other.code), [self, other], self.shape_idx)
-    @plus_count
+        return self.op(Div(self.code, other.code), [other])
+
     def abs(self):
-        return self.__class__(f"{self.varname}_{self.count}", Abs(self.code), [self], self.shape_idx)
-    @plus_count
+        return self.op(Abs(self.code))
+
     def exp(self):
-        return self.__class__(f"{self.varname}_{self.count}", Exp(self.code), [self], self.shape_idx) # TODO
-    @plus_count
+        return self.op(Exp(self.code))
+
     def log(self):
-        return self.__class__(f"{self.varname}_{self.count}", Log(self.code), [self], self.shape_idx) # TODO
-    @plus_count
+        return self.op(Log(self.code))
+
     def max(self, other):
-        assert isinstance(other, SymbolScalar)
-        return self.__class__(f"{self.varname}_{self.count}", Max(self.code, other.code), [self, other], self.shape_idx)
+        return self.op(Max(self.code, other.code), [other])
 
 
 class SymbolicArray(SymbolScalar):
@@ -66,14 +79,15 @@ class SymbolicArray(SymbolScalar):
     """
     def __init__(self, varname:str="", code:Node=Var(" "), prev=[], shape_idx:list=["block_M", "block_N"]):
         super().__init__(varname, code, prev, shape_idx)
+
     def get_reduce(self,op:Literal["sum", "max"]):
         """
         get reduce result of array
         """
         if op == "sum":
-            return SymbolScalar(f'{self.varname}_rs', ReduceSum(self.code), prev=[self],shape_idx=self.shape_idx[:-1])
+            return self.op(ReduceSum(self.code), shape_idx=self.shape_idx[:-1], varname_suffix="sum")
         elif op == "max":
-            return SymbolScalar(f'{self.varname}_rm', ReduceMax(self.code), prev=[self],shape_idx=self.shape_idx[:-1])
+            return self.op(ReduceMax(self.code), shape_idx=self.shape_idx[:-1], varname_suffix="max")
         else:
             raise NotImplementedError
     

@@ -63,20 +63,34 @@ def to_tl_op(type:str, *args:SymbolScalar):
         raise NotImplementedError
     return code
 
+# global var
+input_vars = {}
 def generate_tl(x:SymbolScalar, varname:str=None):
     tl_code = IndentedCode()
     if x.lowered:
         return tl_code
     if isinstance(x.code, Var):
         # tl_code.add_line(f"{x.varname} = {x.code.name}")
+        # add input_var
+        input_vars[x.varname] = x
         return tl_code
     # for i, input_item in enumerate(x.code.inputs):
     #     tl_code += generate_tl(SymbolScalar(f"{x.varname}_i{i}", input_item))
     for i, input_item in enumerate(x.prev):
+        input_item.visit_count += 1
         tl_code += generate_tl(input_item)
 
     if varname is not None: # overwrite varname
         x.varname = varname
+    # optimize tl performance by inplace operation
+    for i, input_item in enumerate(x.prev):
+        if input_item.shape_idx == x.shape_idx:
+            if input_item.count == 1 or input_item.visit_count == input_item.count:
+                x.varname = input_item.varname
+                break
+    # add input_var
+    if x.varname not in input_vars.keys():
+        input_vars[x.varname] = x
     # tl_code += to_tl_op(x.code.type, x, *[SymbolScalar(f"{x.varname}_i{i}", input_item) for i, input_item in enumerate(x.code.inputs)])
     tl_code += to_tl_op(x.code.type, x, *x.prev)
     x.lowered = True
@@ -100,16 +114,31 @@ def lower_online_func(online_func: OnlineFunc):
     #     print(f"{k} = {v.code}")
     # print(o_scale.code)
     tl_code = IndentedCode()
+    global input_vars
+    input_vars.clear()
     for k,v in new_online_rowscales.items():
         tl_code += generate_tl(v)
     tl_code += generate_tl(scores_new) # , varname="scores")
-    # tl_code += generate_tl(o_scale)
-    # acco
-    acco = SymbolicArray("acco", Var("acco"), shape_idx=["block_M", "dim_v"])
-    acco = acco * o_scale
-    tl_code += generate_tl(acco, varname="acco")
+    tl_code += generate_tl(o_scale)
     
+    # acco
+    # acco = SymbolicArray("acco", Var("acco"), shape_idx=["block_M", "dim_v"])
+    # acco = acco * o_scale
+    # tl_code += generate_tl(acco, varname="acco")
+
+    # tmp_solution: mask_value
+    mask_value = "0"
+    for used in scores.use_list:
+        if used.code.type == "ReduceMax":
+            mask_value = "-inf"
+            break
+
     print(tl_code)
+    print("o_scale:", o_scale.varname)
+    for k,v in new_online_rowscales.items():
+        print(f"online_rowscale['{k}'] : {v.varname}")
+    print(input_vars)
+    print("mask_value:", mask_value)
 
 def lower_score_mod(score_mod, custom_fwd_inputs):
     scores = SymbolScalar("scores", Var("scores"))
@@ -119,8 +148,11 @@ def lower_score_mod(score_mod, custom_fwd_inputs):
     kv_idx = SymbolScalar("kv_idx", Var("kv_idx"))
     
     scores_new = score_mod(scores, custom_fwd_inputs, b, h, q_idx, kv_idx)
+    global input_vars
+    input_vars.clear()
     tl_code = generate_tl(scores_new)
     print(tl_code)
+    print(input_vars)
 
     # TODO: tl_code
     scores_new.code.backward(Var("scores_grad"))

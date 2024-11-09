@@ -63,7 +63,8 @@ class OnlineSoftmax(OnlineFunc):
 
         m , r = online_rowscales["m"], online_rowscales["r"]
         m_new = m.max(scores.get_reduce("max"))
-        r = r * (m - m_new).exp()
+        scale_tmp = (m - m_new).exp()
+        r = r * scale_tmp
         
         scores = (scores - m_new).exp()
         r = r + scores.get_reduce("sum")
@@ -72,7 +73,7 @@ class OnlineSoftmax(OnlineFunc):
             "m": m_new,
             "r": r,
         }
-        o_scale = (m - m_new).exp()
+        o_scale = scale_tmp
         return scores, new_online_rowscales, o_scale
 
     @staticmethod
