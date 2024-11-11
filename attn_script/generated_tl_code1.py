@@ -78,7 +78,7 @@ def kernel(batch, heads, seq_len, dim, dimv,
             V_shared = T.alloc_shared([block_N, dimv], dtype)
             # acc_s = T.alloc_fragment([block_M, block_N], accum_dtype)
             acc_s_cast = T.alloc_fragment([block_M, block_N], dtype)
-            acc_o = T.alloc_fragment([block_M, dimv], accum_dtype)
+            # acc_o = T.alloc_fragment([block_M, dimv], accum_dtype)
 
             
             m = T.alloc_fragment([block_M], accum_dtype)
@@ -87,7 +87,7 @@ def kernel(batch, heads, seq_len, dim, dimv,
             m_1 = T.alloc_fragment([block_M], accum_dtype)
             r = T.alloc_fragment([block_M], accum_dtype)
             scores_2_1_sum_1 = T.alloc_fragment([block_M], accum_dtype)
-            acco = T.alloc_fragment([block_M, dimv], accum_dtype)
+            acc_o = T.alloc_fragment([block_M, dimv], accum_dtype)
 
             
 
@@ -140,7 +140,7 @@ def kernel(batch, heads, seq_len, dim, dimv,
             
             # online_fwd_epilogue
             for i0,i1 in T.Parallel(block_M,dimv):
-                acco[i0,i1] = acco[i0,i1] / r[i0]
+                acc_o[i0,i1] = acc_o[i0,i1] / r[i0]
             for i0 in T.Parallel(block_M):
                 r[i0] = T.log2(r[i0]) * 0.69314718
             for i0 in T.Parallel(block_M):
