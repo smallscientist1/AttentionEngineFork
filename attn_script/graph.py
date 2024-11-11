@@ -33,6 +33,17 @@ class Var(Node):
         return f"{self.type}(\"{self.name}\")"
     def print_grad(self):
         print(f"{self.name} grad: {self.grad}")
+
+class Const(Node):
+    def __init__(self, value:float):
+        super().__init__("Const")
+        self.value = value
+
+    def _backward(self, grad:Node):
+        pass
+
+    def __str__(self):
+        return f"{self.type}({self.value})"
     
 class Add(Node):
     def __init__(self, left:Node, right:Node):

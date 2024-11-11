@@ -11,7 +11,7 @@ from core import Var
 Example of causal attention with online softmax
 """
 
-B, H ,S, D = 16,16,8192,64
+B, H ,S, D = 16,16,8192,128
 query = torch.randn(
         B, H, S, D, device="cuda", dtype=torch.float16, requires_grad=True
     )
@@ -33,9 +33,10 @@ def causal_mask(b, h, q_idx, kv_idx):
 
 block_mask = create_block_mask(causal_mask, 1, 1, S, S, device="cuda")
 
+softmax_scale = math.sqrt(D) ** 0.5
 # elementwise on attention scores
 def score_mod(score, custom_fwd_inputs, b, h, q_idx, kv_idx):
-    softmax_scale = custom_fwd_inputs.input_tensors["softmax_scale"]
+    # softmax_scale = custom_fwd_inputs.input_tensors["softmax_scale"]
     return score / softmax_scale
 
 class OnlineSoftmax(OnlineFunc):
@@ -44,11 +45,11 @@ class OnlineSoftmax(OnlineFunc):
         define online_rowscales and final_rowscales
         """
         online_rowscales = {
-            "m": SymbolScalar("m", Var("-inf")), # -inf # TODO: init value
+            "m": SymbolScalar("m", Var("-inf")), # -inf 
             "r": SymbolScalar("r", Var("0.0")),
         }
         final_rowscales = {
-            "lse": SymbolScalar("lse", Var("0.0")), # 0
+            "lse": SymbolScalar("lse", Var("0.0")), # not used in codegen
         }
         external_fwd_inputs = CustomIO()
         external_bwd_inputs = CustomIO({
@@ -97,29 +98,30 @@ class OnlineSoftmax(OnlineFunc):
         dscores = scores*dp*dppsum
         return dscores
 
+if __name__ == "__main__":
+    custom_fwd_inputs = CustomIO({
+        "softmax_scale": (1,),
+    })
+    custom_bwd_inputs = CustomIO({
+        "dppsum": (B,H,S),
+    })
 
-custom_fwd_inputs = CustomIO({
-    "softmax_scale": (1,),
-})
-custom_bwd_inputs = CustomIO({
-    "dppsum": (B,H,S),
-})
+    online = OnlineSoftmax()
+    mod = AttentionEngine(
+        query, key, value, custom_fwd_inputs, custom_bwd_inputs, score_mod=score_mod, block_mask=block_mask,
+        online_func=online,
+    )
+    # check
+    score_mod(SymbolScalar("score",Var("score")), custom_fwd_inputs, 1, 1, 1, 1) # TODO: check bwd
+    scores,online_rowscales,o_scale = online.online_fwd(SymbolicArray(), online.online_rowscales, 1, 1, 1)  
+    o, final_scales = online.online_fwd_epilogue(SymbolScalar("o",Var("o")), online.online_rowscales, 1, 1, 1)
+    scores2 = online.forward(SymbolicArray(), online.final_rowscales, 1, 1, 1, 1)
+    dscores = online.backward(SymbolScalar("dp",Var("dp")), SymbolScalar("scores",Var("scores")), online.final_rowscales, online.external_bwd_tensors, 1, 1, 1, 1)
 
-online = OnlineSoftmax()
-mod = AttentionEngine(
-    query, key, value, custom_fwd_inputs, custom_bwd_inputs, score_mod=score_mod, block_mask=block_mask,
-    online_func=online,
-)
-# check
-score_mod(SymbolScalar("score",Var("score")), custom_fwd_inputs, 1, 1, 1, 1) # TODO: check bwd
-scores,online_rowscales,o_scale = online.online_fwd(SymbolicArray(), online.online_rowscales, 1, 1, 1)
-o, final_scales = online.online_fwd_epilogue(SymbolScalar("o",Var("o")), online.online_rowscales, 1, 1, 1)
-scores2 = online.forward(SymbolicArray(), online.final_rowscales, 1, 1, 1, 1)
-dscores = online.backward(SymbolScalar("dp",Var("dp")), SymbolScalar("scores",Var("scores")), online.final_rowscales, online.external_bwd_tensors, 1, 1, 1, 1)
-
-print(custom_fwd_inputs.input_tensors)
-softmax_scale = math.sqrt(D)
-o = mod(query, key, value, softmax_scale=softmax_scale)
-print(custom_bwd_inputs.input_tensors)
-dppsum = torch.sum(do * o, dim=-1)
-mod.backward(do, dppsum=dppsum)
+    print(custom_fwd_inputs.input_tensors)
+    softmax_scale = math.sqrt(D)
+    o = mod(query, key, value)# , softmax_scale=softmax_scale)
+    print(o.shape)
+    print(custom_bwd_inputs.input_tensors)
+    dppsum = torch.sum(do * o, dim=-1)
+    # mod.backward(do, dppsum=dppsum)

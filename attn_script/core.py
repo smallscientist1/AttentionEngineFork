@@ -1,5 +1,5 @@
 import torch
-from typing import Literal
+from typing import Literal, Type
 import functools
 from graph import *
 from utils import IndentedCode
@@ -31,46 +31,62 @@ class SymbolScalar:
         self.visit_count = 0
     
     @plus_count
-    def op(self, code:Node, others:list=[], shape_idx:list=None, varname_suffix:str=None):
-        for other in others:
-            assert isinstance(other, SymbolScalar)
+    def op(self, code:Type[Node], others:list=[], shape_idx:list=None, varname_suffix:str=None):
+        for i, other in enumerate(others):
+            # if other is python scalar
+            if isinstance(other, (int, float)):
+                others[i] = SymbolicConst(other)
+            else:
+                assert isinstance(other, SymbolScalar)
         if shape_idx is None:
             shape_idx = self.shape_idx
         output_varname = self.varname
         if varname_suffix is not None:
             output_varname = f"{output_varname}_{varname_suffix}"
+
+        code = code(*[x.code for x in [self]+others])
         output = self.__class__(f"{output_varname}_{self.count}", code, [self]+others, shape_idx)
         self.use_list.append(output)
         for other in others:
             other.use_list.append(output)
         return output
 
+    def clear_usecount(self):
+        self.count = 0
+        self.use_list.clear()
+    def clear_visit(self):
+        self.visit_count = 0
+        self.lowered = False
+    def clear_codegen(self):
+        self.clear_usecount()
+        self.clear_visit()
+
     def __add__(self, other):
-        return self.op(Add(self.code, other.code), [other])
+        return self.op(Add, [other])
 
     def __neg__(self):
-        return self.op(Neg(self.code))
+        return self.op(Neg)
 
     def __sub__(self, other):
-        return self.op(Sub(self.code, other.code), [other])
+        return self.op(Sub, [other])
 
     def __mul__(self, other):
-        return self.op(Mul(self.code, other.code), [other])
+        return self.op(Mul, [other])
 
     def __truediv__(self, other):
-        return self.op(Div(self.code, other.code), [other])
+        return self.op(Div, [other])
 
     def abs(self):
-        return self.op(Abs(self.code))
+        return self.op(Abs)
 
     def exp(self):
-        return self.op(Exp(self.code))
+        return self.op(Exp)
 
     def log(self):
-        return self.op(Log(self.code))
+        return self.op(Log)
 
     def max(self, other):
-        return self.op(Max(self.code, other.code), [other])
+        return self.op(Max, [other])
 
 
 class SymbolicArray(SymbolScalar):
@@ -85,9 +101,9 @@ class SymbolicArray(SymbolScalar):
         get reduce result of array
         """
         if op == "sum":
-            return self.op(ReduceSum(self.code), shape_idx=self.shape_idx[:-1], varname_suffix="sum")
+            return self.op(ReduceSum, shape_idx=self.shape_idx[:-1], varname_suffix="sum")
         elif op == "max":
-            return self.op(ReduceMax(self.code), shape_idx=self.shape_idx[:-1], varname_suffix="max")
+            return self.op(ReduceMax, shape_idx=self.shape_idx[:-1], varname_suffix="max")
         else:
             raise NotImplementedError
     
@@ -100,6 +116,14 @@ class SymbolicTensor(SymbolScalar):
         super().__init__(varname, Var(varname), shape_idx=[str(i) for i in shape])
         self.shape = shape
     
+class SymbolicConst(SymbolScalar):
+    """
+    Const for constant value
+    """
+    def __init__(self, value):
+        super().__init__(str(value), Const(value), prev=[], shape_idx=[])
+
+        
 class CustomIO:
     def __init__(self, input_tensors:dict[str, tuple]={}):
         self.input_tensors:dict[str, SymbolicTensor] = {}
