@@ -33,7 +33,7 @@ def causal_mask(b, h, q_idx, kv_idx):
 
 block_mask = create_block_mask(causal_mask, 1, 1, S, S, device="cuda")
 
-softmax_scale = math.sqrt(D) ** 0.5
+softmax_scale = D ** 0.5
 # elementwise on attention scores
 def score_mod(score, custom_fwd_inputs, b, h, q_idx, kv_idx):
     # softmax_scale = custom_fwd_inputs.input_tensors["softmax_scale"]
@@ -52,11 +52,11 @@ class OnlineSoftmax(OnlineFunc):
             "lse": SymbolScalar("lse", Var("0.0")), # not used in codegen
         }
         external_fwd_inputs = CustomIO()
-        external_bwd_inputs = CustomIO({
-            "dppsum": (B,H,S),
-        })
+        # external_bwd_inputs = CustomIO({
+        #     "dppsum": (B,H,S),
+        # })
         super().__init__(online_rowscales, final_rowscales,
-                    external_fwd_inputs, external_bwd_inputs)
+                    external_fwd_inputs) # , external_bwd_inputs)
     
 
     @staticmethod
@@ -93,9 +93,9 @@ class OnlineSoftmax(OnlineFunc):
         return scores_new
     
     @staticmethod
-    def backward(dp, scores, final_rowscales, external_bwd_tensor, b, h, q_idx, kv_idx):
-        dppsum = external_bwd_tensor.input_tensors["dppsum"]
-        dscores = scores*dp*dppsum
+    def backward(dp, scores, final_rowscales, doosum_rowscales, b, h, q_idx, kv_idx):
+        dppsum = doosum_rowscales # external_bwd_tensor.input_tensors["dppsum"]
+        dscores = (dp - dppsum)*scores # TODO: bug if swap
         return dscores
 
 if __name__ == "__main__":
@@ -116,7 +116,7 @@ if __name__ == "__main__":
     scores,online_rowscales,o_scale = online.online_fwd(SymbolicArray(), online.online_rowscales, 1, 1, 1)  
     o, final_scales = online.online_fwd_epilogue(SymbolScalar("o",Var("o")), online.online_rowscales, 1, 1, 1)
     scores2 = online.forward(SymbolicArray(), online.final_rowscales, 1, 1, 1, 1)
-    dscores = online.backward(SymbolScalar("dp",Var("dp")), SymbolScalar("scores",Var("scores")), online.final_rowscales, online.external_bwd_tensors, 1, 1, 1, 1)
+    dscores = online.backward(SymbolScalar("dp",Var("dp")), SymbolScalar("scores",Var("scores")), online.final_rowscales, online.doosum_rowscales, 1, 1, 1, 1)
 
     print(custom_fwd_inputs.input_tensors)
     softmax_scale = math.sqrt(D)
@@ -125,3 +125,4 @@ if __name__ == "__main__":
     print(custom_bwd_inputs.input_tensors)
     dppsum = torch.sum(do * o, dim=-1)
     # mod.backward(do, dppsum=dppsum)
+    o.backward(do)

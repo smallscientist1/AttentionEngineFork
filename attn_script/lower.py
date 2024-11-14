@@ -7,7 +7,10 @@ from attn_template import TlAttnTemplate
 class lowerOnlineFuncOutput:
 
     def __init__(self, is_inf_mask, final_rowscales_output, final_rowscales_init, online_rowscales_initvalue, online_func_init, online_func_inputs, online_func_body, online_func_inputs_list, o_scale, online_func_epilogue, final_rowscales_save,
-                 online_rowscales_update):
+                 online_rowscales_update,
+                 isused_doosum, final_rowscales_length, final_rowscales_load, online_func_fwd, custom_bwd_inputs_load, custom_bwd_body,
+                 final_rowscales_shared_init,
+                 custom_bwd_inputs,custom_bwd_inputs_init):
         self.is_inf_mask = is_inf_mask
         self.final_rowscales_output = final_rowscales_output
         self.final_rowscales_init = final_rowscales_init
@@ -21,11 +24,31 @@ class lowerOnlineFuncOutput:
         self.final_rowscales_save = final_rowscales_save
         self.online_rowscales_update = online_rowscales_update
 
+        self.isused_doosum = isused_doosum
+        self.final_rowscales_length = final_rowscales_length
+        self.final_rowscales_load = final_rowscales_load
+        self.online_func_fwd = online_func_fwd
+        self.custom_bwd_inputs_load = custom_bwd_inputs_load
+        self.custom_bwd_body = custom_bwd_body
+        self.final_rowscales_shared_init = final_rowscales_shared_init
+        self.custom_bwd_inputs = custom_bwd_inputs
+        self.custom_bwd_inputs_init = custom_bwd_inputs_init
+
+
 class lowerScoreModOutput:
-    def __init__(self, score_mod_inputs, score_mod_body, score_mod_inputs_list):
+    def __init__(self, score_mod_inputs, score_mod_body, score_mod_inputs_list,
+        score_mod_backward, 
+        score_mod_bwd_inputs_list,
+        score_mod_bwd_inputs,
+        score_mod_inputs_bwd_list
+    ):
         self.score_mod_inputs = score_mod_inputs
         self.score_mod_body = score_mod_body
         self.score_mod_inputs_list = score_mod_inputs_list
+        self.score_mod_backward = score_mod_backward
+        self.score_mod_bwd_inputs = score_mod_bwd_inputs
+        self.score_mod_bwd_inputs_list = score_mod_bwd_inputs_list
+        self.score_mod_inputs_bwd_list = score_mod_inputs_bwd_list
 
 def lower_online_func(online_func: OnlineFunc):
     online_fwd = online_func.online_fwd
@@ -111,6 +134,38 @@ def lower_online_func(online_func: OnlineFunc):
     # print(input_vars)
     # print("mask_value:", mask_value)
     # print("online_func_epilogue:", online_func_epilogue)
+
+    # bwd
+    isused_doosum = False
+    final_rowscales_bwd = {}
+    for k,v in online_func.final_rowscales.items():
+        final_rowscales_bwd[k] = SymbolScalar(f"{k}_shared", Var(f"{k}"), shape_idx=["1", "block_N"])
+    scores_2 = online_func.forward(SymbolScalar("qkT", Var("qkT"), shape_idx=["block_M", "block_N"]), final_rowscales_bwd, b, h, q_idx, SymbolScalar("kv_idx", Var("kv_idx")))
+
+    tl_code, input_vars_fwd = generate_tl_from_dag([scores_2])
+    online_func_fwd = str(tl_code)
+
+
+    dscores = online_func.backward(SymbolScalar("dsT", Var("dsT"), shape_idx=["block_M", "block_N"]), SymbolScalar("qkT", Var("qkT"), shape_idx=["block_M","block_N"]), final_rowscales_bwd, SymbolScalar("doosum_shared", Var("doosum_shared"), shape_idx=["1", "block_N"]), b, h, q_idx, SymbolScalar("kv_idx", Var("kv_idx")))
+
+    tl_code, input_vars_bwd = generate_tl_from_dag([dscores])
+    custom_bwd_body = str(tl_code)
+
+    if "doosum_shared" in input_vars_bwd:
+        isused_doosum = True
+
+    custom_bwd_inputs = f"g_doosum: T.Buffer([batch, heads, seq_len], accum_dtype), \n" if isused_doosum else ""
+    final_rowscales_shared_init = ""
+    for k,v in final_rowscales_bwd.items():
+        final_rowscales_shared_init += f"{v.varname} = T.alloc_shared([{', '.join(v.shape_idx)}], accum_dtype)\n"
+    custom_bwd_inputs_init = "doosum_shared = T.alloc_shared([1, block_N], accum_dtype)" if isused_doosum else ""
+    final_rowscales_load = ""
+    for k,v in final_rowscales_bwd.items():
+        final_rowscales_load += f"T.copy(g_{k}[bz, bx, k * block_N : (k + 1) * block_N], {v.varname})\n"
+    custom_bwd_inputs_load = "T.copy(g_doosum[bz, bx, k * block_N : (k + 1) * block_N], doosum_shared)" if isused_doosum else ""
+    final_rowscales_length = len(final_rowscales_bwd)
+
+
     return lowerOnlineFuncOutput(
         is_inf_mask=is_inf_mask,
         final_rowscales_output=final_rowscales_output,
@@ -123,7 +178,17 @@ def lower_online_func(online_func: OnlineFunc):
         online_func_epilogue=online_func_epilogue,
         final_rowscales_save=final_rowscales_save,
         online_rowscales_update=online_rowscales_update,
-        final_rowscales_init=None
+        final_rowscales_init=None,
+
+        isused_doosum=isused_doosum,
+        final_rowscales_length=final_rowscales_length,
+        final_rowscales_load=final_rowscales_load,
+        online_func_fwd=online_func_fwd,
+        custom_bwd_inputs_load=custom_bwd_inputs_load,
+        custom_bwd_body=custom_bwd_body,
+        final_rowscales_shared_init=final_rowscales_shared_init,
+        custom_bwd_inputs=custom_bwd_inputs,
+        custom_bwd_inputs_init=custom_bwd_inputs_init
     )
 
 def lower_score_mod(score_mod, custom_fwd_inputs):
@@ -143,13 +208,27 @@ def lower_score_mod(score_mod, custom_fwd_inputs):
     # print(tl_code)
     # print(input_vars)
 
-    # TODO: tl_code
-    # scores_new.code.backward(Var("scores_grad"))
-    # scores.code.print_grad()
+    # backward, block_M : k, block_N : q
+    qkT = SymbolScalar("qkT", Var("qkT"), shape_idx=["block_M", "block_N"])
+    scores_new = score_mod(qkT, custom_fwd_inputs, b, h, q_idx, kv_idx)
+    tl_code, input_vars_fwd = generate_tl_from_dag([scores_new])
+    score_mod_inputs_bwd_list = ", ".join([varname for varname, input_var in input_vars_fwd.items()])
+    scores_new.backward(SymbolScalar("dsT", Var("dsT"), shape_idx=["block_M", "block_N"]))
+    tl_code, input_vars = generate_tl_from_dag([qkT.grad])
+    score_mod_backward = str(tl_code)
+    score_mod_bwd_inputs_list = ", ".join([input_var.varname for varname, input_var in input_vars.items()])
+    score_mod_bwd_inputs = ""
+    for varname, input_var in input_vars.items():
+        score_mod_bwd_inputs += f"{input_var.varname}: T.Buffer([{', '.join(input_var.shape_idx)}], accum_dtype), \n"
+
     return lowerScoreModOutput(
         score_mod_inputs=score_mod_inputs,
         score_mod_body=score_mod_body,
-        score_mod_inputs_list=score_mod_inputs_list
+        score_mod_inputs_list=score_mod_inputs_list,
+        score_mod_backward=score_mod_backward,
+        score_mod_bwd_inputs_list=score_mod_bwd_inputs_list,
+        score_mod_bwd_inputs=score_mod_bwd_inputs,
+        score_mod_inputs_bwd_list=score_mod_inputs_bwd_list
     )
 
 def lower_tl(score_mod, block_mask, online_func,

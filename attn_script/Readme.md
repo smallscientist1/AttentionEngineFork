@@ -1,5 +1,13 @@
 # AttentionEngine Frontend
 
+AttentionEngine is a frontend for customized attention mechanism. It generates high-performant kernels comparable to flashAttention. 
+
+## supported customized attention mechanism 
+
+Any function on attention scores that can be represented as elementwise & row_reduce, such as softmax, retention, sigmoid, etc.
+
+## Detailed usage
+
 ```py
 AttentionEngine: o = attention_engine(query: Tensor, key: Tensor, value: Tensor,
                             query_mod, key_mod, value_mod,
@@ -73,5 +81,19 @@ dq = dscores @ k
 2. Implement __init__, online_fwd, online_fwd_epilogue, forward, backward methods.
 
 ```
+To implement a customized online_func on scores, please go to next section. 
 
+## customized online_func language
+
+- implicit broadcast
+- reduce_sum & reduce_max in online_fwd
+- dppsum for bwd
+
+## Limitation
+- Online_func does not support autodiff, so user need to define the fwd and bwd for online function.
+- for backward, only the grad of q, k, v is computed, not including custom input tensor.
+
+## TODO
+- block_mask
+- b,h,q_idx,kv_idx
 

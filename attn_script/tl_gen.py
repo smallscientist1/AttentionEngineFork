@@ -1,6 +1,7 @@
 from core import OnlineFunc, SymbolScalar, SymbolicArray, CustomIO
 from graph import Var, Const
 from utils import IndentedCode
+from typing import Tuple
 
 def to_tl_op(type:str, *args:SymbolScalar):
     code = IndentedCode()
@@ -71,7 +72,7 @@ def to_tl_op(type:str, *args:SymbolScalar):
         raise NotImplementedError
     return code
 
-def generate_tl_from_dag(x_list:list[SymbolScalar]) -> IndentedCode:
+def generate_tl_from_dag(x_list:list[SymbolScalar]) -> Tuple[IndentedCode, dict]:
     # global var
     input_vars = {}
     def generate_tl(x:SymbolScalar, varname:str=None):

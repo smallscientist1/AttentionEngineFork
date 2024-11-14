@@ -1,20 +1,15 @@
-import jinja2
 
-TL_IMPORT = """
 import torch
 from tvm import tl
 import tvm.tl.language as T
-"""
+import argparse
 
-TL_GLOBAL_FUNC = """
 def make_dq_layout(dQ):
     # atomicAdd can not be vectorized, so we need to reorder dq to match the 8x8 gemm fragment
     return T.Layout(
         dQ.shape, lambda b, l, h, d: [b, l // 8, h, d // 8, (d % 2), 4 * (l % 8) + (d % 8) // 2]
     )
-"""
 
-TL_KERNEL = """
 def kernel(batch, heads, seq_len, dim, dimv, 
         block_M = None, block_N = None, num_stages = None, thread_num = None):
     # scale = (1.0 / dim) ** 0.5 * 1.44269504  # log2(e) # 0.69314718  loge(2)
@@ -25,22 +20,46 @@ def kernel(batch, heads, seq_len, dim, dimv,
     
     # TODO: mask
     is_casual = True
-"""
-TL_MAIN = """
+
 
     @T.macro
     def score_mod(
         # scores: T.Buffer([block_M, block_N], accum_dtype),
-        {{score_mod_inputs | indent(8)}}
+        scores: T.Buffer([block_M, block_N], accum_dtype), 
+
         ):
-        {{score_mod_body | indent(8)}}
+        for i0,i1 in T.Parallel(block_M,block_N):
+            scores[i0,i1] = scores[i0,i1] / 11.313708498984761
+
     
     @T.macro
     def online_func(
         # scores: T.Buffer([block_M, block_N], accum_dtype),
-        {{online_func_inputs | indent(8)}}
+        m: T.Buffer([block_M], accum_dtype), 
+        scores: T.Buffer([block_M, block_N], accum_dtype), 
+        scores_max_1: T.Buffer([block_M], accum_dtype), 
+        m_1: T.Buffer([block_M], accum_dtype), 
+        r: T.Buffer([block_M], accum_dtype), 
+        scores_2_1_sum_1: T.Buffer([block_M], accum_dtype), 
+
     ):
-        {{online_func_body | indent(8)}}
+        T.reduce_max(scores, scores_max_1,dim=1, clear=True)
+        for i0 in T.Parallel(block_M):
+            m_1[i0] = T.max(m[i0], scores_max_1[i0])
+        for i0 in T.Parallel(block_M):
+            m[i0] = m[i0] - m_1[i0]
+        for i0 in T.Parallel(block_M):
+            m[i0] = T.exp2(m[i0]*1.442695)
+        for i0 in T.Parallel(block_M):
+            r[i0] = r[i0] * m[i0]
+        for i0,i1 in T.Parallel(block_M,block_N):
+            scores[i0,i1] = scores[i0,i1] - m_1[i0]
+        for i0,i1 in T.Parallel(block_M,block_N):
+            scores[i0,i1] = T.exp2(scores[i0,i1]*1.442695)
+        T.reduce_sum(scores, scores_2_1_sum_1,dim=1, clear=True)
+        for i0 in T.Parallel(block_M):
+            r[i0] = r[i0] + scores_2_1_sum_1[i0]
+
 
         
     @T.prim_func
@@ -48,10 +67,11 @@ TL_MAIN = """
         Q: T.Buffer(shape, dtype), # type: ignore
         K: T.Buffer(shape, dtype), # type: ignore
         V: T.Buffer(shape_v, dtype), # type: ignore
-        {{custom_fwd_inputs | indent(8)}}
+        
 
         Output: T.Buffer(shape_v, dtype), # type: ignore
-        {{final_rowscales_output | indent(8)}}
+        g_lse: T.Buffer([batch, heads, seq_len], accum_dtype), 
+
     ):
         with T.Kernel(T.ceildiv(seq_len, block_M), heads, batch, threads=thread_num) as (bx, by, bz):
             Q_shared = T.alloc_shared([block_M, dim], dtype)
@@ -61,15 +81,24 @@ TL_MAIN = """
             acc_s_cast = T.alloc_fragment([block_M, block_N], dtype)
             # acc_o = T.alloc_fragment([block_M, dimv], accum_dtype)
 
-            {{custom_fwd_inputs_init | indent(12)}}
-            {{online_func_init | indent(12)}}
-            {{final_rowscales_init | indent(12)}}
+            
+            m = T.alloc_fragment([block_M], accum_dtype)
+            scores = T.alloc_fragment([block_M, block_N], accum_dtype)
+            scores_max_1 = T.alloc_fragment([block_M], accum_dtype)
+            m_1 = T.alloc_fragment([block_M], accum_dtype)
+            r = T.alloc_fragment([block_M], accum_dtype)
+            scores_2_1_sum_1 = T.alloc_fragment([block_M], accum_dtype)
+            acc_o = T.alloc_fragment([block_M, dimv], accum_dtype)
+
+            
 
             T.annotate_layout({Q_shared: tl.layout.make_swizzled_layout(Q_shared)})
             T.copy(Q[bz, bx * block_M : (bx + 1) * block_M, by, :], Q_shared)
             T.fill(acc_o, 0)
 
-            {{online_rowscales_initvalue | indent(12)}}
+            T.fill(m, -T.infinity(accum_dtype))
+            T.fill(r, 0.0)
+
 
             # TODO: mask
             loop_range = (
@@ -83,7 +112,7 @@ TL_MAIN = """
                 # ...
 
                 # TODO: naive solution: if reduce_max, -T.inf; if reduce_sum, 0
-                if is_casual and {{is_inf_mask}}:
+                if is_casual and True:
                     for i, j in T.Parallel(block_M, block_N):
                         scores[i, j] = T.if_then_else(
                             bx * block_M + i >= k * block_N + j, 0, -T.infinity(scores.dtype)
@@ -95,33 +124,39 @@ TL_MAIN = """
                 T.copy(V[bz, k * block_N : (k + 1) * block_N, by, :], V_shared)
                     
                 # call score_mod
-                score_mod({{score_mod_inputs_list}}) # scores
+                score_mod(scores) # scores
                     
                 # call online_func
-                online_func({{online_func_inputs_list}}) # scores
+                online_func(m, scores, scores_max_1, m_1, r, scores_2_1_sum_1) # scores
 
                 for i, j in T.Parallel(block_M, dimv):
-                    acc_o[i, j] *= {{o_scale}}[i]
+                    acc_o[i, j] *= m[i]
                 
                 # update online_rowscales
-                {{online_rowscales_update | indent(16)}}
+                T.copy(m_1, m)
+
 
                 T.copy(scores, acc_s_cast)
                 T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
             
             # online_fwd_epilogue
-            {{online_func_epilogue | indent(12)}}
+            for i0,i1 in T.Parallel(block_M,dimv):
+                acc_o[i0,i1] = acc_o[i0,i1] / r[i0]
+            for i0 in T.Parallel(block_M):
+                r[i0] = T.log2(r[i0]) * 0.69314718
+            for i0 in T.Parallel(block_M):
+                r[i0] = r[i0] + m[i0]
+
 
             T.copy(acc_o, Output[bz, bx * block_M : (bx + 1) * block_M, by, :])
 
             # save final_rowscale
-            {{final_rowscales_save | indent(12)}}
+            T.copy(r, g_lse[bz, by, bx * block_M : (bx + 1) * block_M])
+
         
     return main
 
-"""
 
-TL_KERNEL_BWD_DOO = """
 
 def flashattn_bwd_preprocess(batch, heads, seq_len, dim, dimv):
     dtype = "float16"
@@ -151,9 +186,7 @@ def flashattn_bwd_preprocess(batch, heads, seq_len, dim, dimv):
             T.copy(delta, Delta[bz, bx, by * blk : (by + 1) * blk])
 
     return flash_bwd_prep
-"""
 
-TL_KERNEL_BWD = """
 def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual, 
                 block_M, block_N, thread_num = 128):
     sm_scale = (1.0 / dim) ** 0.5
@@ -162,22 +195,26 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual,
     shape_v = [batch, seq_len, heads, dimv]
     dtype = "float16"
     accum_dtype = "float"
-"""
 
-TL_MAIN_BWD = """
     @T.macro
     def score_mod(
         # scores: T.Buffer([block_M, block_N], accum_dtype),
-        {{score_mod_inputs | indent(8)}}
+        scores: T.Buffer([block_M, block_N], accum_dtype), 
+
         ):
-        {{score_mod_body | indent(8)}}
+        for i0,i1 in T.Parallel(block_M,block_N):
+            scores[i0,i1] = scores[i0,i1] / 11.313708498984761
+
     
     @T.macro
     def score_mod_backward(
         # scores: T.Buffer([block_M, block_N], accum_dtype),
-        {{score_mod_bwd_inputs | indent(8)}}
+        dsT_cast: T.Buffer([block_M, block_N], accum_dtype), 
+
     ):
-        {{score_mod_backward | indent(8)}}
+        for i0,i1 in T.Parallel(block_M,block_N):
+            dsT_cast[i0,i1] = dsT_cast[i0,i1] / 11.313708498984761
+
 
     @T.prim_func
     def flash_bwd(
@@ -187,10 +224,12 @@ TL_MAIN_BWD = """
         dO: T.Buffer(shape, dtype), # type: ignore
 
         # final_rowscales
-        {{final_rowscales_output | indent(8)}}
+        g_lse: T.Buffer([batch, heads, seq_len], accum_dtype), 
+
 
         # custom_bwd_inputs
-        {{custom_bwd_inputs | indent(8)}}
+        g_doosum: T.Buffer([batch, heads, seq_len], accum_dtype), 
+
 
         dQ: T.Buffer(shape, accum_dtype), # type: ignore
         dK: T.Buffer(shape, dtype), # type: ignore
@@ -210,10 +249,11 @@ TL_MAIN_BWD = """
             dsT_cast = T.alloc_fragment([block_M, block_N], dtype)
 
             # final_rowscales_declare
-            {{final_rowscales_shared_init | indent(12)}}
+            lse_shared = T.alloc_shared([1, block_N], accum_dtype)
+
 
             # custom_bwd_declare
-            {{custom_bwd_inputs_init | indent(12)}}
+            doosum_shared = T.alloc_shared([1, block_N], accum_dtype)
 
             do = T.alloc_shared([block_N, dimv], dtype)
             dv = T.alloc_fragment([block_M, dimv], accum_dtype)
@@ -242,13 +282,18 @@ TL_MAIN_BWD = """
                 T.gemm(K_local, q, qkT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                 
                 # score_mod
-                score_mod({{score_mod_inputs_bwd_list}}) # qkT,
+                score_mod(qkT) # qkT,
 
                 # final_rowscales_load
-                {{final_rowscales_load | indent(16)}}
+                T.copy(g_lse[bz, bx, k * block_N : (k + 1) * block_N], lse_shared)
+
 
                 # online_func_fwd
-                {{ online_func_fwd | indent(16) }}
+                for i0,i1 in T.Parallel(block_M,block_N):
+                    qkT[i0,i1] = qkT[i0,i1] - lse_shared[0,i1]
+                for i0,i1 in T.Parallel(block_M,block_N):
+                    qkT[i0,i1] = T.exp2(qkT[i0,i1]*1.442695)
+
                 
                 # TODO: is causal
                 if is_casual:
@@ -262,18 +307,21 @@ TL_MAIN_BWD = """
                 T.gemm(qkT_cast, do, dv, policy=T.GemmWarpPolicy.FullRow)
 
                 # custom_bwd_inputs_load
-                {{custom_bwd_inputs_load | indent(16)}}
+                T.copy(g_doosum[bz, bx, k * block_N : (k + 1) * block_N], doosum_shared)
 
                 T.clear(dsT)
                 T.gemm(V_local, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
                 # custom_bwd
-                {{custom_bwd_body | indent(16)}}
+                for i0,i1 in T.Parallel(block_M,block_N):
+                    dsT[i0,i1] = dsT[i0,i1] - doosum_shared[0,i1]
+                for i0,i1 in T.Parallel(block_M,block_N):
+                    dsT[i0,i1] = dsT[i0,i1] * qkT[i0,i1]
+
                 
                 # score_mod_backward
-                score_mod_backward({{score_mod_bwd_inputs_list}}) #  qkT, 
-                  
-                                
+                score_mod_backward(dsT) #  qkT, 
+                
                 T.copy(dsT, dsT_cast)
                 T.gemm(dsT_cast, q, dk, policy=T.GemmWarpPolicy.FullRow)
 
@@ -288,9 +336,7 @@ TL_MAIN_BWD = """
 
     return flash_bwd              
         
-"""
 
-TL_KERNEL_BWD_POSTPROCESS = """
 def flashattn_bwd_postprocess(batch, heads, seq_len, dim, dimv):
     dtype = "float16"
     accum_dtype = "float"
@@ -312,9 +358,7 @@ def flashattn_bwd_postprocess(batch, heads, seq_len, dim, dimv):
 
     return flash_bwd_post
 
-"""
 
-TL_INFERFACE = """
 class _attention(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v, *custom_fwd_inputs):
@@ -324,7 +368,7 @@ class _attention(torch.autograd.Function):
         block_N = 128 if D_HEAD <= 128 else 64
         stages = 1
         thread_num = 256
-        output_idx_list = {{output_idx_list}}
+        output_idx_list = [3, 4]
         mod = tl.cached(kernel, output_idx_list, BATCH, H, N_CTX, D_HEAD, D_HEADV, block_M, block_N, stages, thread_num)
         o, *final_scale = mod(q, k, v, *custom_fwd_inputs)
         ctx.save_for_backward(q, k, v, o, *custom_fwd_inputs, *final_scale)
@@ -333,20 +377,19 @@ class _attention(torch.autograd.Function):
     @staticmethod
     def backward(ctx, do):
         q, k, v, o, *tmp = ctx.saved_tensors
+        is_casual = True
         BATCH, N_CTX, H, D_HEAD = q.shape
         D_HEAD_V = v.shape[-1]
-        custom_fwd_inputs = tmp[:-{{final_rowscales_length}}]
-        final_rowscales = tmp[-{{final_rowscales_length}}:]
+        custom_fwd_inputs = tmp[:-1]
+        final_rowscales = tmp[-1:]
         maybe_contiguous = lambda x: x.contiguous() if x.stride(-1) != 1 else x
         do, q, k, v, o = [maybe_contiguous(x) for x in (do, q, k, v, o)]
         block_M = 64
         block_N = 64 if D_HEAD <= 64 else 32
         mod_prep = tl.cached(flashattn_bwd_preprocess, [2], BATCH, H, N_CTX, D_HEAD, D_HEAD_V)
         mod_post = tl.cached(flashattn_bwd_postprocess, [1], BATCH, H, N_CTX, D_HEAD, D_HEAD_V)
-        if {{isused_doosum}}:
+        if True:
             delta = mod_prep(o, do)
-        # TODO: causal
-        is_casual = True
         mod = tl.cached(
             flashattn_bwd, [6, 7, 8], BATCH, H, N_CTX, D_HEAD, D_HEAD_V, is_casual, block_M, block_N
         )
@@ -356,82 +399,86 @@ class _attention(torch.autograd.Function):
         return dq, dk, dv, *none_list
 
 attention = _attention.apply
-"""
-class TlAttnTemplate:
-    TL_IMPORT = TL_IMPORT
-    TL_KERNEL = TL_KERNEL
-    TL_MAIN = TL_MAIN
-    TL_INFERFACE = TL_INFERFACE
-    def __init__(self, custom_fwd_inputs=None, final_rowscales_output=None, 
-                 custom_fwd_inputs_init=None, online_func_init=None, final_rowscales_init=None,
-                 online_rowscales_initvalue=None,
-                 online_rowscales_update=None,
-                 is_inf_mask=False, 
-                 score_mod_inputs=None, online_func_inputs=None,
-                score_mod_body="return", online_func_body="return",
-                 score_mod_inputs_list=None, online_func_inputs_list=None, o_scale="o_scale",
-                 online_func_epilogue=None, final_rowscales_save=None,
-                 output_idx_list="[3]",
-                 score_mod_inputs_bwd_list=None, isused_doosum=False, final_rowscales_length=1,
-                    custom_bwd_inputs=None, custom_bwd_inputs_init=None,
-                    final_rowscales_load=None, online_func_fwd=None,
-                    custom_bwd_inputs_load=None, custom_bwd_body=None,
-                    score_mod_backward=None,
-                    score_mod_bwd_inputs_list=None, score_mod_bwd_inputs=None,
-                    final_rowscales_shared_init=None):
 
-        template = jinja2.Template(TlAttnTemplate.TL_IMPORT+
-                                   TL_GLOBAL_FUNC+
-                                   TlAttnTemplate.TL_KERNEL+
-                                   TlAttnTemplate.TL_MAIN+
-                                   TL_KERNEL_BWD_DOO+
-                                      TL_KERNEL_BWD+
-                                        TL_MAIN_BWD+
-                                        TL_KERNEL_BWD_POSTPROCESS+
-                                   TlAttnTemplate.TL_INFERFACE)
-        kargs = {
-            "custom_fwd_inputs": custom_fwd_inputs,
-            "final_rowscales_output": final_rowscales_output,
-            "custom_fwd_inputs_init": custom_fwd_inputs_init,
-            "online_func_init": online_func_init,
-            "online_rowscales_update": online_rowscales_update,
-            "online_rowscales_initvalue": online_rowscales_initvalue,
-            "final_rowscales_init": final_rowscales_init,
-            "is_inf_mask": is_inf_mask,
-            "score_mod_inputs": score_mod_inputs,
-            "online_func_inputs": online_func_inputs,
-            "score_mod_body": score_mod_body,
-            "online_func_body": online_func_body,
-            "score_mod_inputs_list": score_mod_inputs_list,
-            "online_func_inputs_list": online_func_inputs_list,
-            "o_scale": o_scale,
-            "online_func_epilogue": online_func_epilogue,
-            "final_rowscales_save": final_rowscales_save,
-            "output_idx_list": output_idx_list,
-            
-            "score_mod_inputs_bwd_list": score_mod_inputs_bwd_list,
-            "isused_doosum": isused_doosum,
-            "final_rowscales_length": final_rowscales_length,
-            "custom_bwd_inputs": custom_bwd_inputs,
-            "custom_bwd_inputs_init": custom_bwd_inputs_init,
-            "final_rowscales_load": final_rowscales_load,
-            "online_func_fwd": online_func_fwd,
-            "custom_bwd_inputs_load": custom_bwd_inputs_load,
-            "custom_bwd_body": custom_bwd_body,
-            "score_mod_backward": score_mod_backward,
-            "score_mod_bwd_inputs_list": score_mod_bwd_inputs_list,
-            "score_mod_bwd_inputs": score_mod_bwd_inputs,
-            "final_rowscales_shared_init": final_rowscales_shared_init,
-            
-        }
-        # remove None
-        kargs = {k:(v if v is not None else "") for k,v in kargs.items() }
-        self.tlcode = template.render(**kargs)
-    def __call__(self):
-        return self.tlcode
+def ref_program(Q, K, V, casual):
+    from flash_attn.flash_attn_interface import flash_attn_func
+
+    out = flash_attn_func(Q, K, V, causal=casual)
+    return out
+
+def print_debug(o, O_ref):
+    close_mask = torch.isclose(o, O_ref, rtol=1e-2, atol=1e-2)
+    total_elements = o.numel()
+    num_not_close = (~close_mask).sum().item()
+    percentage_not_close = (num_not_close / total_elements) * 100
+    print(f"{percentage_not_close:.2f}% of the elements are not close.")
+    print(f"Total elements: {total_elements}, Not close elements: {num_not_close}")
+    # max diff and idx
+    max_diff = (o - O_ref).abs().max().item()
+    max_diff_idx = (o - O_ref).abs().argmax().item()
+    max_diff_idx = torch.unravel_index(torch.tensor(max_diff_idx), o.shape)
+    print(f"Max diff: {max_diff} at index {max_diff_idx}")
+    print(f"Reference: {O_ref[max_diff_idx]}")
+    print(f"Library: {o[max_diff_idx]}")
+    print(torch.allclose(o, O_ref, rtol=1e-2, atol=1e-2))
 
 if __name__ == "__main__":
-    tl_code = TlAttnTemplate()()
-    print(tl_code)
-    exec(tl_code)
-    print(attention)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--batch', type=int, default=4, help='Batch size')
+    parser.add_argument('--h', type=int, default=16, help='Number of heads')
+    parser.add_argument('--n_ctx', type=int, default=2048, help='Context size')
+    parser.add_argument('--d_head', type=int, default=128, help='Head dimension')
+    parser.add_argument('--d_head_v', type=int, default=128, help='Head dimension for V')
+    parser.add_argument('--casual', type=bool, default=True, help='Casual flag')
+    args = parser.parse_args()
+    BATCH, H, N_CTX, D_HEAD, D_HEAD_V = args.batch, args.h, args.n_ctx, args.d_head, args.d_head_v
+    casual = args.casual
+    flops_per_matmul = 2.0 * BATCH * H * N_CTX * N_CTX * D_HEAD
+    flops_per_matmul_v = 2.0 * BATCH * H * N_CTX * N_CTX * D_HEAD_V
+    total_flops = 3 * flops_per_matmul + 2 * flops_per_matmul_v
+    if casual:
+        total_flops *= 0.5
+    Q = (
+        torch.empty(BATCH, N_CTX, H, D_HEAD, dtype=torch.half, device="cuda")
+        .normal_()
+        .requires_grad_()
+    )
+    K = torch.empty_like(Q).normal_().requires_grad_()
+    V = torch.empty(BATCH, N_CTX, H, D_HEAD_V, dtype=torch.half, device="cuda").normal_().requires_grad_()
+    dO = torch.randn_like(V)
+    O = attention(Q, K, V)# , casual)
+    O.backward(dO, retain_graph=True)
+    dQ, Q.grad = Q.grad.clone(), None
+    dK, K.grad = K.grad.clone(), None
+    dV, V.grad = V.grad.clone(), None
+
+    O_ref = ref_program(Q, K, V, casual)
+    O_ref.backward(dO, retain_graph=True)
+    dQ_ref, Q.grad = Q.grad.clone(), None
+    dK_ref, K.grad = K.grad.clone(), None
+    dV_ref, V.grad = V.grad.clone(), None
+
+    # print_debug(O, O_ref)
+    # assert torch.allclose(O, O_ref, rtol=1e-2, atol=1e-2)
+    print_debug(dV, dV_ref)
+    # assert torch.allclose(dV, dV_ref, rtol=1e-2, atol=1e-2)
+    print_debug(dK, dK_ref)
+    # assert torch.allclose(dK, dK_ref, rtol=1e-2, atol=1e-2)
+    print_debug(dQ, dQ_ref)
+    # assert torch.allclose(dQ, dQ_ref, rtol=1e-2, atol=1e-2)
+
+    def run():
+        O_ref.backward(dO, retain_graph=True)
+
+    def run1():
+        O.backward(dO, retain_graph=True)
+
+    from tvm.tl.utils import do_bench
+
+    latency = do_bench(run, warmup=500, rep=1000)
+    print("torch: {:.2f} ms".format(latency))
+    print("torch: {:.2f} TFlops".format(total_flops / latency * 1e-9))
+    latency = do_bench(run1, warmup=500, rep=1000)
+    print("tl: {:.2f} ms".format(latency))
+    print("tl: {:.2f} TFlops".format(total_flops / latency * 1e-9))
+

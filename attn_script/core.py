@@ -29,6 +29,8 @@ class SymbolScalar:
         # for lower
         self.lowered = False
         self.visit_count = 0
+
+        self.grad = None # SymbolicScalar
     
     @plus_count
     def op(self, code:Type[Node], others:list=[], shape_idx:list=None, varname_suffix:str=None):
@@ -50,6 +52,46 @@ class SymbolScalar:
         for other in others:
             other.use_list.append(output)
         return output
+
+    def backward(self, grad=None): # SymbolicScalar
+        if grad:
+            self.grad = grad
+        self._backward(self.grad)
+        for node in self.prev:
+            node.backward()
+
+    def _backward(self, grad): # symblocscalar
+        if self.code.type == "Var" or self.code.type == "Const":
+            return
+        if self.code.type == "Add":
+            grad_0 = grad
+            grad_1 = grad
+            if self.prev[0].grad:
+                grad_0 = grad_0 + self.prev[0].grad
+            if self.prev[1].grad:
+                grad_1 = grad_1 + self.prev[1].grad
+            self.prev[0].grad = grad_0
+            self.prev[1].grad = grad_1
+        elif self.code.type == "Mul":
+            grad0 = grad * self.prev[1]
+            grad1 = grad * self.prev[0]
+            if self.prev[0].grad:
+                grad0 = grad0 + self.prev[0].grad
+            if self.prev[1].grad:
+                grad1 = grad1 + self.prev[1].grad
+            self.prev[0].grad = grad0
+            self.prev[1].grad = grad1
+        elif self.code.type == "Div":
+            grad0 = grad / self.prev[1]
+            grad1 = - grad0 * self.prev[0] / self.prev[1]
+            if self.prev[0].grad:
+                grad0 = grad0 + self.prev[0].grad
+            if self.prev[1].grad:
+                grad1 = grad1 + self.prev[1].grad
+            self.prev[0].grad = grad0
+            self.prev[1].grad = grad1
+        else:
+            raise NotImplementedError(f"backward for {self.code.type} is not implemented")
 
     def clear_usecount(self):
         self.count = 0
@@ -159,7 +201,7 @@ class OnlineFunc:
     backward: backward algorithm
     """
     def __init__(self, online_rowscales:dict[str, SymbolScalar], final_rowscales:dict[str, SymbolScalar], 
-                 external_fwd_tensors:CustomIO, external_bwd_tensors:CustomIO):
+                 external_fwd_tensors:CustomIO): # , external_bwd_tensors:CustomIO):
         # TODO: external_tensors
         """
         define&init online_rowscales and final_rowscales
@@ -171,7 +213,8 @@ class OnlineFunc:
             "o_scale": None,
         }
         self.external_fwd_tensors = external_fwd_tensors
-        self.external_bwd_tensors = external_bwd_tensors
+        # self.external_bwd_tensors = external_bwd_tensors
+        self.doosum_rowscales = SymbolicArray("doosum", Var("doosum"), shape_idx=["block_M"])
         
     
     @staticmethod
@@ -211,7 +254,7 @@ class OnlineFunc:
         return scores
     
     @staticmethod
-    def backward(dp, scores, final_rowscales:dict[str, SymbolScalar], external_bwd_tensors, b, h, q_idx, kv_idx):
+    def backward(dp, scores, final_rowscales:dict[str, SymbolScalar], b, h, q_idx, kv_idx):
         """
         compute bwd scores: dscores = g_bwd(dp, scores)
         only support elementwise
