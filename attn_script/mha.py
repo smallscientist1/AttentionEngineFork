@@ -1,11 +1,11 @@
 from attn_engine import AttentionEngine
 import torch
 import math
-from core import OnlineFunc
-from core import CustomIO
-from core import create_block_mask
-from core import SymbolicArray, SymbolScalar, SymbolicTensor
-from core import Var
+from attn_engine import OnlineFunc
+from core.core import CustomIO
+from core.core import create_block_mask
+from core.core import SymbolicArray, SymbolScalar, SymbolicTensor
+from core.core import Var
 
 """
 Example of causal attention with online softmax
@@ -117,6 +117,10 @@ if __name__ == "__main__":
     o, final_scales = online.online_fwd_epilogue(SymbolScalar("o",Var("o")), online.online_rowscales, 1, 1, 1)
     scores2 = online.forward(SymbolicArray(), online.final_rowscales, 1, 1, 1, 1)
     dscores = online.backward(SymbolScalar("dp",Var("dp")), SymbolScalar("scores",Var("scores")), online.final_rowscales, online.doosum_rowscales, 1, 1, 1, 1)
+
+    # debug: lowered code
+    with open("generated_tl_code.py", "w") as f:
+        f.write(mod.tl_code)
 
     print(custom_fwd_inputs.input_tensors)
     softmax_scale = math.sqrt(D)

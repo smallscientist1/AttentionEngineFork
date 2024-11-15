@@ -1,8 +1,9 @@
-from core import OnlineFunc, SymbolScalar, SymbolicArray, CustomIO
-from graph import Var, Const
-from utils import IndentedCode
-from tl_gen import generate_tl_from_dag
-from attn_template import TlAttnTemplate
+# from ..attn_engine import OnlineFunc
+from .core import SymbolScalar, SymbolicArray, CustomIO
+from .graph import Var, Const
+from .utils import IndentedCode
+from .tl_gen import generate_tl_from_dag
+from .attn_template import TlAttnTemplate
 
 class lowerOnlineFuncOutput:
 
@@ -50,7 +51,7 @@ class lowerScoreModOutput:
         self.score_mod_bwd_inputs_list = score_mod_bwd_inputs_list
         self.score_mod_inputs_bwd_list = score_mod_inputs_bwd_list
 
-def lower_online_func(online_func: OnlineFunc):
+def lower_online_func(online_func): # OnlineFunc):
     online_fwd = online_func.online_fwd
     scores = SymbolicArray("scores", Var("scores"), shape_idx=["block_M", "block_N"])
     online_rowscales = online_func.online_rowscales

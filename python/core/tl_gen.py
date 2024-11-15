@@ -1,6 +1,6 @@
-from core import OnlineFunc, SymbolScalar, SymbolicArray, CustomIO
-from graph import Var, Const
-from utils import IndentedCode
+from .core import SymbolScalar, SymbolicArray, CustomIO
+from .graph import Var, Const
+from .utils import IndentedCode
 from typing import Tuple
 
 def to_tl_op(type:str, *args:SymbolScalar):
