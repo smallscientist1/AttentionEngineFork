@@ -21,21 +21,23 @@ User can define their own linear attention as follows:
 # k_1, ..., k_T = key[:,:,:T,:]
 # v_1, ..., v_T = value[:,:,:T,:]
 # decay_1, ..., decay_T = decay[:,:,:T,:]
-h_i = h_{i-1} * decay_mod(decay)_i + K_mod(K_i) @ V_mod(V_i)
+h_i = h_{i-1} * exp(decay_mod(decay)_i) + K_mod(K_i) @ V_mod(V_i)
 o_i = Q_mod(q_i) @ h_i
 ```
 
 ## mamba 2
 ```py
+# decay [batch,heads,T]
+# A [heads]
 def decay_mod(decay):
-    return exp(decay*dt)
+    return decay*A
 
 ```
 
 ## Simple GLA
 ```py
 def decay_mod (decay):
-    return exp(decay)
+    return decay
 def Q_mod(q):
     return q / sqrt(DK)
 ```
@@ -43,7 +45,7 @@ def Q_mod(q):
 ## retention
 ```py
 def decay_mod(decay):
-    return decay
+    return log(decay)
 def Q_mod(q):
     return q / sqrt(DK)
 
@@ -53,5 +55,5 @@ def Q_mod(q):
 ```py
 # decay: [B, H, T, DK]
 def decay_mod(decay):
-    return exp(decay)
+    return decay
 ```

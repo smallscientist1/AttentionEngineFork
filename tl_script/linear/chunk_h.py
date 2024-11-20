@@ -1,6 +1,14 @@
 import triton.language as triton_lang
 import triton
 
+# for ncu
+import sys
+import os
+os.environ["PYTHONPATH"] = "/home/aiscuser/cfy/tvm/python:/home/aiscuser/cfy/flash-linear-attention"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+sys.path.append("/home/aiscuser/cfy/tvm/python")
+sys.path.append("/home/aiscuser/cfy/flash-linear-attention")
+
 import tvm.tl.language as T
 from tvm import tl
 
@@ -9,6 +17,17 @@ from einops import rearrange, repeat
 import torch
 
 # g = 1: accuracy error! tl bug on A100: b_v_shared(cp.async,square), batch=2, NK=2, NV=2
+
+# tl 0.9 ms 9.54 TFlops triton 0.73 ms 11.8 tflops
+
+# tl 1.2 ms 28.7 tFLops block 64,64
+# tl 1.08 ms 31.8 tFLops block 64,32
+# stage 2: 1.12 ms 
+# 0.93ms 37 TFlops tma_store
+# 1.04ms ma pipeline
+# 0.71ms 48 TFlops tma load k
+# 0.64ms 54 TFLops swizzled layout
+# 0.64ms h swizzle
 
 LOG2E = 1.44269504
 
@@ -48,9 +67,9 @@ def print_debug(o, O_ref):
 def chunk_fwd_h_ref(
         k, v, g
 ):
-    BK = 64
+    # BK = 64
     BT = 64
-    BV = 64
+    # BV = 64
     B, H, T, D = k.shape
     DV = v.shape[-1]
     NT = T // BT
@@ -79,14 +98,14 @@ def chunk_fwd_h_triton(
 ):
     BT=64
     from fla.ops.common.chunk_h import chunk_fwd_h_fn
-    h,_ = chunk_fwd_h_fn(k, v, g.float(), None, None, BT, None, output_final_state=False, states_in_fp32=False)
+    h,_ = chunk_fwd_h_fn(k, v, g, None, None, BT, None, output_final_state=False, states_in_fp32=False)
     return h.float()
 
 def chunk_fwd_h(
         batch, head, seqlen, dim, dimv,
         BT, BK, BV
 ):
-    BT = 64
+    # BT = 64
     # BK = 64
     # BV = 64
     NT = seqlen // BT
@@ -100,31 +119,37 @@ def chunk_fwd_h(
     def main(
         k: T.Buffer((batch, head, seqlen, dim), dtype), # type: ignore
         v: T.Buffer((batch, head, seqlen, dimv), dtype), # type: ignore
-        g: T.Buffer((batch, head, seqlen), dtype), # type: ignore
+        g: T.Buffer((batch, head, seqlen), accum_dtype), # type: ignore
         h: T.Buffer((batch, head, NT*dim, dimv), accum_dtype), # type: ignore
     ):
         with T.Kernel(NK, NV, batch * head, threads=128) as (bx, by, bz):
 
             b_h = T.alloc_fragment((BK, BV), accum_dtype)
+            b_h_shared = T.alloc_shared((BK, BV), accum_dtype)
             b_k = T.alloc_fragment((BT, BK), dtype)
+            b_k_shared = T.alloc_shared((BT, BK), dtype)
             b_kt = T.alloc_fragment((BK, BT), dtype)
             b_v_shared = T.alloc_shared((BT, BV), dtype)
             b_v = T.alloc_fragment((BT, BV), dtype)
-            b_g = T.alloc_fragment((BT), dtype)
-            b_glast = T.alloc_fragment((1), dtype)
+            b_g = T.alloc_fragment((BT), accum_dtype)
+            b_glast = T.alloc_fragment((1), accum_dtype)
 
             bhead = bz % head
             bb = bz // head
             
-            # T.annotate_layout({
-            #     b_v_shared: tl.layout.make_swizzled_layout(b_v_shared),
-            # }
-            # )
+            T.annotate_layout({
+                # b_v_shared: tl.layout.make_swizzled_layout(b_v_shared),
+                b_k_shared: tl.layout.make_swizzled_layout(b_k_shared),
+                b_h_shared: tl.layout.make_swizzled_layout(b_h_shared),
+            }
+            )
             T.clear(b_h)
 
             for i_t in T.Pipelined(NT, num_stages=num_stages):
+                # T.copy(b_h, b_h_shared)
                 # T.copy(h[bb,bhead,(i_t*dim+bx*BK):(i_t*dim+(bx+1)*BK), by*BV:(by+1)*BV], b_h)
-                T.copy(k[bb,bhead,i_t*BT:(i_t+1)*BT,bx*BK:(bx+1)*BK], b_k)
+                # T.copy(k[bb,bhead,i_t*BT:(i_t+1)*BT,bx*BK:(bx+1)*BK], b_k)
+                T.copy(k[bb,bhead,i_t*BT:(i_t+1)*BT,bx*BK:(bx+1)*BK], b_k_shared)
                 T.copy(v[bb,bhead,i_t*BT:(i_t+1)*BT,by*BV:(by+1)*BV], b_v_shared)
                 # T.copy(v[bb,bhead,i_t*BT:(i_t+1)*BT,by*BV:(by+1)*BV], b_v)
                 # T.copy(b_v, b_v_shared)
@@ -132,7 +157,9 @@ def chunk_fwd_h(
                 # T.copy(g[bb,bhead,(i_t+1)*BT-1:(i_t+1)*BT], b_glast)
                 b_glast[0] = g[bb,bhead,(i_t+1)*BT-1]
 
-                T.copy(b_h, h[bb,bhead,i_t*dim+bx*BK:(i_t)*dim+(bx+1)*BK,by*BV:(by+1)*BV])
+                T.copy(b_h, b_h_shared)
+                T.copy(b_h_shared, h[bb,bhead,i_t*dim+bx*BK:(i_t)*dim+(bx+1)*BK,by*BV:(by+1)*BV])
+                # T.copy(b_h, h[bb,bhead,i_t*dim+bx*BK:(i_t)*dim+(bx+1)*BK,by*BV:(by+1)*BV])
 
                 # scalar_decay
                 # for i0 in T.Parallel(BT):
@@ -144,10 +171,12 @@ def chunk_fwd_h(
                 # for i0,i1 in T.Parallel(BT, BV):
                 #     b_v_shared[i0,i1] *= T.exp2((b_glast[0] - b_g[i0]) * 1.44269504)
 
+                T.copy(b_k_shared, b_k)
                 for i0, i1 in T.Parallel(BK, BT):
                     b_kt[i0, i1] = b_k[i1, i0]*T.exp2((b_glast[0] - b_g[i1]) * LOG2E)
 
                 T.gemm(b_kt, b_v_shared, b_h, transpose_B=False)
+                # T.copy(b_h, b_h_shared)
                 
                 # TODO
                 # T.copy(b_h, h[bb,bhead,i_t*dim+bx*BK:(i_t)*dim+(bx+1)*BK,by*BV:(by+1)*BV])
@@ -156,10 +185,11 @@ def chunk_fwd_h(
 
 if __name__ == "__main__":
     torch.manual_seed(0)
-    B, H, D, DV = 2, 16, 128, 64
+    B, H, D, DV = 4, 16, 128, 128
     TLen = 16384 # 512
-    BT, BK, BV = 64, 64, 64
+    BT, BK, BV = 64, 64, 32
     dtype = torch.bfloat16
+    accum_dtype = torch.float32
     device = "cuda"
 
     final_state = False
@@ -168,7 +198,7 @@ if __name__ == "__main__":
     q = torch.randn(B, H, TLen, D, dtype=dtype, device=device)
     k = torch.randn(B, H, TLen, D, dtype=dtype, device=device)
     v = torch.randn(B, H, TLen, DV, dtype=dtype, device=device)
-    g = 0.1*torch.rand(B, H, TLen, dtype=dtype, device=device)
+    g = 0.1*torch.rand(B, H, TLen, dtype=accum_dtype, device=device)
 
     mod = tl.cached(chunk_fwd_h, [3,], B, H, TLen, D, DV, BT, BK, BV)
     # h = torch.zeros(B, H, (TLen//BT)*D, DV, dtype=torch.float32)
