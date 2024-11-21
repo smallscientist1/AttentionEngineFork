@@ -50,12 +50,13 @@ def retnet(batch, heads, seq_len, dim_qk, dim_v, block_M, block_N):
             T.fill(r_wo_clamp, 0)
             T.fill(acc_o, 0)
             loop_range = T.ceildiv(seq_len, block_N)
-            for k in T.Pipelined(loop_range, 
-                                 num_stages=1, 
-                                 order=[-1,0,-1,1,-1,2], 
-                                 stage=[-1,0,-1,0,-1,0], 
-                                 group=[[0],[1,2],[3],[4,5,6,7,8,9,10,11,12,13,14],[15],[16]]
-                                ):
+            # for k in T.Pipelined(loop_range, 
+            #                      num_stages=1, 
+            #                      order=[-1,0,-1,1,-1,2], 
+            #                      stage=[-1,0,-1,0,-1,0], 
+            #                      group=[[0],[1,2],[3],[4,5,6,7,8,9,10,11,12,13,14],[15],[16]]
+            #                     ):
+            for k in T.Pipelined(loop_range, num_stages=1):
                 T.copy(K[bz, k * block_N : (k + 1) * block_N, by, :], K_shared)
                 T.clear(acc_s)
                 T.gemm(Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
@@ -91,9 +92,98 @@ def ref_program(Q, K, V, mask):
     o = torch.einsum('bhqk,bkhd->bqhd', qkm/r, V)
     return o.to(dtype=torch.float16)
 
+def ref_inference(Q, K, V, prev_kv, prev_scale, decay):
+    # Q : batch, seqlen, num_heads, head_dimqk
+    # K : batch, seqlen, num_heads, head_dimqk
+    # V : batch, seqlen, num_heads, head_dimv
+    # prev_kv : batch, num_heads, head_dimv, head_dimqk
+    # prev_scale : num_heads, 1, 1
+    # decay : num_heads, 1, 1
+    bsz = V.size(0)
+    seqlen = V.size(1)
+    num_heads = V.size(2)
+    head_dim = V.size(3)
+    assert seqlen == 1, "Only support seqlen == 1"
+
+    qr = Q.transpose(1, 2).contiguous() # batch, num_heads, 1, head_dimqk
+    kr = K.transpose(1, 2).contiguous() # batch, num_heads, 1, head_dimqk
+    v = V.transpose(1, 2).transpose(2, 3).contiguous() # batch, num_heads, head_dimv, 1
+
+    kv = kr * v # batch, num_heads, head_dimv, head_dimqk
+    scale = prev_scale * decay + 1 # num_heads, 1, 1
+    print("scale:", scale)
+    kv = prev_kv * (prev_scale.sqrt() * decay / scale.sqrt()).view(num_heads, 1, 1) + kv / scale.sqrt().view(num_heads, 1, 1)
+    print("prev_scale:", (prev_scale))
+    print("prev_scale.sqrt():", (prev_scale.sqrt() ))
+    print("decay:", (decay))
+    print("2222:", kv / scale.sqrt().view(num_heads, 1, 1))
+    output = torch.sum(qr * kv, dim=3)
+    return output
+
+
+def retnet_inference(batch, heads, dim_qk, dim_v, block_M):
+    qk_shape = [batch, 1, heads, dim_qk]
+    v_shape = [batch, 1, heads, dim_v]
+    dtype = "float16"
+    accum_dtype = "float"
+
+    @T.prim_func
+    def main(
+        Q: T.Buffer(qk_shape, dtype),
+        K: T.Buffer(qk_shape, dtype),
+        V: T.Buffer(v_shape, dtype),
+        prev_kv: T.Buffer([batch, heads, dim_v, dim_qk], dtype),
+        prev_scale: T.Buffer([heads], dtype),
+        decay: T.Buffer([heads], dtype),
+        Output: T.Buffer([batch, heads, dim_v], dtype),
+    ):
+        with T.Kernel(T.ceildiv(dim_v, block_M), heads, batch, threads=128) as (bx, by, bz):
+            Q_local = T.alloc_fragment([1, dim_qk], dtype)
+            K_local = T.alloc_fragment([dim_qk], dtype)
+            V_local = T.alloc_fragment([block_M], dtype)
+            kv_local = T.alloc_fragment([block_M, dim_qk], accum_dtype)
+            prev_kv_local = T.alloc_fragment([block_M, dim_qk], dtype)
+            prev_scale_local = T.alloc_fragment([1], dtype)
+            decay_local = T.alloc_fragment([1], accum_dtype)
+            # scale_local = T.alloc_fragment([1], accum_dtype)
+            qkv_local = T.alloc_fragment([block_M, dim_qk], accum_dtype)
+            o_local = T.alloc_fragment([block_M], accum_dtype)
+
+            T.annotate_layout(
+                {
+                    prev_scale_local: T.Layout(prev_scale_local.shape, lambda i : i),
+                    decay_local: T.Layout(decay_local.shape, lambda i : i),
+                    # scale_local: T.Layout(scale_local.shape, lambda i : i),
+                    kv_local: T.Fragment(kv_local.shape, lambda i, j: j // 8),
+                }
+            )
+
+            T.copy(Q[bz, 0, by, :], Q_local)
+            T.copy(K[bz, 0, by, :], K_local)
+            T.copy(V[bz, 0, by, bx * block_M : (bx + 1) * block_M], V_local)
+            T.copy(prev_kv[bz, by, bx * block_M : (bx + 1) * block_M, :], prev_kv_local)
+            prev_scale_local[0] = prev_scale[by]
+            decay_local[0] = decay[by]
+            for i, j in T.Parallel(block_M, dim_qk):
+                kv_local[i, j] = K_local[j] * V_local[i]
+
+            # scale_local = prev_scale_local[0] * decay_local[0] + 1
+            for i, j in T.Parallel(block_M, dim_qk):
+                kv_local[i, j] += kv_local[i, j]
+            for i, j in T.Parallel(block_M, dim_qk):
+                # kv_local[i, j] += prev_kv_local[i, j]
+                kv_local[i, j] += prev_kv_local[i, j] * T.sqrt(prev_scale[by]) * decay[by]
+            for i, j in T.Parallel(block_M, dim_qk):
+                kv_local[i, j] = kv_local[i, j] / T.sqrt(prev_scale[by] * decay[by] + 1)
+            for i, j in T.Parallel(block_M, dim_qk):
+                qkv_local[i, j] = Q_local[0, j] * kv_local[i, j]
+            T.reduce_sum(qkv_local, o_local, dim=1)
+            T.copy(o_local, Output[bz, by, bx * block_M : (bx + 1) * block_M])
+    return main
+
 def retnet_triton(Q, K, V, mask):
     import sys
-    sys.path.append("/home/msra/cy/tvm.tl/3rdparty/flash-linear-attention")
+    sys.path.append("/home/aiscuser/cy/tvm/3rdparty/flash-linear-attention")
     from fla.ops.retention.parallel import parallel_retention
     # Todo: mask
     out = parallel_retention(Q, K, V)
@@ -103,23 +193,24 @@ def retnet_triton(Q, K, V, mask):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch', type=int, default=1, help='Batch size')
-    parser.add_argument('--h', type=int, default=32, help='Number of heads')
+    parser.add_argument('--h', type=int, default=1, help='Number of heads')
     parser.add_argument('--n_ctx', type=int, default=4096, help='Context size')
     parser.add_argument('--dim_qk', type=int, default=256, help='Head dimension')
-    parser.add_argument('--dim_v', type=int, default=448, help='Head dimension')
+    parser.add_argument('--dim_v', type=int, default=256, help='Head dimension')
     args = parser.parse_args()
     BATCH, H, N_CTX, dim_qk, dim_v = args.batch, args.h, args.n_ctx, args.dim_qk, args.dim_v
     total_flops = 2.0 * BATCH * H * N_CTX * N_CTX * (dim_qk + dim_v)
     BLOCK_M = 64
     BLOCK_N = 64
-    program = retnet(BATCH, H, N_CTX, dim_qk, dim_v, BLOCK_M, BLOCK_N)
+    # program = retnet(BATCH, H, N_CTX, dim_qk, dim_v, BLOCK_M, BLOCK_N)
+    program = retnet_inference(BATCH, H, dim_qk, dim_v, BLOCK_M)
     mod, params = tl.lower(program)
-    mod = tl.Profiler(mod, params, [4], tl.TensorSupplyType.Normal)
-    mod.assert_allclose(ref_program, rtol=0.01, atol=0.01)
+    mod = tl.Profiler(mod, params, [6], tl.TensorSupplyType.Integer)
+    mod.assert_allclose(ref_inference, rtol=0.01, atol=0.01)
 
-    latency = mod.do_bench(ref_program, n_warmup=10, n_repeat=1)
-    print("torch: {:.2f} ms".format(latency))
-    print("torch: {:.2f} TFlops".format(total_flops / latency * 1e-9))
-    latency = mod.do_bench(mod, n_warmup=10, n_repeat=10, profiler="torch")
-    print("tl: {:.2f} ms".format(latency))
-    print("tl: {:.2f} TFlops".format(total_flops / latency * 1e-9))
+    # latency = mod.do_bench(ref_program, n_warmup=10, n_repeat=1)
+    # print("torch: {:.2f} ms".format(latency))
+    # print("torch: {:.2f} TFlops".format(total_flops / latency * 1e-9))
+    # latency = mod.do_bench(mod, n_warmup=10, n_repeat=10, profiler="torch")
+    # print("tl: {:.2f} ms".format(latency))
+    # print("tl: {:.2f} TFlops".format(total_flops / latency * 1e-9))
