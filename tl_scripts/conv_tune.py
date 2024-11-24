@@ -33,8 +33,8 @@ def convolution(N, C, H, W, INC, KW, KH, P, S, D):
     accum_dtype = "float"
 
     @autotune(configs=get_configs(), keys=['block_M', 'block_N', 'block_K', 'num_stages', 'thread_num'], warmup=10, rep=10)
-    @jit(out_idx=[2], supply_type=tl.TensorSupplyType.Integer, ref_prog=None)
-    def kernel(block_M = None, block_N = None, block_K = None, num_stages = None, thread_num = None):
+    @jit(out_idx=[2], supply_type=tl.TensorSupplyType.Integer, ref_prog=None, profiler="auto")
+    def kernel(block_M=None, block_N=None, block_K=None, num_stages=None, thread_num=None):
 
         @T.prim_func
         def main(
@@ -61,20 +61,7 @@ def convolution(N, C, H, W, INC, KW, KH, P, S, D):
                 })
                 T.clear(out_local)
                 for k_iter in T.Pipelined(T.ceildiv(KH * KW * INC, block_K), num_stages=num_stages):
-                    for i, j in T.Parallel(block_M, block_K):
-                        k = k_iter * block_K + j
-                        m = by * block_M + i
-                        access_h = m % (H * W) // W * S + k // (KW * INC) * D - P
-                        access_w = m % W * S + k // INC % KW * D - P
-                        in_bound = (
-                            (access_h >= 0)
-                            and (access_w >= 0)
-                            and (access_h < INH)
-                            and (access_w < INW)
-                        )
-                        data_shared[i, j] = T.if_then_else(
-                            in_bound, data[m // (H * W), access_h, access_w, k % INC], 0
-                        )
+                    T.c2d_im2col(data, data_shared, by, k_iter, KH, S, D, P)
                     T.copy(kernel_flat[k_iter * block_K, bx * block_N], kernel_shared)
                     T.gemm(data_shared, kernel_shared, out_local)
 
