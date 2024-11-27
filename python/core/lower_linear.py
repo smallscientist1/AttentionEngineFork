@@ -8,16 +8,20 @@ from dataclasses import dataclass
 
 @dataclass
 class lowerKmodOutput:
-    k_mod_expr: str
+    k_mod_expr: str = ""
     # custom_inputs_list: str = ""
 
 @dataclass
 class lowerDecaymodOutput:
-    decay_mod_expr: str
+    decay_mod_expr: str = ""
 
-def lowerKmod(k_mod) -> lowerKmodOutput:
+@dataclass
+class lowerQmodOutput:
+    q_mod_expr: str = ""
+
+def lowerKmod(k_mod, custom_io) -> lowerKmodOutput:
     k = SymbolicArray("k", Var("k"), shape_idx=["B", "H", "T", "D"])
-    new_k = k_mod(k)
+    new_k = k_mod(k, custom_io)
     pytorch_code, input_vars = generate_tl_from_dag([new_k], to_tl=False)
     k_mod_expr = str(pytorch_code)
 
@@ -25,23 +29,33 @@ def lowerKmod(k_mod) -> lowerKmodOutput:
     # custom_inputs_list += ","
     return lowerKmodOutput(k_mod_expr=k_mod_expr)# , custom_inputs_list=custom_inputs_list)
 
-def lowerDecaymod(decay_mod) -> lowerDecaymodOutput:
+def lowerDecaymod(decay_mod, custom_io) -> lowerDecaymodOutput:
     decay = SymbolicArray("decay", Var("decay"), shape_idx=["B", "H", "T"])
-    new_decay = decay_mod(decay)
+    new_decay = decay_mod(decay, custom_io)
     pytorch_code, input_vars = generate_tl_from_dag([new_decay], to_tl=False)
     decay_mod_expr = str(pytorch_code)
     return lowerDecaymodOutput(decay_mod_expr=decay_mod_expr)
 
+def lowerQmod(q_mod, custom_io) -> lowerQmodOutput:
+    bq = SymbolScalar("bq", Var("bq"), shape_idx=["BT", "BK"])
+    new_q = q_mod(bq, custom_io)
+    tl_code, input_vars = generate_tl_from_dag([new_q])
+    q_mod_expr = str(tl_code)
+    return lowerQmodOutput(q_mod_expr=q_mod_expr)
+
 def lower_tl(q_mod, k_mod, v_mod, decay_mod, custom_io):
     if k_mod:
-        lower_kmod_output = lowerKmod(k_mod)
+        lower_kmod_output = lowerKmod(k_mod, custom_io)
     if decay_mod:
-        lower_decaymod_output = lowerDecaymod(decay_mod)
+        lower_decaymod_output = lowerDecaymod(decay_mod, custom_io)
+    if q_mod:
+        lower_qmod_output = lowerQmod(q_mod, custom_io)
     custom_inputs_list = ", ".join([f"{varname}" for varname in custom_io.input_tensors.keys()])
-    custom_inputs_list += ","
+    custom_inputs_list += "," if custom_inputs_list else ""
     return TlLinearAttnTemplate(
-        **lower_kmod_output.__dict__,
-        **lower_decaymod_output.__dict__,
+        **(lower_kmod_output.__dict__ if k_mod else lowerKmodOutput().__dict__),
+        **(lower_decaymod_output.__dict__ if decay_mod else lowerDecaymodOutput().__dict__),
+        **(lower_qmod_output.__dict__ if q_mod else lowerQmodOutput().__dict__),
         custom_inputs_list=custom_inputs_list
     )()
 

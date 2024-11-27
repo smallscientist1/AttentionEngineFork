@@ -48,7 +48,7 @@ class OnlineIdentity(OnlineFunc):
    
 
 if __name__ == "__main__":
-    B, H ,S, D = 16,16,8192,64
+    B, H ,S, D = 16,8,8192,64
     custom_fwd_inputs = CustomIO({
         "softmax_bias": (1,),
     })

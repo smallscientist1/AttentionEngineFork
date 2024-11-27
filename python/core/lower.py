@@ -11,15 +11,29 @@ shape_idx_map = {
     "heads": "by",
     "seq_len": "bx*block_M:(bx+1)*block_M",
     "seq_len_kv": "k*block_N:(k+1)*block_N",
-    "1": ":"
+    "1": "0"
     # others: ":" -> ":"
 }
 shape_idx_onchip_map = {
-    "batch": "1",
-    "heads": "1",
+    "batch": "",
+    "heads": "",
     "seq_len": "block_M",
     "seq_len_kv": "block_N",
-    "1": "1"
+    "1": ""
+}
+shape_idx_map_bwd = {
+    "batch": "bz",
+    "heads": "by",
+    "seq_len": "k*block_N:(k+1)*block_N",
+    "seq_len_kv": "bx*block_M:(bx+1)*block_M",
+    "1": "0"
+}
+shape_idx_onchip_map_bwd = {
+    "batch": "",
+    "heads": "",
+    "seq_len": "block_N",
+    "seq_len_kv": "block_M",
+    "1": ""
 }
 
 RECURRENT_DIM = "block_N"
@@ -66,7 +80,8 @@ class lowerScoreModOutput:
         score_mod_fwd_inputs, 
         score_mod_fwd_body,
         score_mod_output_var,
-        score_mod_bwd_inputs_declare
+        score_mod_bwd_inputs_declare,
+        score_mod_bwd_inputs_declare_shared
     ):
         self.score_mod_inputs = score_mod_inputs
         self.score_mod_body = score_mod_body
@@ -79,6 +94,7 @@ class lowerScoreModOutput:
         self.score_mod_fwd_body = score_mod_fwd_body
         self.score_mod_output_var = score_mod_output_var
         self.score_mod_bwd_inputs_declare = score_mod_bwd_inputs_declare
+        self.score_mod_bwd_inputs_declare_shared = score_mod_bwd_inputs_declare_shared
 
 def lower_online_func(online_func): # OnlineFunc):
     online_fwd = online_func.online_fwd
@@ -250,6 +266,14 @@ def lower_score_mod(score_mod, custom_fwd_inputs):
 
     # backward, block_M : k, block_N : q
     qkT = SymbolScalar("qkT", Var("qkT"), shape_idx=["block_M", "block_N"])
+    # # modify shape idx for 
+    # for k,v in custom_fwd_inputs.input_tensors.items():
+    #     custom_fwd_inputs.input_tensors[k].clear_codegen()
+    #     # TODO: not so ad hoc
+    #     if v.shape_idx == ["block_M", "block_N"]:
+    #         custom_fwd_inputs.input_tensors[k].shape_idx = ["block_N", "block_M"]
+    #     elif v.shape_idx == ["block_M"]:
+    #         custom_fwd_inputs.input_tensors[k].shape_idx = ["1", "block_N"]
     scores_new = score_mod(qkT, custom_fwd_inputs, b, h, q_idx, kv_idx)
     # tl_code, input_vars_fwd = generate_tl_from_dag([scores_new])
     # score_mod_inputs_bwd_list = ", ".join([varname for varname, input_var in input_vars_fwd.items()])
@@ -272,8 +296,15 @@ def lower_score_mod(score_mod, custom_fwd_inputs):
         score_mod_bwd_inputs += f"{input_var.varname}: T.Buffer([{', '.join(input_var.shape_idx)}], accum_dtype), \n"
 
     score_mod_bwd_inputs_declare = ""
+    score_mod_bwd_inputs_declare_shared = ""
+    # TODO: dtype
+    dtype = "accum_dtype"
     for varname, input_var in input_vars.items():
-        score_mod_bwd_inputs_declare += f"{input_var.varname} = T.alloc_fragment([{', '.join(input_var.shape_idx)}], accum_dtype)\n"
+        if input_var.shape_idx == ["block_N", "block_M"]:
+            dtype = "dtype"
+            score_mod_bwd_inputs_declare_shared += f"{input_var.varname} = T.alloc_shared([{', '.join(input_var.shape_idx)}], {dtype})\n"
+        else:
+            score_mod_bwd_inputs_declare += f"{input_var.varname} = T.alloc_fragment([{', '.join(input_var.shape_idx)}], accum_dtype)\n"
 
     return lowerScoreModOutput(
         score_mod_inputs=score_mod_inputs,
@@ -286,31 +317,73 @@ def lower_score_mod(score_mod, custom_fwd_inputs):
         score_mod_fwd_inputs=score_mod_fwd_inputs,
         score_mod_fwd_body=score_mod_fwd_body,
         score_mod_output_var=score_mod_output_var,
-        score_mod_bwd_inputs_declare=score_mod_bwd_inputs_declare
+        score_mod_bwd_inputs_declare=score_mod_bwd_inputs_declare,
+        score_mod_bwd_inputs_declare_shared=score_mod_bwd_inputs_declare_shared
     )
 
 def lower_tl(score_mod, block_mask, online_func,
              custom_fwd_inputs, ):
+
+    custom_fwd_inputs_load_shared_bwd = ""
+    # for k,v in custom_fwd_inputs.input_tensors.items():
+    #     # modify shape
+    #     shape_idx_copy = [(shape_idx_map_bwd[shape] if shape in shape_idx_map_bwd.keys() else ":") for shape in v.shape_idx]
+    #     shape_idx_block = [(shape_idx_onchip_map_bwd[shape] if shape in shape_idx_onchip_map_bwd.keys() else shape) for shape in v.shape_idx]
+    #     # remove "" in list
+    #     shape_idx_block = [shape for shape in shape_idx_block if shape != ""] # TODO:bug[block_M] -> [1,block_M]
+    #     custom_input_dtype = "accum_dtype"
+    #     # load
+    #     # tl copy bug when "1"
+    #     if shape_idx_block == ["1"]:
+    #         pass
+    #         # custom_fwd_inputs_load_prolog += f"{k}[0] = g_{k}[{', '.join(shape_idx_copy)}]\n"
+    #     elif not (RECURRENT_DIM in shape_idx_block):
+    #         pass
+    #         # custom_fwd_inputs_load_prolog += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k})\n"
+    #     elif len(shape_idx_block) > 1 and shape_idx_block[1] != "1": # [block_N, block_M]
+    #         custom_input_dtype = "dtype"
+    #         custom_fwd_inputs_init += f"{k}_shared = T.alloc_shared([{', '.join(shape_idx_block)}], {custom_input_dtype})\n"
+    #         custom_fwd_inputs_load_shared_bwd += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k}_shared)\n"
+    #         custom_fwd_inputs_load_s2r += f"T.copy({k}_shared, {k})\n"
+    #     else:# [block_N, 1]
+    #         custom_fwd_inputs_load_shared_bwd += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k})\n"
+    #     # TODO: dtype of custom_fwd_inputs
+    #     custom_fwd_inputs_init += f"{k} = T.alloc_fragment([{', '.join(shape_idx_block)}], {custom_input_dtype})\n"
+    #     custom_fwd_inputs_str += f"g_{k}: T.Buffer([{', '.join(v.shape_idx)}], {custom_input_dtype}), \n"
+    #     custom_fwd_inputs.input_tensors[k].shape_idx = shape_idx_block
+
     custom_fwd_inputs_str = ""
-    for k,v in custom_fwd_inputs.input_tensors.items():
-        custom_fwd_inputs_str += f"g_{k}: T.Buffer([{', '.join(v.shape_idx)}], accum_dtype), \n"
+    # for k,v in custom_fwd_inputs.input_tensors.items():
+    #     custom_fwd_inputs_str += f"g_{k}: T.Buffer([{', '.join(v.shape_idx)}], accum_dtype), \n"
     custom_fwd_inputs_init = ""
     custom_fwd_inputs_load_prolog = ""
+    custom_fwd_inputs_load_shared = ""
+    custom_fwd_inputs_load_s2r = ""
     for k,v in custom_fwd_inputs.input_tensors.items():
         # modify shape
         shape_idx_copy = [(shape_idx_map[shape] if shape in shape_idx_map.keys() else ":") for shape in v.shape_idx]
         shape_idx_block = [(shape_idx_onchip_map[shape] if shape in shape_idx_onchip_map.keys() else shape) for shape in v.shape_idx]
-
+        # remove "" in list
+        shape_idx_block = [shape for shape in shape_idx_block if shape != ""] # TODO:bug[block_N] -> [1,block_N]
+        custom_input_dtype = "accum_dtype"
         # load
-        # tl bug when "1"
-        if shape_idx_block == ["1"]:
-            shape_idx_copy = [idx_copy if idx_copy != ":" else "0" for idx_copy in shape_idx_copy]
+        # tl copy bug when "1"
+        if shape_idx_block == []:
+            # shape_idx_copy = [idx_copy if idx_copy != ":" else "0" for idx_copy in shape_idx_copy]
+            shape_idx_block = ["1"]
             custom_fwd_inputs_load_prolog += f"{k}[0] = g_{k}[{', '.join(shape_idx_copy)}]\n"
         elif not (RECURRENT_DIM in shape_idx_block):
             custom_fwd_inputs_load_prolog += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k})\n"
-        # TODO: load_recurrent
-        custom_fwd_inputs_init += f"{k} = T.alloc_fragment([{', '.join(shape_idx_block)}], accum_dtype)\n"
-
+        elif len(shape_idx_block) > 1 and shape_idx_block[0] != "1":
+            custom_input_dtype = "dtype"
+            custom_fwd_inputs_init += f"{k}_shared = T.alloc_shared([{', '.join(shape_idx_block)}], {custom_input_dtype})\n"
+            custom_fwd_inputs_load_shared += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k}_shared)\n"
+            custom_fwd_inputs_load_s2r += f"T.copy({k}_shared, {k})\n"
+        else:
+            custom_fwd_inputs_load_shared += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k})\n"
+        # TODO: dtype of custom_fwd_inputs
+        custom_fwd_inputs_init += f"{k} = T.alloc_fragment([{', '.join(shape_idx_block)}], {custom_input_dtype})\n"
+        custom_fwd_inputs_str += f"g_{k}: T.Buffer([{', '.join(v.shape_idx)}], {custom_input_dtype}), \n"
         custom_fwd_inputs.input_tensors[k].shape_idx = shape_idx_block
 
     lower_score_mod_output = lower_score_mod(score_mod, custom_fwd_inputs)
@@ -318,11 +391,14 @@ def lower_tl(score_mod, block_mask, online_func,
     output_idx_list = [i for i in range(3+len(custom_fwd_inputs.input_tensors), 3+len(custom_fwd_inputs.input_tensors)+1+len(online_func.final_rowscales))]
     
     # TODO: custom_fwd_inputs grad
-    bwd_output_idx_list = [i for i in range(4+len(custom_fwd_inputs.input_tensors)+len(online_func.final_rowscales), 4+len(custom_fwd_inputs.input_tensors)+len(online_func.final_rowscales)+3)]
+    bwd_output_idx_list = [i for i in range(4+len(custom_fwd_inputs.input_tensors)+len(online_func.final_rowscales)+int(lower_online_func_output.isused_doosum), 4+len(custom_fwd_inputs.input_tensors)+len(online_func.final_rowscales)+int(lower_online_func_output.isused_doosum)+3)]
     return TlAttnTemplate(
         custom_fwd_inputs=custom_fwd_inputs_str,
         custom_fwd_inputs_init=custom_fwd_inputs_init,
         custom_fwd_inputs_load_prolog=custom_fwd_inputs_load_prolog,
+        custom_fwd_inputs_load_s2r=custom_fwd_inputs_load_s2r,
+        custom_fwd_inputs_load_shared=custom_fwd_inputs_load_shared,
+        custom_fwd_inputs_load_shared_bwd=custom_fwd_inputs_load_shared_bwd,
         **lower_online_func_output.__dict__,
         **lower_score_mod_output.__dict__,
         output_idx_list=str(output_idx_list),

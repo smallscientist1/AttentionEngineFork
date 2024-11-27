@@ -68,6 +68,10 @@ def to_tl_op(type:str, *args:SymbolScalar):
             code.add_line(
                 f"{args[0].varname}[{idx_str}] = T.tanh({args[1].varname}{idx_strs[1]})"
             )
+        elif type == "Abs":
+            code.add_line(
+                f"{args[0].varname}[{idx_str}] = T.abs({args[1].varname}{idx_strs[1]})"
+            )
         else: # TODO
             raise NotImplementedError(str(type))
         

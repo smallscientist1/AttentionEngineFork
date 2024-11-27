@@ -129,9 +129,9 @@ def do_bench_mamba(linear_attention, B, H, TLen, D, DV, BT):
     # compute dt_mamba(not fused !!)
     dt_mamba = F.softplus(dt_mamba + dt_bias_mamba)
 
-    print(dt_bias_mamba.max().item(), dt_bias_mamba.min().item())
-    print(dt_mamba.max().item(), dt_mamba.min().item())
-    print(A_mamba.max().item(), A_mamba.min().item())
+    # print(dt_bias_mamba.max().item(), dt_bias_mamba.min().item())
+    # print(dt_mamba.max().item(), dt_mamba.min().item())
+    # print(A_mamba.max().item(), A_mamba.min().item())
 
     out_ref = mamba_chunk_scan_combined(
         X_mamba, dt_mamba, A_mamba, B_mamba, C_mamba,
@@ -298,6 +298,84 @@ def test_mamba_simple_gla():
     latency = do_bench(run_ref, warmup=500,rep=1000)
     print("MAMBA2: {:.2f} ms".format(latency))
 
+
+def do_bench_simple_gla(linear_attention, B, H, TLen, D, DV, BT):
+    torch.cuda.manual_seed(0)
+    # torch.cuda.set_device(1)
+    # B, H, D, DV = 16, 8, 128, 128
+    # TLen = 16384 # 512
+    # BT= 64
+    dtype = torch.bfloat16
+    accum_dtype = torch.float32
+    device = "cuda"
+    require_grad = True
+
+    q = torch.randn(B, H, TLen, D, device=device, requires_grad=require_grad, dtype=dtype)
+    k = torch.randn(B, H, TLen, D, device=device, requires_grad=require_grad, dtype=dtype)
+    g = F.logsigmoid(torch.randn(B, H, TLen, device=device, dtype=accum_dtype)).clamp_min(-5).requires_grad_(require_grad)
+    v = torch.randn(B, H, TLen, DV, device=device, requires_grad=require_grad, dtype=dtype)
+
+    do = torch.randn(B, H, TLen, DV, device=device, dtype=dtype)
+
+    from tvm.tl.utils import do_bench
+    def run():
+        out = linear_attention(
+            q, k, v, g
+        )
+    from fla.ops.simple_gla import chunk_simple_gla
+    g1 = g.clone().bfloat16().requires_grad_(require_grad)
+    def run_ref():
+        out,_ = chunk_simple_gla(
+            q, k, v, g1, scale=None, output_final_state=False
+        )
+    
+    do_bench(run)
+    do_bench(run_ref)
+
+    latency = do_bench(run, warmup=500,rep=1000)
+    print("tl: {:.2f} ms".format(latency))
+    latency = do_bench(run_ref, warmup=500,rep=1000)
+    print("simple gla: {:.2f} ms".format(latency))
+
+def do_bench_retention_linear(linear_attention, B, H, TLen, D, DV):
+    torch.cuda.manual_seed(0)
+    # torch.cuda.set_device(1)
+    # B, H, D, DV = 16, 8, 128, 128
+    # TLen = 16384 # 512
+    # BT= 64
+    dtype = torch.bfloat16
+    accum_dtype = torch.float32
+    device = "cuda"
+    require_grad = True
+
+    q = torch.randn(B, H, TLen, D, device=device, requires_grad=require_grad, dtype=dtype)
+    k = torch.randn(B, H, TLen, D, device=device, requires_grad=require_grad, dtype=dtype)
+    g = (1 - torch.exp(torch.linspace(math.log(1/32), math.log(1/512), H, dtype=accum_dtype))).detach()
+    g = g[None, :, None].expand(B, H, TLen).cuda()
+    v = torch.randn(B, H, TLen, DV, device=device, requires_grad=require_grad, dtype=dtype)
+
+    do = torch.randn(B, H, TLen, DV, device=device, dtype=dtype)
+
+    from tvm.tl.utils import do_bench
+    def run():
+        out = linear_attention(
+            q, k, v, g
+        )
+    from fla.ops.retention import chunk_retention
+    def run_ref():
+        out,_ = chunk_retention(
+            q, k, v, scale=None, output_final_state=False
+        )
+    
+    do_bench(run)
+    do_bench(run_ref)
+
+    latency = do_bench(run, warmup=500,rep=1000)
+    print("tl: {:.2f} ms".format(latency))
+    latency = do_bench(run_ref, warmup=500,rep=1000)
+    print("retention: {:.2f} ms".format(latency))
+
+
 def do_bench_sigmoidattn(attn, B, H, S, D, DV):
     tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
     tflops = tflops * 0.5
@@ -344,4 +422,100 @@ def do_bench_sigmoidattn(attn, B, H, S, D, DV):
     latency = do_bench(run_bacward, warmup=500,rep=1000)
     print("tl bwd: {:.2f} ms".format(latency))
     print("tflops: {:.2f}".format(bwd_tflops/latency*1e-9))
+
+def do_bench_retention(attn, B, H, S, D, DV):
+    tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
+    tflops = tflops * 0.5
+    bwd_tflops = 4 * B * H * S * S * DV + 6 * B * H * S * S * D
+    bwd_tflops = bwd_tflops * 0.5
+    torch.cuda.manual_seed(0)
+    dtype = torch.float16
+    device = "cuda"
+    accum_dtype = torch.float32
+    query = torch.randn(
+        B, S, H, D, device=device, dtype=dtype, requires_grad=True
+    )
+    key = torch.randn(
+        B, S, H, D, device=device, dtype=dtype, requires_grad=True
+    )
+    value = torch.randn(
+        B, S, H, DV, device=device, dtype=dtype, requires_grad=True
+    )
+    do = torch.randn(
+        B, S, H, DV, device=device, dtype=dtype, requires_grad=True
+    )
+    mask = torch.randn(
+        1, H, S, S, device="cuda", dtype=torch.float16, requires_grad=False
+    ).tril().contiguous()
+
+    o = attn(query, key, value, mask)
+    # print(o)
+    # o.backward(do, retain_graph=True)
+    # print(query.grad)
+    # print(key.grad)
+    # print(value.grad)
+
+    from tvm.tl.utils import do_bench
+    def run():
+        o = attn(query, key, value, mask)
+    # def run_bacward():
+    #     o.backward(do, retain_graph=True)
+    
+    do_bench(run)
+    # do_bench(run_bacward)
+
+    latency = do_bench(run, warmup=500,rep=1000)
+    print("tl: {:.2f} ms".format(latency))
+    print("tflops: {:.2f}".format(tflops/latency*1e-9))
+
+    # latency = do_bench(run_bacward, warmup=500,rep=1000)
+    # print("tl bwd: {:.2f} ms".format(latency))
+    # print("tflops: {:.2f}".format(bwd_tflops/latency*1e-9))
+
+def do_bench_attention(attn, B, H, S, D, DV):
+    tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
+    tflops = tflops * 0.5
+    bwd_tflops = 4 * B * H * S * S * DV + 6 * B * H * S * S * D
+    bwd_tflops = bwd_tflops * 0.5
+    torch.cuda.manual_seed(0)
+    dtype = torch.float16
+    device = "cuda"
+    accum_dtype = torch.float32
+    query = torch.randn(
+        B, S, H, D, device=device, dtype=dtype, requires_grad=True
+    )
+    key = torch.randn(
+        B, S, H, D, device=device, dtype=dtype, requires_grad=True
+    )
+    value = torch.randn(
+        B, S, H, DV, device=device, dtype=dtype, requires_grad=True
+    )
+    do = torch.randn(
+        B, S, H, DV, device=device, dtype=dtype, requires_grad=True
+    )
+
+    o = attn(query, key, value)
+    # print(o)
+    o.backward(do, retain_graph=True)
+    # print(query.grad)
+    # print(key.grad)
+    # print(value.grad)
+
+    from tvm.tl.utils import do_bench
+    def run():
+        o = attn(query, key, value)
+    def run_bacward():
+        o.backward(do, retain_graph=True)
+    
+    do_bench(run)
+    do_bench(run_bacward)
+
+    latency = do_bench(run, warmup=500,rep=1000)
+    print("tl: {:.2f} ms".format(latency))
+    print("tflops: {:.2f}".format(tflops/latency*1e-9))
+
+    latency = do_bench(run_bacward, warmup=500,rep=1000)
+    print("tl bwd: {:.2f} ms".format(latency))
+    print("tflops: {:.2f}".format(bwd_tflops/latency*1e-9))
+
 

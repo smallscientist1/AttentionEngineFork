@@ -11,28 +11,13 @@ from core.core import Var
 Example of causal attention with online softmax
 """
 
-B, H ,S, D = 16,16,8192,128
-query = torch.randn(
-        B, H, S, D, device="cuda", dtype=torch.float16, requires_grad=True
-    )
-key = torch.randn(
-        B, H, S, D, device="cuda", dtype=torch.float16, requires_grad=True
-    )
-value = torch.randn(
-        B, H, S, D, device="cuda", dtype=torch.float16, requires_grad=True
-    )
-
-do = torch.randn(
-        B, H, S, D, device="cuda", dtype=torch.float16, requires_grad=True
-    )
 
 
 # mask on attention score
 def causal_mask(b, h, q_idx, kv_idx):
     return q_idx >= kv_idx
 
-block_mask = create_block_mask(causal_mask, 1, 1, S, S, device="cuda")
-
+D = 64
 softmax_scale = D ** 0.5
 # elementwise on attention scores
 def score_mod(score, custom_fwd_inputs, b, h, q_idx, kv_idx):
@@ -99,31 +84,36 @@ class OnlineSoftmax(OnlineFunc):
         return dscores
 
 if __name__ == "__main__":
+    B, H ,S, D = 16,8,8192,D
+    query = torch.randn(
+        B, H, S, D, device="cuda", dtype=torch.float16, requires_grad=True
+    )
+    key = torch.randn(
+        B, H, S, D, device="cuda", dtype=torch.float16, requires_grad=True
+    )
+    value = torch.randn(
+        B, H, S, D, device="cuda", dtype=torch.float16, requires_grad=True
+    )
+
+    do = torch.randn(
+        B, H, S, D, device="cuda", dtype=torch.float16, requires_grad=True
+    )
+
     custom_fwd_inputs = CustomIO({
         # "softmax_scale": (1,),
     })
 
     online = OnlineSoftmax()
+    block_mask = create_block_mask(causal_mask, 1, 1, S, S, device="cuda")
+
     mod = AttentionEngine(
         custom_fwd_inputs, score_mod=score_mod, block_mask=block_mask,
         online_func=online,
     )
-    # check
-    score_mod(SymbolScalar("score",Var("score")), custom_fwd_inputs, 1, 1, 1, 1) # TODO: check bwd
-    scores,online_rowscales,o_scale = online.online_fwd(SymbolicArray(), online.online_rowscales, 1, 1, 1)  
-    o, final_scales = online.online_fwd_epilogue(SymbolScalar("o",Var("o")), online.online_rowscales, 1, 1, 1)
-    scores2 = online.forward(SymbolicArray(), online.final_rowscales, 1, 1, 1, 1)
-    dscores = online.backward(SymbolScalar("dp",Var("dp")), SymbolScalar("scores",Var("scores")), online.final_rowscales, online.doosum_rowscales, 1, 1, 1, 1)
 
     # debug: lowered code
     with open("generated_tl_code.py", "w") as f:
         f.write(mod.tl_code)
 
-    print(custom_fwd_inputs.input_tensors)
-    softmax_scale = math.sqrt(D)
-    o = mod(query, key, value)# , softmax_scale=softmax_scale)
-    print(o.shape)
-    # print(custom_bwd_inputs.input_tensors)
-    dppsum = torch.sum(do * o, dim=-1)
-    # mod.backward(do, dppsum=dppsum)
-    o.backward(do)
+    from benchmark.bench_utils import do_bench_attention
+    do_bench_attention(mod, B, H, S, D, D)

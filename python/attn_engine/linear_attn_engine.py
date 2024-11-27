@@ -23,6 +23,7 @@ class LinearAttentionEngine:
             with open(file_path, "w") as f:
                 f.write(tl_code)
                 f.flush()
+        # file_path = "/home/aiscuser/cfy/AttentionEngine/attn_script/retention_linear_tlcode1.py"
         spec = importlib.util.spec_from_file_location("tl_attn", file_path)
         tl_attn = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(tl_attn)

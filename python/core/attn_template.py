@@ -20,6 +20,8 @@ def kernel(batch, heads, seq_len, dim, dimv,
     # scale = (1.0 / dim) ** 0.5 * 1.44269504  # log2(e) # 0.69314718  loge(2)
     shape = [batch, seq_len, heads, dim]
     shape_v = [batch, seq_len, heads, dimv]
+    # TODO: seqlenkv
+    seq_len_kv = seq_len
     dtype = "float16"
     accum_dtype = "float"
     
@@ -82,7 +84,7 @@ TL_MAIN = """
                 T.copy(K[bz, k * block_N : (k + 1) * block_N, by, :], K_shared)
 
                 # TODO: copy custom_fwd_input_tensor in score_mod&online_func
-                # ...
+                {{custom_fwd_inputs_load_shared | indent(16)}}
 
                 # TODO: naive solution: if reduce_max, -T.inf; if reduce_sum, 0
                 if is_casual and {{is_inf_mask}}:
@@ -96,6 +98,7 @@ TL_MAIN = """
                 T.gemm(Q_shared, K_shared, scores, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                 T.copy(V[bz, k * block_N : (k + 1) * block_N, by, :], V_shared)
                     
+                {{custom_fwd_inputs_load_s2r | indent(16)}}
                 # call score_mod
                 score_mod({{score_mod_inputs_list}}) # scores
                     
@@ -163,6 +166,8 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual,
     scale = (1.0 / dim) ** 0.5 * 1.44269504  # log2(e)
     shape = [batch, seq_len, heads, dim]
     shape_v = [batch, seq_len, heads, dimv]
+    # TODO: seqlenkv
+    seq_len_kv = seq_len
     dtype = "float16"
     accum_dtype = "float"
 """
@@ -189,14 +194,14 @@ TL_MAIN_BWD = """
         V: T.Buffer(shape, dtype), # type: ignore
         dO: T.Buffer(shape, dtype), # type: ignore
 
+        # custom_fwd_inputs score_mod
+        {{custom_fwd_inputs | indent(8)}}
+
         # final_rowscales
         {{final_rowscales_output | indent(8)}}
 
         # custom_bwd_inputs
         {{custom_bwd_inputs | indent(8)}}
-
-        # custom_fwd_inputs score_mod
-        {{custom_fwd_inputs | indent(8)}}
 
         dQ: T.Buffer(shape, accum_dtype), # type: ignore
         dK: T.Buffer(shape, dtype), # type: ignore
@@ -224,7 +229,9 @@ TL_MAIN_BWD = """
 
             # score_mod_declare
             {{score_mod_bwd_inputs_declare | indent(12)}}
-
+            # score_mod_declare_shared
+            {{score_mod_bwd_inputs_declare_shared | indent(12)}}
+            
             do = T.alloc_shared([block_N, dimv], dtype)
             dv = T.alloc_fragment([block_M, dimv], accum_dtype)
             dk = T.alloc_fragment([block_M, dim], accum_dtype)
@@ -250,6 +257,7 @@ TL_MAIN_BWD = """
 
             for k in T.Pipelined(loop_st, loop_ed, num_stages=1):
                 T.copy(Q[bz, k * block_N : (k + 1) * block_N, bx, :], q)
+                {{custom_fwd_inputs_load_shared_bwd | indent(16)}}
                 T.clear(qkT)
                 T.gemm(K_local, q, qkT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                 

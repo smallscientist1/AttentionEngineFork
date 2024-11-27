@@ -186,6 +186,7 @@ def chunk_o(
                 
                 T.copy(bq_shared, bq)
                 # q_mod here (fused)
+                {{q_mod_expr | indent(16)}}
 
                 T.gemm(bq, bk_shared, bs, transpose_B=True)
                 T.gemm(bq, b_state_shared, bo, transpose_B=False)
