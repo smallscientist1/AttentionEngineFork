@@ -80,9 +80,9 @@ def convolution_transpose_fast(N, C, H, W, F, K, S, D, P):
     def main(
         data: T.Buffer((N, H, W, C), dtype),
         kernel: T.Buffer((C, KH, KW, F), dtype),
-        # out: T.Buffer((N, OH, OW, F), dtype),
+        out: T.Buffer((N, OH, OW, F), dtype),
         # TODO: modify output layout to nhwc
-        out: T.Buffer((N, H, W, 2, 2, F), dtype),
+        # out: T.Buffer((N, H, W, 2, 2, F), dtype),
     ):
         with T.Kernel(T.ceildiv(KH * KW * F, block_N), T.ceildiv(N * H * W, block_M), threads=128 * 2) as (
             bx,
@@ -94,7 +94,7 @@ def convolution_transpose_fast(N, C, H, W, F, K, S, D, P):
 
             data_flat = T.Buffer((N * H * W, C), dtype, data.data)
             kernel_flat = T.Buffer((C, KH * KW * F), dtype, kernel.data)
-            out_flat = T.Buffer((N * H * W, KH * KW * F), dtype, out.data)
+            out_flat = T.Buffer((N, H, KH, W, KW, F), dtype, out.data)
 
             T.annotate_layout({
                 data_shared: tl.layout.make_swizzled_layout(data_shared),
@@ -106,7 +106,17 @@ def convolution_transpose_fast(N, C, H, W, F, K, S, D, P):
                 T.copy(data_flat[by * block_M, k_iter * block_K], data_shared)
                 T.copy(kernel_flat[k_iter * block_K, bx * block_N], kernel_shared)
                 T.gemm(data_shared, kernel_shared, out_local)
-            T.copy(out_local, out_flat[by * block_M, bx * block_N])
+            for i, j in T.Parallel(block_M, block_N):
+                mid = by * block_M + i
+                nid = bx * block_N + j
+                w = mid % W
+                h = mid // W % H
+                n = mid // (H * W)
+                f = nid % F
+                kw = nid // F % KW
+                kh = nid // (F * KW)
+                out_flat[n, h, kh, w, kw, f] = out_local[i, j]
+            # T.copy(out_local, out_flat[by * block_M, bx * block_N])
     return main
 
 def ref_program(A, B, stride, padding, dilation):
@@ -114,9 +124,9 @@ def ref_program(A, B, stride, padding, dilation):
     B = B.permute(0, 3, 1, 2)  # C, KH, KW, F -> C, F, KH, KW
     C = torch.nn.functional.conv_transpose2d(A, B, stride=stride, padding=padding, dilation=dilation)
     C = C.permute(0, 2, 3, 1)  # N, F, OH, OW -> N, OH, OW, F
-    N, OH, OW, F = C.shape
-    C = C.view(N, OH // 2, 2, OW // 2, 2, F)
-    C = C.permute(0, 1, 3, 2, 4, 5)
+    # N, OH, OW, F = C.shape
+    # C = C.view(N, OH // 2, 2, OW // 2, 2, F)
+    # C = C.permute(0, 1, 3, 2, 4, 5)
     return C
 
 
