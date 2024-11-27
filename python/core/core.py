@@ -14,15 +14,24 @@ def plus_count(func):
         for arg in args:
             if isinstance(arg, SymbolScalar):
                 arg.count += 1
+            # else:
+            #     print(arg)
+        for key, arg in kwargs.items():
+            if isinstance(arg, SymbolScalar):
+                arg.count += 1
+            # else:
+            #     print(arg)
         return func(self, *args, **kwargs)
     return wrapper
 
 class SymbolScalar:
-    def __init__(self, varname:str, value:Node, prev=[], shape_idx:list=["block_M"]):
+    def __init__(self, varname:str, value:Node, prev=[], shape_idx:list=["block_M"],
+                 require_grad:bool=True):
         self.varname = varname
         self.code = value
         self.prev = prev
         self.shape_idx = shape_idx
+        self.require_grad = require_grad
 
         self.count = 0
         self.use_list = []
@@ -32,7 +41,7 @@ class SymbolScalar:
 
         self.grad = None # SymbolicScalar
     
-    @plus_count
+    # @plus_count # TODO: plus count bug
     def op(self, code:Type[Node], others:list=[], shape_idx:list=None, varname_suffix:str=None):
         for i, other in enumerate(others):
             # if other is python scalar
@@ -47,10 +56,21 @@ class SymbolScalar:
             output_varname = f"{output_varname}_{varname_suffix}"
 
         code = code(*[x.code for x in [self]+others])
+        # TODO: now must be var+1 not 1+var
         output = self.__class__(f"{output_varname}_{self.count}", code, [self]+others, shape_idx)
         self.use_list.append(output)
+        self.count += 1
+        # print(self.count)
+        # print(len(self.use_list))
+        # if self.count != len(self.use_list):
+        #     print(self,self.varname)
         for other in others:
             other.use_list.append(output)
+            other.count += 1
+            # print(other.count)
+            # print(len(other.use_list))
+            # if other.count != len(other.use_list):
+            #     print(other,other.varname)
         return output
 
     def backward(self, grad=None): # SymbolicScalar
@@ -66,30 +86,48 @@ class SymbolScalar:
         if self.code.type == "Add":
             grad_0 = grad
             grad_1 = grad
-            if self.prev[0].grad:
-                grad_0 = grad_0 + self.prev[0].grad
-            if self.prev[1].grad:
-                grad_1 = grad_1 + self.prev[1].grad
-            self.prev[0].grad = grad_0
-            self.prev[1].grad = grad_1
+            if self.prev[0].require_grad:
+                if self.prev[0].grad:
+                    grad_0 = grad_0 + self.prev[0].grad
+                self.prev[0].grad = grad_0
+            if self.prev[1].require_grad:
+                if self.prev[1].grad:
+                    grad_1 = grad_1 + self.prev[1].grad
+                self.prev[1].grad = grad_1
         elif self.code.type == "Mul":
-            grad0 = grad * self.prev[1]
-            grad1 = grad * self.prev[0]
-            if self.prev[0].grad:
-                grad0 = grad0 + self.prev[0].grad
-            if self.prev[1].grad:
-                grad1 = grad1 + self.prev[1].grad
-            self.prev[0].grad = grad0
-            self.prev[1].grad = grad1
+            if self.prev[0].require_grad:
+                grad0 = grad * self.prev[1]
+                if self.prev[0].grad:
+                    grad0 = grad0 + self.prev[0].grad
+                self.prev[0].grad = grad0
+            if self.prev[1].require_grad:
+                grad1 = grad * self.prev[0]
+                if self.prev[1].grad:
+                    grad1 = grad1 + self.prev[1].grad
+                self.prev[1].grad = grad1
+
         elif self.code.type == "Div":
-            grad0 = grad / self.prev[1]
-            grad1 = - grad0 * self.prev[0] / self.prev[1]
-            if self.prev[0].grad:
-                grad0 = grad0 + self.prev[0].grad
-            if self.prev[1].grad:
-                grad1 = grad1 + self.prev[1].grad
-            self.prev[0].grad = grad0
-            self.prev[1].grad = grad1
+            if self.prev[1].require_grad or self.prev[0].require_grad:
+                grad0 = grad / self.prev[1]
+                if self.prev[0].require_grad:
+                    if self.prev[0].grad:
+                        grad0 = grad0 + self.prev[0].grad
+                    self.prev[0].grad = grad0
+                if self.prev[1].require_grad:
+                    grad1 = - grad0 * self.prev[0] / self.prev[1]
+                    if self.prev[1].grad:
+                        grad1 = grad1 + self.prev[1].grad
+                    self.prev[1].grad = grad1
+
+        elif self.code.type == "Tanh":
+            if self.prev[0].require_grad:
+                # grad_t = self * grad
+                # grad_t = self * grad_t
+                # grad0 = grad - grad_t
+                grad0 = grad  - grad * self * self
+                if self.prev[0].grad:
+                    grad0 = grad0 + self.prev[0].grad
+                self.prev[0].grad = grad0
         else:
             raise NotImplementedError(f"backward for {self.code.type} is not implemented")
 
@@ -120,6 +158,9 @@ class SymbolScalar:
 
     def abs(self):
         return self.op(Abs)
+    
+    def tanh(self):
+        return self.op(Tanh)
 
     def exp(self):
         return self.op(Exp)
@@ -163,7 +204,8 @@ class SymbolicConst(SymbolScalar):
     Const for constant value
     """
     def __init__(self, value):
-        super().__init__(str(value), Const(value), prev=[], shape_idx=[])
+        super().__init__(str(value), Const(value), prev=[], shape_idx=[],
+                         require_grad=False)
 
         
 class CustomIO:

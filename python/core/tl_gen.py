@@ -13,7 +13,7 @@ def to_tl_op(type:str, *args:SymbolScalar):
         code.add_line(
             f"T.reduce_max({args[1].varname}, {args[0].varname},dim=1, clear=True)"
         )
-    elif type == "Sub" or type == "Add" or type == "Mul" or type == "Div" or type == "Neg" or type == "Exp" or type == "Log" or type == "Abs" or type == "Max":
+    elif type == "Sub" or type == "Add" or type == "Mul" or type == "Div" or type == "Neg" or type == "Exp" or type == "Log" or type == "Abs" or type == "Max" or type == "Tanh":
         # args idx
         # note: assume input shape is validate: ["1",...] or [arg0[0], ...]
         idx_strs = []
@@ -64,6 +64,10 @@ def to_tl_op(type:str, *args:SymbolScalar):
             code.add_line(
                 f"{args[0].varname}[{idx_str}] = T.log2({args[1].varname}{idx_strs[1]}) * 0.69314718"
             )
+        elif type == "Tanh":
+            code.add_line(
+                f"{args[0].varname}[{idx_str}] = T.tanh({args[1].varname}{idx_strs[1]})"
+            )
         else: # TODO
             raise NotImplementedError(str(type))
         
@@ -72,7 +76,63 @@ def to_tl_op(type:str, *args:SymbolScalar):
         raise NotImplementedError
     return code
 
-def generate_tl_from_dag(x_list:list[SymbolScalar]) -> Tuple[IndentedCode, dict]:
+def to_pytorch_op(type:str, *args:SymbolScalar):
+    code = IndentedCode()
+    if type == "ReduceSum":
+        code.add_line(
+            f"{args[0].varname} = torch.sum({args[1].varname}, dim=-1)"
+        )
+    elif type == "ReduceMax":
+        code.add_line(
+            f"{args[0].varname} = torch.max({args[1].varname}, dim=-1)"
+        )
+    elif type == "Sub" or type == "Add" or type == "Mul" or type == "Div" or type == "Neg" or type == "Exp" or type == "Log" or type == "Abs" or type == "Max":
+        # args idx
+        # assume outputn dim max
+        output_idx = args[0].shape_idx
+        argnames = [arg.varname for arg in args]
+
+        for i, arg in enumerate(args):
+            assert len(arg.shape_idx) <= len(output_idx)
+            if len(arg.shape_idx) < len(output_idx):
+                # a -> a[...,None]
+                argnames[i] = f"{arg.varname}[..." + ",None"*(len(output_idx)-len(arg.shape_idx)) + "]"
+
+        if type == "Sub":
+            code.add_line(
+                f"{argnames[0]} = {argnames[1]} - {argnames[2]}"
+            )
+        elif type == "Add":
+            code.add_line(
+                f"{argnames[0]} = {argnames[1]} + {argnames[2]}"
+            )
+        elif type == "Max":
+            code.add_line(
+                f"{argnames[0]} = torch.maximum({argnames[1]}, {argnames[2]})"
+            )
+        elif type == "Exp":
+            code.add_line(
+                f"{argnames[0]} = torch.exp({argnames[1]})"
+            )
+        elif type == "Mul":
+            code.add_line(
+                f"{argnames[0]} = {argnames[1]} * {argnames[2]}"
+            )
+        elif type == "Div":
+            code.add_line(
+                f"{argnames[0]} = {argnames[1]} / {argnames[2]}"
+            )
+        elif type == "Log":
+            code.add_line(
+                f"{argnames[0]} = torch.log({argnames[1]})"
+            )
+        else: # TODO
+            raise NotImplementedError(str(type))
+    else:
+        raise NotImplementedError
+    return code
+
+def generate_tl_from_dag(x_list:list[SymbolScalar], to_tl:bool=True) -> Tuple[IndentedCode, dict]:
     # global var
     input_vars = {}
     def generate_tl(x:SymbolScalar, varname:str=None):
@@ -89,12 +149,23 @@ def generate_tl_from_dag(x_list:list[SymbolScalar]) -> Tuple[IndentedCode, dict]
         # for i, input_item in enumerate(x.code.inputs):
         #     tl_code += generate_tl(SymbolScalar(f"{x.varname}_i{i}", input_item))
         for i, input_item in enumerate(x.prev):
-            input_item.visit_count += 1
             tl_code += generate_tl(input_item)
+            # if input_item.varname == "dsT_0":
+            #     print("dsT_0::",input_item.varname)
+            #     print("x:", x.varname)
+            #     print(input_item.visit_count)
+        # all previous node be generated before visit_count+1
+        for i, input_item in enumerate(x.prev):
+            input_item.visit_count += 1
 
         if varname is not None: # overwrite varname
             x.varname = varname
         # optimize tl performance by inplace operation
+        # print(x.varname)
+        # print([x.varname for x in x.prev])
+        # print("count:",[x.count for x in x.prev])
+        # print("visit:",[x.visit_count for x in x.prev])
+        # print("use_list:",[[usea.varname for usea in x.use_list] for x in x.prev])
         for i, input_item in enumerate(x.prev):
             if input_item.shape_idx == x.shape_idx:
                 if input_item.count == 1 or input_item.visit_count == input_item.count:
@@ -104,9 +175,13 @@ def generate_tl_from_dag(x_list:list[SymbolScalar]) -> Tuple[IndentedCode, dict]
         if x.varname not in input_vars.keys():
             input_vars[x.varname] = x
         # tl_code += to_tl_op(x.code.type, x, *[SymbolScalar(f"{x.varname}_i{i}", input_item) for i, input_item in enumerate(x.code.inputs)])
-        tl_code += to_tl_op(x.code.type, x, *x.prev)
+        if to_tl:
+            tl_code += to_tl_op(x.code.type, x, *x.prev)
+        else:
+            tl_code += to_pytorch_op(x.code.type, x, *x.prev)
         x.lowered = True
         return tl_code
+    
     tl_code = IndentedCode()
     for x in x_list:
         tl_code += generate_tl(x)

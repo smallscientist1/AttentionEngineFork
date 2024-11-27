@@ -5,13 +5,33 @@ from .utils import IndentedCode
 from .tl_gen import generate_tl_from_dag
 from .attn_template import TlAttnTemplate
 
+# TODO: bwd map
+shape_idx_map = {
+    "batch": "bz",
+    "heads": "by",
+    "seq_len": "bx*block_M:(bx+1)*block_M",
+    "seq_len_kv": "k*block_N:(k+1)*block_N",
+    "1": ":"
+    # others: ":" -> ":"
+}
+shape_idx_onchip_map = {
+    "batch": "1",
+    "heads": "1",
+    "seq_len": "block_M",
+    "seq_len_kv": "block_N",
+    "1": "1"
+}
+
+RECURRENT_DIM = "block_N"
+
 class lowerOnlineFuncOutput:
 
     def __init__(self, is_inf_mask, final_rowscales_output, final_rowscales_init, online_rowscales_initvalue, online_func_init, online_func_inputs, online_func_body, online_func_inputs_list, o_scale, online_func_epilogue, final_rowscales_save,
                  online_rowscales_update,
                  isused_doosum, final_rowscales_length, final_rowscales_load, online_func_fwd, custom_bwd_inputs_load, custom_bwd_body,
                  final_rowscales_shared_init,
-                 custom_bwd_inputs,custom_bwd_inputs_init):
+                 custom_bwd_inputs,custom_bwd_inputs_init,
+                 o_scale_varname):
         self.is_inf_mask = is_inf_mask
         self.final_rowscales_output = final_rowscales_output
         self.final_rowscales_init = final_rowscales_init
@@ -34,6 +54,7 @@ class lowerOnlineFuncOutput:
         self.final_rowscales_shared_init = final_rowscales_shared_init
         self.custom_bwd_inputs = custom_bwd_inputs
         self.custom_bwd_inputs_init = custom_bwd_inputs_init
+        self.o_scale_varname = o_scale_varname
 
 
 class lowerScoreModOutput:
@@ -41,7 +62,11 @@ class lowerScoreModOutput:
         score_mod_backward, 
         score_mod_bwd_inputs_list,
         score_mod_bwd_inputs,
-        score_mod_inputs_bwd_list
+        score_mod_inputs_bwd_list,
+        score_mod_fwd_inputs, 
+        score_mod_fwd_body,
+        score_mod_output_var,
+        score_mod_bwd_inputs_declare
     ):
         self.score_mod_inputs = score_mod_inputs
         self.score_mod_body = score_mod_body
@@ -50,6 +75,10 @@ class lowerScoreModOutput:
         self.score_mod_bwd_inputs = score_mod_bwd_inputs
         self.score_mod_bwd_inputs_list = score_mod_bwd_inputs_list
         self.score_mod_inputs_bwd_list = score_mod_inputs_bwd_list
+        self.score_mod_fwd_inputs = score_mod_fwd_inputs
+        self.score_mod_fwd_body = score_mod_fwd_body
+        self.score_mod_output_var = score_mod_output_var
+        self.score_mod_bwd_inputs_declare = score_mod_bwd_inputs_declare
 
 def lower_online_func(online_func): # OnlineFunc):
     online_fwd = online_func.online_fwd
@@ -75,12 +104,21 @@ def lower_online_func(online_func): # OnlineFunc):
     scores_new, new_online_rowscales, o_scalevar = online_fwd(scores, online_rowscales, b, h, q_idx)
     tl_code, input_vars_online = generate_tl_from_dag(list(new_online_rowscales.values()) + [scores_new, o_scalevar])
     online_func_body = str(tl_code)
+    if online_func_body == "":
+        online_func_body = "pass"
     online_func_inputs = ""
     for varname, input_var in input_vars_online.items():
         online_func_inputs += f"{input_var.varname}: T.Buffer([{', '.join(input_var.shape_idx)}], accum_dtype), \n"
     online_func_inputs_list = ", ".join([input_var.varname for varname, input_var in input_vars_online.items()])
     input_vars.update(input_vars_online)
-    o_scale = o_scalevar.varname
+    # o_scale = o_scalevar.varname
+    o_scale_varname = o_scalevar.varname
+    o_scale = IndentedCode()
+    o_scale.add_line(f"for i, j in T.Parallel(block_M, dimv):")
+    o_scale.more_indent()
+    o_scale.add_line(f"acc_o[i, j] *= {o_scalevar.varname}[i]")
+    o_scale = str(o_scale)
+
     online_rowscales_update = ""
     for k,v in new_online_rowscales.items():
         if v.varname == k:
@@ -189,7 +227,8 @@ def lower_online_func(online_func): # OnlineFunc):
         custom_bwd_body=custom_bwd_body,
         final_rowscales_shared_init=final_rowscales_shared_init,
         custom_bwd_inputs=custom_bwd_inputs,
-        custom_bwd_inputs_init=custom_bwd_inputs_init
+        custom_bwd_inputs_init=custom_bwd_inputs_init,
+        o_scale_varname=o_scale_varname
     )
 
 def lower_score_mod(score_mod, custom_fwd_inputs):
@@ -212,15 +251,29 @@ def lower_score_mod(score_mod, custom_fwd_inputs):
     # backward, block_M : k, block_N : q
     qkT = SymbolScalar("qkT", Var("qkT"), shape_idx=["block_M", "block_N"])
     scores_new = score_mod(qkT, custom_fwd_inputs, b, h, q_idx, kv_idx)
-    tl_code, input_vars_fwd = generate_tl_from_dag([scores_new])
-    score_mod_inputs_bwd_list = ", ".join([varname for varname, input_var in input_vars_fwd.items()])
+    # tl_code, input_vars_fwd = generate_tl_from_dag([scores_new])
+    # score_mod_inputs_bwd_list = ", ".join([varname for varname, input_var in input_vars_fwd.items()])
     scores_new.backward(SymbolScalar("dsT", Var("dsT"), shape_idx=["block_M", "block_N"]))
+    tl_code, input_vars_fwd = generate_tl_from_dag([scores_new])
+    score_mod_fwd_body = str(tl_code)
+    score_mod_output_var = scores_new.varname
+    score_mod_fwd_inputs = ""
+    for varname, input_var in input_vars_fwd.items():
+        score_mod_fwd_inputs += f"{input_var.varname}: T.Buffer([{', '.join(input_var.shape_idx)}], accum_dtype), \n"
+    score_mod_inputs_bwd_list = ", ".join([varname for varname, input_var in input_vars_fwd.items()])
     tl_code, input_vars = generate_tl_from_dag([qkT.grad])
     score_mod_backward = str(tl_code)
+    # add forward input_vars
+    for k,v in input_vars_fwd.items():
+        input_vars[k] = v
     score_mod_bwd_inputs_list = ", ".join([input_var.varname for varname, input_var in input_vars.items()])
     score_mod_bwd_inputs = ""
     for varname, input_var in input_vars.items():
         score_mod_bwd_inputs += f"{input_var.varname}: T.Buffer([{', '.join(input_var.shape_idx)}], accum_dtype), \n"
+
+    score_mod_bwd_inputs_declare = ""
+    for varname, input_var in input_vars.items():
+        score_mod_bwd_inputs_declare += f"{input_var.varname} = T.alloc_fragment([{', '.join(input_var.shape_idx)}], accum_dtype)\n"
 
     return lowerScoreModOutput(
         score_mod_inputs=score_mod_inputs,
@@ -229,20 +282,51 @@ def lower_score_mod(score_mod, custom_fwd_inputs):
         score_mod_backward=score_mod_backward,
         score_mod_bwd_inputs_list=score_mod_bwd_inputs_list,
         score_mod_bwd_inputs=score_mod_bwd_inputs,
-        score_mod_inputs_bwd_list=score_mod_inputs_bwd_list
+        score_mod_inputs_bwd_list=score_mod_inputs_bwd_list,
+        score_mod_fwd_inputs=score_mod_fwd_inputs,
+        score_mod_fwd_body=score_mod_fwd_body,
+        score_mod_output_var=score_mod_output_var,
+        score_mod_bwd_inputs_declare=score_mod_bwd_inputs_declare
     )
 
 def lower_tl(score_mod, block_mask, online_func,
              custom_fwd_inputs, ):
-    
+    custom_fwd_inputs_str = ""
+    for k,v in custom_fwd_inputs.input_tensors.items():
+        custom_fwd_inputs_str += f"g_{k}: T.Buffer([{', '.join(v.shape_idx)}], accum_dtype), \n"
+    custom_fwd_inputs_init = ""
+    custom_fwd_inputs_load_prolog = ""
+    for k,v in custom_fwd_inputs.input_tensors.items():
+        # modify shape
+        shape_idx_copy = [(shape_idx_map[shape] if shape in shape_idx_map.keys() else ":") for shape in v.shape_idx]
+        shape_idx_block = [(shape_idx_onchip_map[shape] if shape in shape_idx_onchip_map.keys() else shape) for shape in v.shape_idx]
+
+        # load
+        # tl bug when "1"
+        if shape_idx_block == ["1"]:
+            shape_idx_copy = [idx_copy if idx_copy != ":" else "0" for idx_copy in shape_idx_copy]
+            custom_fwd_inputs_load_prolog += f"{k}[0] = g_{k}[{', '.join(shape_idx_copy)}]\n"
+        elif not (RECURRENT_DIM in shape_idx_block):
+            custom_fwd_inputs_load_prolog += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k})\n"
+        # TODO: load_recurrent
+        custom_fwd_inputs_init += f"{k} = T.alloc_fragment([{', '.join(shape_idx_block)}], accum_dtype)\n"
+
+        custom_fwd_inputs.input_tensors[k].shape_idx = shape_idx_block
+
     lower_score_mod_output = lower_score_mod(score_mod, custom_fwd_inputs)
     lower_online_func_output = lower_online_func(online_func)
-    output_idx_list = [i for i in range(2+len(custom_fwd_inputs.input_tensors), 2+len(custom_fwd_inputs.input_tensors)+1+len(online_func.final_rowscales))]
+    output_idx_list = [i for i in range(3+len(custom_fwd_inputs.input_tensors), 3+len(custom_fwd_inputs.input_tensors)+1+len(online_func.final_rowscales))]
     
+    # TODO: custom_fwd_inputs grad
+    bwd_output_idx_list = [i for i in range(4+len(custom_fwd_inputs.input_tensors)+len(online_func.final_rowscales), 4+len(custom_fwd_inputs.input_tensors)+len(online_func.final_rowscales)+3)]
     return TlAttnTemplate(
+        custom_fwd_inputs=custom_fwd_inputs_str,
+        custom_fwd_inputs_init=custom_fwd_inputs_init,
+        custom_fwd_inputs_load_prolog=custom_fwd_inputs_load_prolog,
         **lower_online_func_output.__dict__,
         **lower_score_mod_output.__dict__,
-        output_idx_list=str(output_idx_list)
+        output_idx_list=str(output_idx_list),
+        bwd_output_idx_list=str(bwd_output_idx_list)
     )()
 
     

@@ -100,15 +100,12 @@ class OnlineSoftmax(OnlineFunc):
 
 if __name__ == "__main__":
     custom_fwd_inputs = CustomIO({
-        "softmax_scale": (1,),
-    })
-    custom_bwd_inputs = CustomIO({
-        "dppsum": (B,H,S),
+        # "softmax_scale": (1,),
     })
 
     online = OnlineSoftmax()
     mod = AttentionEngine(
-        query, key, value, custom_fwd_inputs, custom_bwd_inputs, score_mod=score_mod, block_mask=block_mask,
+        custom_fwd_inputs, score_mod=score_mod, block_mask=block_mask,
         online_func=online,
     )
     # check
@@ -126,7 +123,7 @@ if __name__ == "__main__":
     softmax_scale = math.sqrt(D)
     o = mod(query, key, value)# , softmax_scale=softmax_scale)
     print(o.shape)
-    print(custom_bwd_inputs.input_tensors)
+    # print(custom_bwd_inputs.input_tensors)
     dppsum = torch.sum(do * o, dim=-1)
     # mod.backward(do, dppsum=dppsum)
     o.backward(do)

@@ -82,9 +82,9 @@ class OnlineFunc:
         """
         dscores = dp
         return dscores
-
+ 
 class AttentionEngine:
-    def __init__(self, query, key, value, custom_fwd_inputs, custom_bwd_inputs, score_mod, block_mask,
+    def __init__(self, custom_fwd_inputs, score_mod, block_mask,
     online_func,):
         tl_code = lower_tl(score_mod, block_mask, online_func, custom_fwd_inputs)
         self.tl_code = tl_code # for debug
@@ -101,6 +101,8 @@ class AttentionEngine:
             with open(file_path, "w") as f:
                 f.write(tl_code)
                 f.flush()
+        # replace code
+        # file_path = "/home/aiscuser/cfy/AttentionEngine/attn_script/sigmoid_tl_code1.py"
         spec = importlib.util.spec_from_file_location("tl_attn", file_path)
         tl_attn = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(tl_attn)

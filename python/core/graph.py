@@ -127,6 +127,14 @@ class Log(Node):
     def _backward(self, grad:Node):
         raise NotImplementedError
 
+class Tanh(Node):
+    def __init__(self, node:Node):
+        super().__init__("Tanh")
+        self.inputs = [node]
+
+    def _backward(self, grad:Node):
+        raise NotImplementedError
+
 class Abs(Node):
     def __init__(self, node:Node):
         super().__init__("Abs")
