@@ -283,6 +283,7 @@ def matmul(
     accum_dtype,
     num_stages,
     threads,
+    split=1,
     num_bits=4,
 ):
     num_elems_per_byte = 8 // num_bits
@@ -292,9 +293,67 @@ def matmul(
     A_shared_shape = (block_M, block_K)
     B_shared_shape = (block_N, block_K // num_elems_per_byte)
     B_dequantize_shared_shape = (block_N, block_K)
+    assert K % (block_K * split) == 0
+    KK = K // split
 
     import tvm.tl.language as T
 
+    @T.prim_func
+    def main_split(
+            A: T.Buffer(A_shape, in_dtype),
+            B: T.Buffer(B_shape, storage_dtype),
+            Ct: T.Buffer((N, M), out_dtype),
+    ):
+        SplitC = T.alloc_buffer(
+            [split, (N + block_N - 1) // block_N * block_N, (M + block_M - 1) // block_M * block_M], out_dtype
+        )
+        with T.Kernel(T.ceildiv(N, block_N), T.ceildiv(M, block_M), split, threads=threads) as (bx, by, bz):
+            A_shared = T.alloc_shared(A_shared_shape, in_dtype)
+            B_shared = T.alloc_shared(B_shared_shape, storage_dtype)
+            B_local = T.alloc_fragment(B_shared_shape, storage_dtype)
+            B_dequantize_local = T.alloc_fragment(B_dequantize_shared_shape, in_dtype)
+            B_dequantize_prev_local = T.alloc_fragment(B_dequantize_shared_shape, in_dtype)
+            Ct_local = T.alloc_fragment((block_N, block_M), accum_dtype)
+            Ct_shared = T.alloc_shared((block_N, block_M), out_dtype)
+            # B_shared_flat = T.Buffer((block_N // num_elems_per_byte, block_K), storage_dtype, B_shared.data)
+
+            T.annotate_layout(
+                {
+                    B_shared: tl.layout.make_swizzled_layout(B_shared),
+                    Ct_shared: tl.layout.make_swizzled_layout(Ct_shared),
+                }
+            )
+
+            T.clear(Ct_local)
+            for k in T.Pipelined(K // (block_K * split), num_stages=num_stages):
+            # for k in T.Pipelined(
+            #     T.ceildiv(K, block_K), 
+            #     num_stages=num_stages,
+            #     order=[-1,-1,0,1],
+            #     stage=[-1,-1,0,0],
+            #     group=[[0],[1],[2,3,4],[5]]
+            # ):
+                T.copy(A[by * block_M, KK * bz + k * block_K], A_shared)
+                T.copy(B[bx * block_N, (KK * bz + k * block_K) // num_elems_per_byte], B_shared)
+                T.copy(B_shared, B_local)
+                for i, j in T.Parallel(block_N, block_K):
+                    B_dequantize_local[i, j] = _tir_u8_to_f4_to_f16(
+                        num_bits,
+                        B_local[i, j // num_elems_per_byte],
+                        j % num_elems_per_byte,
+                        dtype=in_dtype,
+                    )
+                T.copy(B_dequantize_local, B_dequantize_prev_local)
+                T.gemm(B_dequantize_prev_local, A_shared, Ct_local, transpose_B=True)
+            T.copy(Ct_local, SplitC[bz, bx * block_N : (bx + 1) * block_N, by * block_M : (by + 1) * block_M])
+        with T.Kernel(T.ceildiv(N, block_N), T.ceildiv(M, block_M)) as (bx, by):
+            acc = T.alloc_fragment((block_N, block_M), out_dtype)
+            T.clear(acc)
+            for k in range(split):
+                for i, j in T.Parallel(block_N, block_M):
+                    acc[i, j] += SplitC[k, bx * block_N + i, by * block_M + j]
+            T.copy(acc, Ct[bx * block_N, by * block_M])
+    
     @T.prim_func
     def main(
             A: T.Buffer(A_shape, in_dtype),
@@ -312,19 +371,20 @@ def matmul(
 
             T.annotate_layout(
                 {
-                    # B_shared: tl.layout.make_swizzled_layout(B_shared),
+                    B_shared: tl.layout.make_swizzled_layout(B_shared),
                     Ct_shared: tl.layout.make_swizzled_layout(Ct_shared),
                 }
             )
 
             T.clear(Ct_local)
-            for k in T.Pipelined(
-                T.ceildiv(K, block_K), 
-                num_stages=num_stages,
-                order=[-1,-1,0,1],
-                stage=[-1,-1,0,0],
-                group=[[0],[1],[2,3,4],[5]]
-            ):
+            for k in T.Pipelined(K // block_K, num_stages=num_stages):
+            # for k in T.Pipelined(
+            #     T.ceildiv(K, block_K), 
+            #     num_stages=num_stages,
+            #     order=[-1,-1,0,1],
+            #     stage=[-1,-1,0,0],
+            #     group=[[0],[1],[2,3,4],[5]]
+            # ):
                 T.copy(A[by * block_M, k * block_K], A_shared)
                 T.copy(B[bx * block_N, k * block_K // num_elems_per_byte], B_shared)
                 T.copy(B_shared, B_local)
@@ -338,9 +398,12 @@ def matmul(
                 T.copy(B_dequantize_local, B_dequantize_prev_local)
                 T.gemm(B_dequantize_prev_local, A_shared, Ct_local, transpose_B=True)
             T.copy(Ct_local, Ct_shared)
-            T.copy(Ct_shared, Ct[bx * block_N, by * block_M])
+            T.copy(Ct_shared, Ct[bx * block_N : (bx + 1) * block_N, by * block_M : (by + 1) * block_M])
 
-    return main
+    if split == 1:
+        return main
+    else:
+        return main_split
 
 def run_gemm(
     M,
@@ -354,6 +417,7 @@ def run_gemm(
     block_K,
     num_stages=3,
     num_threads=128,
+    split=1
 ):
     program = matmul(
         M,
@@ -367,6 +431,7 @@ def run_gemm(
         dtypeAccum,
         num_stages,
         num_threads,
+        split=split
     )
     print(program)
 
@@ -385,14 +450,14 @@ def run_gemm(
         return C.transpose(0, 1)
     
 
-    # mod.assert_allclose(ref_program)
+    # mod.assert_allclose(ref_program, atol=1e-2, rtol=1e-2)
     # print("Pass")
     total_flops = 2 * M * N * K
     # latency = mod.do_bench(ref_program, n_warmup=10, n_repeat=10)
     # print("torch: {:.2f} ms".format(latency))
     # print("torch: {:.2f} TFlops".format(total_flops / latency * 1e-9))
-    latency = mod.do_bench(mod.func, n_warmup=10, n_repeat=10, profiler="torch")
-    print("tl: {:.2f} ms".format(latency))
+    latency = mod.do_bench(mod.func, n_warmup=10, n_repeat=10, profiler="auto")
+    print("tl: {:.4f} ms".format(latency))
     print("tl: {:.2f} TFlops".format(total_flops / latency * 1e-9))
 
 def matmul_(
@@ -504,7 +569,10 @@ def tune_gemm(
 
 def test_run_dequantize_gemm():
     # run_gemm(512, 512, 512, "float16", "float16", "float32", 256, 128, 64, num_stages=4, num_threads=256)
-    run_gemm(8192, 8192, 8192, "float16", "float16", "float32", 256, 128, 64, num_stages=4, num_threads=256)
+    # run_gemm(8192, 8192, 8192, "float16", "float16", "float32", 256, 128, 64, num_stages=4, num_threads=256)
+    # run_gemm(1, 4096, 14336, "float16", "float16", "float32", 64, 64, 128, num_stages=3, num_threads=128)
+    # run_gemm(64, 1024, 1024, "float16", "float16", "float32", 64, 128, 128, num_stages=4, num_threads=128 * 2, split=1)
+    run_gemm(64, 14336, 4096, "float16", "float16", "float32", 64, 128, 128, num_stages=4, num_threads=128 * 2, split=1)
     # run_gemm(16384, 16384, 16384, "float16", "float16", "float32", 256, 128, 64, num_stages=4, num_threads=256)
     # run_gemm(256, 256, 256, "int8", "int32", "int32", 256, 128, 128, num_stages=3, num_threads=256)
     # run_gemm(512, 512, 512, "int8", "int32", "int32", 256, 128, 128, num_stages=3, num_threads=256)
@@ -520,15 +588,16 @@ def test_run_dequantize_gemm():
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--m', type=int, default=128, help='M')
-    parser.add_argument('--n', type=int, default=8192, help='N')
-    parser.add_argument('--k', type=int, default=8192, help='K')
-    args = parser.parse_args()
-    M, N, K = args.m, args.n, args.k
-    total_flops = 2 * M * N * K
-    best_latency, best_config, ref_latency = tune_gemm(M, N, K, "float16", "float16", "float32")
-    print(f"Best latency: {best_latency}")
-    print(f"Best TFlops: {total_flops / best_latency * 1e-9}")
-    print(f"Best config: {best_config}")
+    test_run_dequantize_gemm()
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument('--m', type=int, default=128, help='M')
+    # parser.add_argument('--n', type=int, default=8192, help='N')
+    # parser.add_argument('--k', type=int, default=8192, help='K')
+    # args = parser.parse_args()
+    # M, N, K = args.m, args.n, args.k
+    # total_flops = 2 * M * N * K
+    # best_latency, best_config, ref_latency = tune_gemm(M, N, K, "float16", "float16", "float32")
+    # print(f"Best latency: {best_latency}")
+    # print(f"Best TFlops: {total_flops / best_latency * 1e-9}")
+    # print(f"Best config: {best_config}")
 

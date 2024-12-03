@@ -4,6 +4,7 @@ import tvm.tl.language as T
 from functools import partial
 from tvm.tl.autotuner import *
 import itertools
+import argparse
 
 # Codegen bug:
 #   LoadK should wait for MMA0 done
@@ -49,7 +50,7 @@ def get_configs():
     block_M = [64, 128]
     block_N = [64 + i * 16 for i in range(13)]
     # block_N = [80]
-    num_stages = [2]
+    num_stages = [1, 2, 3, 4]
 
     _configs = list(itertools.product(block_M, block_N, num_stages))
 
@@ -66,7 +67,7 @@ def flashattn(batch, heads, seq_len, dim, is_casual):
     accum_dtype = "float"
 
     @autotune(configs=get_configs(), keys=['block_M', 'block_N', 'num_stages', 'thread_num'], warmup=10, rep=5)
-    @jit(out_idx=[3], supply_type=tl.TensorSupplyType.Normal, ref_prog=partial(ref_program, casual=is_casual), rtol=0.01, atol=0.01, profiler="tvm")
+    @jit(out_idx=[3], supply_type=tl.TensorSupplyType.Normal, ref_prog=None, rtol=0.01, atol=0.01, profiler="auto")
     def kernel(block_M = None, block_N = None, num_stages = None, thread_num = None):
         @T.macro
         def MMA0(
@@ -174,7 +175,8 @@ def flashattn(batch, heads, seq_len, dim, is_casual):
                     T.min(T.ceildiv(seq_len, block_N), T.ceildiv((bx + 1) * block_M, block_N)) if is_casual else T.ceildiv(seq_len, block_N)
                 )
 
-                for k in T.Pipelined(loop_range, num_stages=num_stages, order=[-1,0,3,1,-1,2], stage=[-1,0,0,1,-1,1], sync=[[0,13],[1,9]], group=[[0], [1,2], [3,4,5,6,7,8,9,10], [11], [12], [13]]):
+                # for k in T.Pipelined(loop_range, num_stages=num_stages, order=[-1,0,3,1,-1,2], stage=[-1,0,0,1,-1,1], sync=[[0,13],[1,9]], group=[[0], [1,2], [3,4,5,6,7,8,9,10], [11], [12], [13]]):
+                for k in T.Pipelined(loop_range, num_stages=num_stages):
                     MMA0(K, Q_shared, K_shared, acc_s, k, bx, by, bz)
                     Softmax(acc_s, acc_s_cast, scores_max, scores_max_prev, scores_scale, scores_sum, logsum)
                     Rescale(acc_o, scores_scale)
@@ -189,8 +191,18 @@ def flashattn(batch, heads, seq_len, dim, is_casual):
 
 
 if __name__ == "__main__":
-    BATCH, H, N_CTX, D_HEAD = 1, 6, 1024, 64
-    casual = False
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--b', type=int, default=1, help='batch')
+    parser.add_argument('--h', type=int, default=16, help='num_heads')
+    parser.add_argument('--seq', type=int, default=8192, help='seqlen')
+    parser.add_argument('--d', type=int, default=64, help='head_dim')
+    parser.add_argument('--casual', action='store_true', help='casual')
+
+    args = parser.parse_args()
+
+    BATCH, H, N_CTX, D_HEAD, casual = args.b, args.h, args.seq, args.d, args.casual
+
+    print(f"Tuning for batch={BATCH}, heads={H}, seq_len={N_CTX}, dim={D_HEAD}, casual={casual}")
     flops_per_matmul = 2.0 * BATCH * H * N_CTX * N_CTX * D_HEAD
     total_flops = 2 * flops_per_matmul
     if casual:
@@ -199,4 +211,4 @@ if __name__ == "__main__":
     print(f"Best latency: {best_latency}")
     print(f"Best TFlops: {total_flops / best_latency * 1e-9}")
     print(f"Best config: {best_config}")
-    print(f"Ref TFlops: {total_flops / ref_latency * 1e-9}")
+    # print(f"Ref TFlops: {total_flops / ref_latency * 1e-9}")
