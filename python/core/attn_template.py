@@ -104,6 +104,7 @@ TL_MAIN = """
                     
                 # call online_func
                 online_func({{online_func_inputs_list}}) # scores
+                T.copy(scores, acc_s_cast)
 
                 # for i, j in T.Parallel(block_M, dimv):
                 #     acc_o[i, j] *= o_scale[i]
@@ -112,7 +113,6 @@ TL_MAIN = """
                 # update online_rowscales
                 {{online_rowscales_update | indent(16)}}
 
-                T.copy(scores, acc_s_cast)
                 T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
             
             # online_fwd_epilogue
