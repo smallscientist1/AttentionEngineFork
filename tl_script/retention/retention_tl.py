@@ -3,6 +3,9 @@ import torch
 from tvm import tl
 import tvm.tl.language as T
 
+# tl bug: thread 256, no thread layout conflict assert
+# tl bug: shared fuse卡死, T.reduce的fragment 输入layout必须与输出layout一致
+
 def make_dq_layout(dQ):
     # atomicAdd can not be vectorized, so we need to reorder dq to match the 8x8 gemm fragment
     return T.Layout(
@@ -16,11 +19,12 @@ def kernel(batch, heads, seq_len, dim, dimv,
     shape_v = [batch, seq_len, heads, dimv]
     # TODO: seqlenkv
     seq_len_kv = seq_len
-    dtype = "float16"
+    dtype = "bfloat16"
     accum_dtype = "float"
     
     # TODO: mask
     is_casual = True
+    shared_fuse = True
 
 
     @T.macro
@@ -32,8 +36,8 @@ def kernel(batch, heads, seq_len, dim, dimv,
         ):
         for i0,i1 in T.Parallel(block_M,block_N):
             scores[i0,i1] = scores[i0,i1] * mask[i0,i1]
-        for i0,i1 in T.Parallel(block_M,block_N):
-            scores[i0,i1] = scores[i0,i1] / 8.0
+        # for i0,i1 in T.Parallel(block_M,block_N):
+            # scores[i0,i1] = scores[i0,i1] / 16.0
 
     
     @T.macro
@@ -45,18 +49,23 @@ def kernel(batch, heads, seq_len, dim, dimv,
         scores_0_sum_0: T.Buffer([block_M], accum_dtype), 
         r: T.Buffer([block_M], accum_dtype), 
 
+        r_new: T.Buffer([block_M], accum_dtype), 
     ):
-        for i0,i1 in T.Parallel(block_M,block_N):
-            scores_0[i0,i1] = T.abs(scores[i0,i1])
-        T.reduce_sum(scores_0, scores_0_sum_0,dim=1, clear=True)
+        # for i0,i1 in T.Parallel(block_M,block_N):
+        #     scores_0[i0,i1] = T.abs(scores[i0,i1])
+        # T.reduce_sum(scores_0, scores_0_sum_0,dim=1, clear=True)
+        # tl lower bug
+        # attention engine lower bug
+        T.reduce_abssum(scores, scores_0_sum_0,dim=1)
         for i0 in T.Parallel(block_M):
             r_wo_clamp[i0] = r_wo_clamp[i0] + scores_0_sum_0[i0]
         for i0 in T.Parallel(block_M):
-            r_wo_clamp[i0] = T.max(r_wo_clamp[i0], 1.0)
+            # r_wo_clamp[i0] = T.max(r_wo_clamp[i0], 1.0)
+            r_new[i0] = T.max(r_wo_clamp[i0], 1.0)
         for i0,i1 in T.Parallel(block_M,block_N):
-            scores[i0,i1] = scores[i0,i1] / r_wo_clamp[i0]
+            scores[i0,i1] = scores[i0,i1] / r_new[i0]
         for i0 in T.Parallel(block_M):
-            r[i0] = r[i0] / r_wo_clamp[i0]
+            r[i0] = r[i0] / r_new[i0]
 
 
         
@@ -85,18 +94,30 @@ def kernel(batch, heads, seq_len, dim, dimv,
 
             r_wo_clamp = T.alloc_fragment([block_M], accum_dtype)
             scores = T.alloc_fragment([block_M, block_N], accum_dtype)
+            scores_shared = T.alloc_shared([block_M, block_N], accum_dtype)
+            scores_cast_shared = T.alloc_shared([block_M, block_N], dtype)
+            accs_cast_1 = T.alloc_fragment([block_M, block_N], dtype)
+            scores_1 = T.alloc_fragment([block_M, block_N], accum_dtype)
             scores_0 = T.alloc_fragment([block_M, block_N], accum_dtype)
             scores_0_sum_0 = T.alloc_fragment([block_M], accum_dtype)
             r = T.alloc_fragment([block_M], accum_dtype)
+            r_shared = T.alloc_shared([block_M], accum_dtype)
+            r_o = T.alloc_fragment([block_M], accum_dtype)
+            r_new = T.alloc_fragment([block_M], accum_dtype)
             acc_o = T.alloc_fragment([block_M, dimv], accum_dtype)
 
             
-
-            T.annotate_layout({Q_shared: tl.layout.make_swizzled_layout(Q_shared)})
+            T.annotate_layout({
+                    Q_shared: tl.layout.make_swizzled_layout(Q_shared),
+                    # input swizzle
+                    mask_shared: tl.layout.make_swizzled_layout(mask_shared),
+                    # if shared_fuse
+                    scores_shared: tl.layout.make_swizzled_layout(scores_shared),
+            })
             T.copy(Q[bz, bx * block_M : (bx + 1) * block_M, by, :], Q_shared)
             
             T.fill(acc_o, 0)
-            T.fill(r, 1.0)
+            # T.fill(r, 1.0)
 
             T.fill(r_wo_clamp, 0.0)
             T.fill(r, 0.0)
@@ -105,13 +126,19 @@ def kernel(batch, heads, seq_len, dim, dimv,
             # TODO: mask
             loop_range = (
                 T.ceildiv((bx + 1) * block_M, block_N) if is_casual else T.ceildiv(seq_len, block_N)
+                # T.ceildiv(seq_len, block_N)
             )
 
-            for k in T.Pipelined(loop_range, num_stages=num_stages):
+            for k in T.Pipelined(loop_range, num_stages=num_stages,
+                # order=[-1,-1,0,-1,1,-1,2], 
+                # stage=[-1,0,-1,0,-1,0], 
+                #                  group=[[0],[1,2],[3],[4,5,6,7,8,9,10,11,12,13,14],[15],[16]]
+                                
+            ):
                 T.copy(K[bz, k * block_N : (k + 1) * block_N, by, :], K_shared)
 
                 # TODO: copy custom_fwd_input_tensor in score_mod&online_func
-                T.copy(g_mask[0, by, bx*block_M:(bx+1)*block_M, k*block_N:(k+1)*block_N], mask_shared)
+                # T.copy(g_mask[0, by, bx*block_M:(bx+1)*block_M, k*block_N:(k+1)*block_N], mask_shared)
 
 
                 # TODO: naive solution: if reduce_max, -T.inf; if reduce_sum, 0
@@ -123,8 +150,9 @@ def kernel(batch, heads, seq_len, dim, dimv,
                 else:
                     T.clear(scores)
                 
-                T.gemm(Q_shared, K_shared, scores, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
-                T.copy(V[bz, k * block_N : (k + 1) * block_N, by, :], V_shared)
+                T.gemm(Q_shared, K_shared, scores, transpose_B=True, policy= (T.GemmWarpPolicy.FullRow if (not shared_fuse) else T.GemmWarpPolicy.FullCol))
+                T.copy(g_mask[0, by, bx*block_M:(bx+1)*block_M, k*block_N:(k+1)*block_N], mask_shared)
+                # T.copy(V[bz, k * block_N : (k + 1) * block_N, by, :], V_shared)
                     
                 T.copy(mask_shared, mask)
 
@@ -132,20 +160,47 @@ def kernel(batch, heads, seq_len, dim, dimv,
                 score_mod(scores, mask) # scores
                     
                 # call online_func
-                online_func(r_wo_clamp, scores, scores_0, scores_0_sum_0, r) # scores
+                if shared_fuse:
+                    # wrong result
+                    # T.copy(scores, scores_shared)
+                    # T.copy(scores_shared, scores_1)
+                    # online_func(r_wo_clamp, scores_1, scores_0, scores_0_sum_0, r, r_new) # scores
+                    # T.copy(scores_1, acc_s_cast)
+                    T.copy(scores, scores_shared)
+                    T.copy(scores_shared, scores_1)
+                    online_func(r_wo_clamp, scores_1, scores_0, scores_0_sum_0, r, r_new) # scores
+                    T.copy(scores_1, accs_cast_1)
+                    # T.copy(accs_cast_1, scores_cast_shared)
+
+
+                else:
+                    online_func(r_wo_clamp, scores, scores_0, scores_0_sum_0, r, r_new) # scores
+                    T.copy(scores, acc_s_cast)
 
                 # for i, j in T.Parallel(block_M, dimv):
                 #     acc_o[i, j] *= o_scale[i]
-                for i, j in T.Parallel(block_M, dimv):
-                    acc_o[i, j] *= r[i]
+                if shared_fuse:
+                    # T.copy(r,r_shared)
+                    # T.copy(r_shared,r_o)
+                    # T.copy(r,r_o) # not correct
+                    for i, j in T.Parallel(block_M, dimv):
+                        acc_o[i, j] *= r[i] # r_o
+                else:
+                    for i, j in T.Parallel(block_M, dimv):
+                        acc_o[i, j] *= r[i]
 
                 
                 # update online_rowscales
-                T.copy(r_wo_clamp, r)
+                T.copy(r_new, r) 
+                # T.copy(r_new,r_shared)
+                # T.copy(r_wo_clamp,r_wo_clamp)
 
-
-                T.copy(scores, acc_s_cast)
-                T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                T.copy(V[bz, k * block_N : (k + 1) * block_N, by, :], V_shared)
+                if shared_fuse:
+                    T.gemm(accs_cast_1, V_shared, acc_o, policy=(T.GemmWarpPolicy.FullCol))
+                    # T.gemm(scores_cast_shared, V_shared, acc_o, policy=(T.GemmWarpPolicy.FullCol))
+                else:
+                    T.gemm(acc_s_cast, V_shared, acc_o, policy=(T.GemmWarpPolicy.FullRow))
             
             # online_fwd_epilogue
             
@@ -161,7 +216,7 @@ def kernel(batch, heads, seq_len, dim, dimv,
 
 
 def flashattn_bwd_preprocess(batch, heads, seq_len, dim, dimv):
-    dtype = "float16"
+    dtype = "bfloat16"
     accum_dtype = "float"
     shape = [batch, seq_len, heads, dim]
     shape_v = [batch, seq_len, heads, dimv]
@@ -197,7 +252,7 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual,
     shape_v = [batch, seq_len, heads, dimv]
     # TODO: seqlenkv
     seq_len_kv = seq_len
-    dtype = "float16"
+    dtype = "bfloat16"
     accum_dtype = "float"
 
     @T.macro
@@ -365,7 +420,7 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual,
         
 
 def flashattn_bwd_postprocess(batch, heads, seq_len, dim, dimv):
-    dtype = "float16"
+    dtype = "bfloat16"
     accum_dtype = "float"
     shape = [batch, seq_len, heads, dim]
     shape_v = [batch, seq_len, heads, dimv]
@@ -391,10 +446,10 @@ class _attention(torch.autograd.Function):
     def forward(ctx, q, k, v, *custom_fwd_inputs):
         BATCH, N_CTX, H, D_HEAD = q.shape
         D_HEADV = v.shape[-1]
-        block_M = 128
-        block_N = 128 # if D_HEAD <= 128 else 64
-        stages = 2
-        thread_num = 256
+        block_M = 64# 64
+        block_N = 64 # if D_HEAD <= 128 else 64
+        stages = 1
+        thread_num = 256# 256
         output_idx_list = [4, 5]
         mod = tl.cached(kernel, output_idx_list, BATCH, H, N_CTX, D_HEAD, D_HEADV, block_M, block_N, stages, thread_num)
         if len(output_idx_list) == 1:
@@ -437,9 +492,10 @@ class _attention(torch.autograd.Function):
 attention = _attention.apply
 
 if __name__ == "__main__":
-    Dimqk = 128
+    Dimqk = 256
+    Dimv = 384 # must align with 128 to be correct for FullCol
     # 16,16,8192 fail for H100 TMA mask
-    B, H ,S, D, DV = 1,32,4096,Dimqk,Dimqk
+    B, H ,S, D, DV = 1,20,2048,Dimqk,Dimv
 
     from benchmark.bench_utils import do_bench_retention
     do_bench_retention(attention, B, H, S, D, DV)

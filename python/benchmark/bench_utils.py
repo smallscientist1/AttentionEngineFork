@@ -515,12 +515,12 @@ def do_bench_retention(attn, B, H, S, D, DV):
     bwd_tflops = 4 * B * H * S * S * DV + 6 * B * H * S * S * D
     bwd_tflops = bwd_tflops * 0.5
     torch.cuda.manual_seed(0)
-    dtype = torch.float16
+    dtype = torch.bfloat16
     device = "cuda"
     accum_dtype = torch.float32
     query = torch.randn(
         B, S, H, D, device=device, dtype=dtype, requires_grad=True
-    )
+    ) *((1/D)**0.5)
     key = torch.randn(
         B, S, H, D, device=device, dtype=dtype, requires_grad=True
     )
@@ -530,16 +530,27 @@ def do_bench_retention(attn, B, H, S, D, DV):
     do = torch.randn(
         B, S, H, DV, device=device, dtype=dtype, requires_grad=True
     )
-    mask = torch.randn(
-        1, H, S, S, device="cuda", dtype=torch.float16, requires_grad=False
+    mask = torch.rand(
+        1, H, S, S, device="cuda", dtype=dtype, requires_grad=False
     ).tril().contiguous()
 
     o = attn(query, key, value, mask)
-    # print(o)
     # o.backward(do, retain_graph=True)
     # print(query.grad)
     # print(key.grad)
     # print(value.grad)
+
+    def ref_program(query, key, value,mask):
+        qk = torch.einsum('bqhd,bkhd->bhqk', query, key)
+        qkm = qk * mask
+        r = qkm.detach().abs().sum(dim=-1, keepdim=True).clamp(min=1.0)
+        o = torch.einsum('bhqk,bkhd->bqhd', qkm/r, value)
+        return o.to(dtype=dtype)
+    o_ref = ref_program(query, key, value,mask)
+    print("o",o)
+    print("o_ref",o_ref)
+    print_debug(o,o_ref,1e-2,1e-2)
+    # torch.testing.assert_close(o,o_ref)
 
     from tvm.tl.utils import do_bench
     def run():
