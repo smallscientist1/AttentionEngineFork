@@ -182,7 +182,8 @@ void set_params_dgrad(Flash_bwd_params &params,
                       void *dq_accum_d,
                       void *dk_accum_d,
                       void *dv_accum_d,
-                      void *softmax_lse_d,
+                      // void *softmax_lse_d,
+                      {{ global_ptr_args }}
                       void *dsoftmax_sum_d,
                       float p_dropout,
                       float softmax_scale,
@@ -197,7 +198,8 @@ void set_params_dgrad(Flash_bwd_params &params,
                      cu_seqlens_k_d,
                      nullptr,
                      nullptr,
-                     softmax_lse_d,
+                     {{ global_ptr_args_d }}
+                     // softmax_lse_d,
                      p_dropout,
                      softmax_scale,
                      window_size_left,
@@ -504,6 +506,7 @@ mha_bwd(const at::Tensor &dout,  // batch_size x seqlen_q x num_heads, x head_si
         c10::optional<at::Tensor> &dq_,   // batch_size x seqlen_q x num_heads x head_size
         c10::optional<at::Tensor> &dk_,   // batch_size x seqlen_k x num_heads_k x head_size
         c10::optional<at::Tensor> &dv_,   // batch_size x seqlen_k x num_heads_k x head_size
+        {{ global_tensor_args }}
         const float softmax_scale,
         const bool is_causal,
         const bool deterministic) {
@@ -643,7 +646,8 @@ mha_bwd(const at::Tensor &dout,  // batch_size x seqlen_q x num_heads, x head_si
                      // loop ? dv_accum.data_ptr() : nullptr,
                      nullptr,
                      nullptr,
-                     softmax_lse.data_ptr(),
+                     // softmax_lse.data_ptr(),
+                     {{ global_ptr_args_init }}
                      softmax_d.data_ptr(),
                      /*p_dropout=*/0.f,
                      softmax_scale,

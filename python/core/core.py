@@ -208,7 +208,7 @@ class SymbolicConst(SymbolScalar):
     """
     def __init__(self, value):
         # TODO: not float const
-        super().__init__(str(value)+"f", Const(value), prev=[], shape_idx=[],
+        super().__init__(str(value)+(".f" if isinstance(value, int) else "f"), Const(value), prev=[], shape_idx=[],
                          require_grad=False)
 
         

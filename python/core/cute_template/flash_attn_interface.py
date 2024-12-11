@@ -153,8 +153,9 @@ def maybe_contiguous(x):
 
 def _flash_attn_forward(q, k, v,{{custom_tensors}} softmax_scale, causal, descale_q = None, descale_k = None, descale_v = None):
     q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
-    # TODO: final_rowscales
-    out, q, k, v, out_padded, softmax_lse, S_dmask = flashattn_hopper_cuda.fwd(
+    # TODO: final_rowscales softmax_lse, S_dmask
+    # out, q, k, v, out_padded, {{final_rowscales_list}} S_dmask = flashattn_hopper_cuda.fwd(
+    out_res = flashattn_hopper_cuda.fwd(
         q,
         k,
         v,
@@ -166,7 +167,8 @@ def _flash_attn_forward(q, k, v,{{custom_tensors}} softmax_scale, causal, descal
         {{custom_tensors}}
         causal,
     )
-    return out, q, k, v, out_padded, softmax_lse, S_dmask
+    # return out, q, k, v, out_padded, softmax_lse, S_dmask
+    return out_res
 
 
 def _flash_attn_backward(
@@ -216,7 +218,8 @@ class FlashAttnFunc(torch.autograd.Function):
     ):
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
-        out, q, k, v, out_padded, softmax_lse, S_dmask = _flash_attn_forward(
+        # out, q, k, v, out_padded, softmax_lse, S_dmask = _flash_attn_forward(
+        out_res = _flash_attn_forward(
             q,
             k,
             v,
@@ -224,11 +227,13 @@ class FlashAttnFunc(torch.autograd.Function):
             softmax_scale,
             causal
         )
-        ctx.save_for_backward(q, k, v, out_padded, softmax_lse)
+        # ctx.save_for_backward(q, k, v, out_padded, softmax_lse)
+        ctx.save_for_backward(*(out_res[1:-1]))
         ctx.softmax_scale = softmax_scale
         ctx.causal = causal
         ctx.deterministic = deterministic
-        return out#, softmax_lse
+        # return out#, softmax_lse
+        return out_res[0]#, *out_res[5:-1]
 
     @staticmethod
     def backward(ctx, dout, *args):

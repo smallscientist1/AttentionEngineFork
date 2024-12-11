@@ -98,6 +98,7 @@ def to_cute_op(type:str, *args:SymbolScalar):
         for _, arg in enumerate(args):
             input_idx = arg.shape_idx
             idx_list = [f"i{i}" if idx!="1" else f"0" for i, idx in enumerate(input_idx)]
+            idx_list = [] if idx_list == ["0"] else idx_list
             idx_str = ",".join(idx_list)
             idx_strs.append(idx_str)
             idx_lists.append(idx_list)
@@ -154,7 +155,7 @@ def to_cute_op(type:str, *args:SymbolScalar):
             )
         elif type == "Tanh":
             code.add_line(
-                f"{args[0].varname}({idx_str}) = cute::tanh({args[1].varname}{idx_strs[1]});"
+                f"{args[0].varname}({idx_str}) = cutlass::fast_tanh({args[1].varname}{idx_strs[1]});"
             )
         elif type == "Abs":
             code.add_line(

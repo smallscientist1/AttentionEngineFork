@@ -155,7 +155,8 @@ struct CollectiveMainloopFwd {
         typename Seqlen_traits::LayoutT layout_K;
         Element const* ptr_V;
         typename Seqlen_traits::LayoutT layout_V;
-        float const softmax_scale_log2;        
+        float const softmax_scale_log2;
+        {{mainloop_arguments_define}}        
         float const* descale_q_ptr;
         float const* descale_k_ptr;
         float const* descale_v_ptr;
@@ -170,7 +171,8 @@ struct CollectiveMainloopFwd {
         TMA_Q tma_load_Q;        
         TMA_K tma_load_K;
         TMA_V tma_load_V;
-        float const softmax_scale_log2;        
+        float const softmax_scale_log2;    
+        {{mainloop_arguments_define}}    
         float const* descale_q_ptr;
         float const* descale_k_ptr;
         float const* descale_v_ptr;
@@ -204,6 +206,7 @@ struct CollectiveMainloopFwd {
                 cutlass::FastDivmod(cute::ceil_div(get<2>(args.layout_Q.shape()), get<2>(args.layout_K.shape()))),
                 tma_load_Q, tma_load_K, tma_load_V,
                 args.softmax_scale_log2,
+                {{mainloop_params_arg}}
                 args.descale_q_ptr, args.descale_k_ptr, args.descale_v_ptr};
     }
 
@@ -729,9 +732,12 @@ struct CollectiveMainloopFwd {
             }
         }
 
+        Tensor scores = make_tensor(tSrS.data(), flash::convert_layout_acc_rowcol(tSrS.layout()));
+        // const float sigmoid_bias = mainloop_params.sigmoid_bias
+        {{score_mod_code}}
         softmax.template online_fwd</*Is_first=*/true>(tSrS);
         Tensor tOrP = make_tensor(convert_type<Element>(tSrS).data(), convert_layout_acc_Aregs<typename Ktraits::TiledMma1>(tSrS.layout()));
-        Tensor scores_scale = make_fragment_like(softmax.{{online_rowscales_0}});
+        Tensor scores_scale = make_fragment_like(softmax.row_placeholder);
         clear(scores_scale);
 
         constexpr int n_masking_steps = !Is_causal ? 1 : cute::ceil_div(kBlockM, kBlockN) + 1;
@@ -756,6 +762,9 @@ struct CollectiveMainloopFwd {
                     tSrS(i) = -INFINITY;
                 }
             }
+            Tensor scores = make_tensor(tSrS.data(), flash::convert_layout_acc_rowcol(tSrS.layout()));
+            // const float sigmoid_bias = mainloop_params.sigmoid_bias
+            {{score_mod_code}}
             // cute::copy(softmax.template max</*Is_first=*/false, /*Check_inf=*/true>(tSrS), scores_scale);
             // softmax.template online_softmax</*Is_first=*/false, /*Check_inf=*/true>(tSrS);
             cute::copy(softmax.template online_fwd</*Is_first=*/false, /*Check_inf=*/true>(tSrS), scores_scale);
@@ -777,6 +786,9 @@ struct CollectiveMainloopFwd {
             warp_scheduler_barrier_arrive();
             warpgroup_wait<1>();
             pipeline_k.consumer_release(smem_pipe_read_k);  // release K
+            Tensor scores = make_tensor(tSrS.data(), flash::convert_layout_acc_rowcol(tSrS.layout()));
+            // const float sigmoid_bias = mainloop_params.sigmoid_bias
+            {{score_mod_code}}
             // auto scores_scale = softmax.template max</*Is_first=*/false>(tSrS);
             // cute::copy(softmax.template max</*Is_first=*/false>(tSrS), scores_scale);
             // softmax.template online_softmax</*Is_first=*/false>(tSrS);
@@ -896,7 +908,7 @@ struct CollectiveMainloopFwd {
         Tensor tOrP = make_tensor(convert_type<Element>(tSrS).data(), convert_layout_acc_Aregs_fp8(tSrS.layout()));
         permute_regs_A_to_C(tOrP);
         
-        Tensor scores_scale = make_fragment_like(softmax.{{online_rowscales_0}});
+        Tensor scores_scale = make_fragment_like(softmax.row_placeholder);
         clear(scores_scale);
         
         consumer_wait(pipeline_vt, smem_pipe_read);

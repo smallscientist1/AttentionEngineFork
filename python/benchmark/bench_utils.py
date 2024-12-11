@@ -463,13 +463,13 @@ def do_bench_retention_linear(linear_attention, B, H, TLen, D, DV):
     print("retention: {:.2f} ms".format(latency))
 
 
-def do_bench_sigmoidattn(attn, B, H, S, D, DV):
+def do_bench_sigmoidattn(attn, B, H, S, D, DV, dtype=torch.float16):
     tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
     tflops = tflops * 0.5
     bwd_tflops = 4 * B * H * S * S * DV + 6 * B * H * S * S * D
     bwd_tflops = bwd_tflops * 0.5
     torch.cuda.manual_seed(0)
-    dtype = torch.float16
+    dtype = dtype
     device = "cuda"
     accum_dtype = torch.float32
     query = torch.randn(
@@ -484,20 +484,20 @@ def do_bench_sigmoidattn(attn, B, H, S, D, DV):
     do = torch.randn(
         B, S, H, DV, device=device, dtype=dtype, requires_grad=True
     )
-    softmax_bias = 0.1*torch.randn(1, device=device, dtype=torch.float, requires_grad=False)
+    softmax_bias = 0.1*torch.randn(1, device=device, dtype=accum_dtype, requires_grad=False)
     softmax_bias_cpu = softmax_bias.cpu()
 
     o = attn(query, key, value, softmax_bias)
     # print(key)
     # print(o)
     # print(o.shape)
-    o.backward(do, retain_graph=True)
+    # o.backward(do, retain_graph=True)
     # print(query.grad)
     # print(key.grad)
     # print(value.grad)
-    query_grad = query.grad.clone()
-    key_grad = key.grad.clone()
-    value_grad = value.grad.clone()
+    # query_grad = query.grad.clone()
+    # key_grad = key.grad.clone()
+    # value_grad = value.grad.clone()
 
     from flash_sigmoid import flash_attn_func
 
@@ -525,18 +525,97 @@ def do_bench_sigmoidattn(attn, B, H, S, D, DV):
     def run_ref():
         o_ref = flash_attn_func(query, key, value, softmax_scale=1.0,causal=True, sigmoid_bias=softmax_bias_cpu)
     
-    do_bench(run)
-    do_bench(run_bacward)
+    # do_bench(run)
+    # do_bench(run_bacward)
 
     latency = do_bench(run, warmup=500,rep=1000)
     print("tl: {:.2f} ms".format(latency))
     print("tflops: {:.2f}".format(tflops/latency*1e-9))
 
-    latency = do_bench(run_bacward, warmup=500,rep=1000)
-    print("tl bwd: {:.2f} ms".format(latency))
-    print("tflops: {:.2f}".format(bwd_tflops/latency*1e-9))
+    # latency = do_bench(run_bacward, warmup=500,rep=1000)
+    # print("tl bwd: {:.2f} ms".format(latency))
+    # print("tflops: {:.2f}".format(bwd_tflops/latency*1e-9))
 
-    do_bench(run_ref)
+    # do_bench(run_ref)
+
+    latency = do_bench(run_ref, warmup=500,rep=1000)
+    print("flash: {:.2f} ms".format(latency))
+    print("tflops: {:.2f}".format(tflops/latency*1e-9))
+
+def do_bench_sigmoidattn_cute(attn, B, H, S, D, DV, dtype=torch.float16):
+    tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
+    tflops = tflops * 0.5
+    bwd_tflops = 4 * B * H * S * S * DV + 6 * B * H * S * S * D
+    bwd_tflops = bwd_tflops * 0.5
+    torch.cuda.manual_seed(0)
+    dtype = dtype
+    device = "cuda"
+    accum_dtype = torch.float32
+    query = torch.randn(
+        B, S, H, D, device=device, dtype=dtype, requires_grad=True
+    )
+    key = torch.randn(
+        B, S, H, D, device=device, dtype=dtype, requires_grad=True
+    )
+    value = torch.randn(
+        B, S, H, DV, device=device, dtype=dtype, requires_grad=True
+    )
+    do = torch.randn(
+        B, S, H, DV, device=device, dtype=dtype, requires_grad=True
+    )
+    softmax_bias = 0.1*torch.randn(1, device=device, dtype=accum_dtype, requires_grad=False).cpu()
+    # softmax_bias_cpu = softmax_bias.cpu()
+
+    o = attn(query, key, value, softmax_bias)
+    # print(key)
+    # print(o)
+    # print(o.shape)
+    # o.backward(do, retain_graph=True)
+    # print(query.grad)
+    # print(key.grad)
+    # print(value.grad)
+    # query_grad = query.grad.clone()
+    # key_grad = key.grad.clone()
+    # value_grad = value.grad.clone()
+
+    from flash_sigmoid import flash_attn_func
+
+    o_ref = flash_attn_func(query, key, value, softmax_scale=1.0,causal=True, sigmoid_bias=softmax_bias)
+    print_debug(o, o_ref)
+
+    query.grad = key.grad = value.grad = None
+    o_ref.backward(do, retain_graph=True)
+    # print("query.grad", query.grad)
+    # print("query_grad", query_grad)
+    # print("key.grad", key.grad)
+    # print("key_grad", key_grad)
+    # print_debug(query.grad, query_grad)
+    # print_debug(key.grad, key_grad)
+    # print_debug(value.grad, value_grad)
+
+
+
+    # from tvm.tl.utils import do_bench
+    def run():
+        o = attn(query, key, value, softmax_bias)
+    def run_bacward():
+        o.backward(do, retain_graph=True)
+
+    def run_ref():
+        o_ref = flash_attn_func(query, key, value, softmax_scale=1.0,causal=True, sigmoid_bias=softmax_bias)
+    
+    # do_bench(run)
+    # do_bench(run_bacward)
+
+    latency = do_bench(run, warmup=500,rep=1000)
+    print("tl: {:.2f} ms".format(latency))
+    print("tflops: {:.2f}".format(tflops/latency*1e-9))
+
+    # latency = do_bench(run_bacward, warmup=500,rep=1000)
+    # print("tl bwd: {:.2f} ms".format(latency))
+    # print("tflops: {:.2f}".format(bwd_tflops/latency*1e-9))
+
+    # do_bench(run_ref)
 
     latency = do_bench(run_ref, warmup=500,rep=1000)
     print("flash: {:.2f} ms".format(latency))

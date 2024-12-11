@@ -137,6 +137,7 @@ struct OnlineFunc {
 
     using TensorT = decltype(make_tensor<float>(Shape<Int<kNRows>>{}));
     // TensorT row_max, row_sum;
+    TensorT row_placeholder;
     {{online_rowscales_vardefine}}
     const float softmax_scale_log2;
 
@@ -151,12 +152,14 @@ struct OnlineFunc {
         Tensor scores = make_tensor(acc_s.data(), flash::convert_layout_acc_rowcol(acc_s.layout()));
         static_assert(decltype(size<0>(scores))::value == kNRows);
         TensorT scores_scale;
+        cute::fill(scores_scale, 1.f);
         // online_fwd_body_vardefine
         {{online_fwd_body_vardefine}}
         // online_fwd_body
         {{online_fwd_body}}
 
-        cute::copy({{o_scale_var}}, scores_scale);
+        // cute::copy({{o_scale_var}}, scores_scale);
+        {{copy_o_scale_var}}
         {{copy_online_rowscales}}
 
         return scores_scale;
@@ -181,7 +184,7 @@ struct OnlineFunc {
         Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
         static_assert(decltype(size<0>(acc_o_rowcol))::value == kNRows);
         #pragma unroll
-        for (int mi = 0; mi < size({{online_rowscales_0}}); ++mi) {
+        for (int mi = 0; mi < {{online_rowscales_0_size}}; ++mi) {
             #pragma unroll
             for (int ni = 0; ni < size<1>(acc_o_rowcol); ++ni) { acc_o_rowcol(mi, ni) *= scores_scale(mi); }
         }

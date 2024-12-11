@@ -59,6 +59,7 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
                 params.v_row_stride, params.v_head_stride, params.v_batch_stride
             ),  // layout_V
             params.scale_softmax_log2,
+            {{mainloop_params_arg_input}}
             params.descale_q_ptr,
             params.descale_k_ptr,
             params.descale_v_ptr
@@ -114,7 +115,7 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
 }
 
 template<typename T>
-void run_mha_fwd_hdim64(Flash_fwd_params &params, cudaStream_t stream) {
+void run_mha_fwd_qkdim64_vdim64(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 64;
     BOOL_SWITCH(params.is_causal, Is_causal, [&] {
         SEQLEN_SWITCH(params.cu_seqlens_q, Seqlen_traits, [&] {
@@ -127,7 +128,7 @@ void run_mha_fwd_hdim64(Flash_fwd_params &params, cudaStream_t stream) {
 }
 
 template<typename T>
-void run_mha_fwd_hdim128(Flash_fwd_params &params, cudaStream_t stream) {
+void run_mha_fwd_qkdim128_vdim128(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 128;
     BOOL_SWITCH(params.is_causal, Is_causal, [&] {
         SEQLEN_SWITCH(params.cu_seqlens_q, Seqlen_traits, [&] {
@@ -269,7 +270,8 @@ void run_mha_fwd_qkdim128_vdim256(Flash_fwd_params &params, cudaStream_t stream)
             // Only use Cluster if number of tiles along seqlen_q is even
             BOOL_SWITCH(cutlass::ceil_div(params.seqlen_q, 128) % 2 == 0 && !Is_causal && !Seqlen_traits::kUseVarSeqLen, UseCluster, [&] {
                 run_flash_fwd<
-                    Flash_fwd_kernel_traits<QKHeaddim, VHeaddim, 128, 80, 12, 2, false, UseCluster ? 2 : 1, T>, 
+                // 128,128 199 tflops -> 128,96 302 tflops  -> 128,112 239tflops -> 128,80 299 tflops
+                    Flash_fwd_kernel_traits<QKHeaddim, VHeaddim, 128, 96, 12, 2, false, UseCluster ? 2 : 1, T>, 
                     Is_causal, Seqlen_traits
                 >(params, stream);
             });

@@ -185,7 +185,7 @@ struct CollectiveEpilogueFwd {
         );
     }
 
-    template <typename SharedStorage, typename FrgTensorO, typename FrgTensorLSE, typename TiledMma>
+    template <typename SharedStorage, typename FrgTensorO, {{FrgTensorLSE_type}} typename TiledMma>
     CUTLASS_DEVICE void
     store_final(Params const& epilogue_params,
           FrgTensorO const& tOrO,
