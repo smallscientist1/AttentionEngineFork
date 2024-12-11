@@ -164,6 +164,9 @@ class SymbolScalar:
 
     def exp(self):
         return self.op(Exp)
+    
+    def exp2(self):
+        return self.op(Exp2)
 
     def log(self):
         return self.op(Log)
@@ -204,7 +207,8 @@ class SymbolicConst(SymbolScalar):
     Const for constant value
     """
     def __init__(self, value):
-        super().__init__(str(value), Const(value), prev=[], shape_idx=[],
+        # TODO: not float const
+        super().__init__(str(value)+"f", Const(value), prev=[], shape_idx=[],
                          require_grad=False)
 
         

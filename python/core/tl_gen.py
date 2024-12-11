@@ -80,6 +80,102 @@ def to_tl_op(type:str, *args:SymbolScalar):
         raise NotImplementedError
     return code
 
+def to_cute_op(type:str, *args:SymbolScalar):
+    code = IndentedCode()
+    if type == "ReduceSum":
+        code.add_line(
+            f"flash::reduce_sum</*zero_init=*/true, /*warp_reduce=*/true>({args[1].varname}, {args[0].varname});"
+        )
+    elif type == "ReduceMax":
+        code.add_line(
+            f"flash::template reduce_max</*zero_init=*/true>({args[1].varname}, {args[0].varname});"
+        )
+    elif type == "Sub" or type == "Add" or type == "Mul" or type == "Div" or type == "Neg" or type == "Exp" or type == "Exp2"  or type == "Log" or type == "Abs" or type == "Max" or type == "Tanh":
+        # args idx
+        # note: assume input shape is validate: ["1",...] or [arg0[0], ...]
+        idx_strs = []
+        idx_lists = []
+        for _, arg in enumerate(args):
+            input_idx = arg.shape_idx
+            idx_list = [f"i{i}" if idx!="1" else f"0" for i, idx in enumerate(input_idx)]
+            idx_str = ",".join(idx_list)
+            idx_strs.append(idx_str)
+            idx_lists.append(idx_list)
+        # [block_M,block_N]
+        loop_str = ",".join(args[0].shape_idx)
+        idx_str = idx_strs[0]
+        idx_list = idx_lists[0]
+
+        # for loop
+        for ii,idx in enumerate(idx_list):
+            code.add_line(
+                "#pragma unroll"
+            )
+            code.add_line(
+                f"for (int {idx}=0; {idx} < size<{ii}>({args[0].varname}); {idx}++) {{"
+            )
+            code.more_indent()
+
+        # remove [] for scalar
+        for i, tmp_idx_str in enumerate(idx_strs):
+            idx_strs[i] = f"({tmp_idx_str})" if len(tmp_idx_str) > 0 else tmp_idx_str
+
+        if type == "Sub":
+            code.add_line(
+                f"{args[0].varname}({idx_str}) = {args[1].varname}{idx_strs[1]} - {args[2].varname}{idx_strs[2]};"
+            )
+        elif type == "Add":
+            code.add_line(
+                f"{args[0].varname}({idx_str}) = {args[1].varname}{idx_strs[1]} + {args[2].varname}{idx_strs[2]};"
+            )
+        elif type == "Max":
+            code.add_line(
+                f"{args[0].varname}({idx_str}) = cute::max({args[1].varname}{idx_strs[1]}, {args[2].varname}{idx_strs[2]});"
+            )
+        elif type == "Exp":
+            code.add_line(
+                f"{args[0].varname}({idx_str}) = exp2f({args[1].varname}{idx_strs[1]}*1.442695);"
+            )
+        elif type == "Exp2":
+            code.add_line(
+                f"{args[0].varname}({idx_str}) = exp2f({args[1].varname}{idx_strs[1]});"
+            )
+        elif type == "Mul":
+            code.add_line(
+                f"{args[0].varname}({idx_str}) = {args[1].varname}{idx_strs[1]} * {args[2].varname}{idx_strs[2]};"
+            )
+        elif type == "Div":
+            code.add_line(
+                f"{args[0].varname}({idx_str}) = {args[1].varname}{idx_strs[1]} / {args[2].varname}{idx_strs[2]};"
+            )
+        elif type == "Log":
+            code.add_line(
+                f"{args[0].varname}({idx_str}) = __logf({args[1].varname}{idx_strs[1]});"
+            )
+        elif type == "Tanh":
+            code.add_line(
+                f"{args[0].varname}({idx_str}) = cute::tanh({args[1].varname}{idx_strs[1]});"
+            )
+        elif type == "Abs":
+            code.add_line(
+                f"{args[0].varname}({idx_str}) = cute::abs({args[1].varname}{idx_strs[1]});"
+            )
+        else: # TODO
+            raise NotImplementedError(str(type))
+        
+        for ii,idx in enumerate(idx_list):
+            code.less_indent()
+            code.add_line(
+                "}"
+            )
+    else:
+        raise NotImplementedError
+    # debug 
+    code.add_line(
+        f"// used: {args[0].count}, use_list: {[usea.varname for usea in args[0].use_list]}"
+    )
+    return code
+
 def to_pytorch_op(type:str, *args:SymbolScalar):
     code = IndentedCode()
     if type == "ReduceSum":
@@ -136,7 +232,7 @@ def to_pytorch_op(type:str, *args:SymbolScalar):
         raise NotImplementedError
     return code
 
-def generate_tl_from_dag(x_list:list[SymbolScalar], to_tl:bool=True) -> Tuple[IndentedCode, dict]:
+def generate_tl_from_dag(x_list:list[SymbolScalar], to_tl:bool=True, to_cute:bool=False) -> Tuple[IndentedCode, dict]:
     # global var
     input_vars = {}
     def generate_tl(x:SymbolScalar, varname:str=None):
@@ -181,6 +277,8 @@ def generate_tl_from_dag(x_list:list[SymbolScalar], to_tl:bool=True) -> Tuple[In
         # tl_code += to_tl_op(x.code.type, x, *[SymbolScalar(f"{x.varname}_i{i}", input_item) for i, input_item in enumerate(x.code.inputs)])
         if to_tl:
             tl_code += to_tl_op(x.code.type, x, *x.prev)
+        elif to_cute:
+            tl_code += to_cute_op(x.code.type, x, *x.prev)
         else:
             tl_code += to_pytorch_op(x.code.type, x, *x.prev)
         x.lowered = True

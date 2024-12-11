@@ -119,6 +119,14 @@ class Exp(Node):
     def _backward(self, grad:Node):
         raise NotImplementedError
 
+class Exp2(Node):
+    def __init__(self, node:Node):
+        super().__init__("Exp2")
+        self.inputs = [node]
+
+    def _backward(self, grad:Node):
+        raise NotImplementedError
+
 class Log(Node):
     def __init__(self, node:Node):
         super().__init__("Log")

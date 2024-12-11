@@ -36,6 +36,7 @@ TL_MAIN = """
         {{score_mod_inputs | indent(8)}}
         ):
         {{score_mod_body | indent(8)}}
+        pass
     
     @T.macro
     def online_func(
@@ -43,6 +44,7 @@ TL_MAIN = """
         {{online_func_inputs | indent(8)}}
     ):
         {{online_func_body | indent(8)}}
+        pass
 
         
     @T.prim_func
@@ -179,6 +181,7 @@ TL_MAIN_BWD = """
         {{score_mod_fwd_inputs | indent(8)}}
         ):
         {{score_mod_fwd_body | indent(8)}}
+        pass
     
     @T.macro
     def score_mod_backward(
@@ -186,6 +189,7 @@ TL_MAIN_BWD = """
         {{score_mod_bwd_inputs | indent(8)}}
     ):
         {{score_mod_backward | indent(8)}}
+        pass
 
     @T.prim_func
     def flash_bwd(

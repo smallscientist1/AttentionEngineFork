@@ -1,3 +1,4 @@
+import torch
 class IndentedCode:
     def __init__(self, indent=0):
         
@@ -18,3 +19,8 @@ class IndentedCode:
         self.indent += indent
     def less_indent(self, indent=1):
         self.indent -= indent
+
+# tensor subclass for meta analysis
+def meta_tensor(*args, **kargs):
+    return torch.empty(*args, **kargs, device="meta")
+        
