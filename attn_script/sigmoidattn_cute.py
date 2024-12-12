@@ -53,22 +53,52 @@ custom_fwd_inputs = CustomIO({
     "softmax_bias": (1,),
 })
 
+def eval():
+    import itertools
+    BHSD = list(
+        itertools.product(
+            (1,),
+            (24,32),
+            (2048,4096,16384, 32768),
+            (128,)#,128)
+        )
+    )
+    for B, H, S, D in BHSD:
+        qkv_meta = (
+            meta_tensor(B, H, S, D, dtype=torch.bfloat16),
+            meta_tensor(B, H, S, D, dtype=torch.bfloat16),
+            meta_tensor(B, H, S, D, dtype=torch.bfloat16),
+        )
+
+        block_mask = create_block_mask(causal_mask, 1, 1, S, S, device="cuda")
+
+        mod = AttentionEngine(
+            qkv_meta,
+            custom_fwd_inputs, score_mod=score_mod, block_mask=block_mask,
+            online_func=None, backend="cute"
+        )
+
+        from benchmark.bench_utils import do_bench_sigmoidattn_cute
+        print(f"B={B}, H={H}, S={S}, D={D}")
+        do_bench_sigmoidattn_cute(mod, B, H, S, D, D, dtype=torch.bfloat16)
+
 if __name__ == "__main__":
-    B, H ,S, D = 1,32,2048,128 
-    qkv_meta = (
-        meta_tensor(B, H, S, D, dtype=torch.bfloat16),
-        meta_tensor(B, H, S, D, dtype=torch.bfloat16),
-        meta_tensor(B, H, S, D, dtype=torch.bfloat16),
-    )
+    # B, H ,S, D = 1,32,2048,128 
+    # qkv_meta = (
+    #     meta_tensor(B, H, S, D, dtype=torch.bfloat16),
+    #     meta_tensor(B, H, S, D, dtype=torch.bfloat16),
+    #     meta_tensor(B, H, S, D, dtype=torch.bfloat16),
+    # )
 
-    block_mask = create_block_mask(causal_mask, 1, 1, S, S, device="cuda")
+    # block_mask = create_block_mask(causal_mask, 1, 1, S, S, device="cuda")
 
-    mod = AttentionEngine(
-        qkv_meta,
-        custom_fwd_inputs, score_mod=score_mod, block_mask=block_mask,
-        online_func=None, backend="cute"
-    )
+    # mod = AttentionEngine(
+    #     qkv_meta,
+    #     custom_fwd_inputs, score_mod=score_mod, block_mask=block_mask,
+    #     online_func=None, backend="cute"
+    # )
 
-    from benchmark.bench_utils import do_bench_sigmoidattn_cute
-    do_bench_sigmoidattn_cute(mod, B, H, S, D, D, dtype=torch.bfloat16)
+    # from benchmark.bench_utils import do_bench_sigmoidattn_cute
+    # do_bench_sigmoidattn_cute(mod, B, H, S, D, D, dtype=torch.bfloat16)
+    eval()
 

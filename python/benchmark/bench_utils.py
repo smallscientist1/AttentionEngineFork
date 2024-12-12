@@ -595,7 +595,7 @@ def do_bench_sigmoidattn_cute(attn, B, H, S, D, DV, dtype=torch.float16):
 
 
 
-    # from tvm.tl.utils import do_bench
+    from tvm.tl.utils import do_bench
     def run():
         o = attn(query, key, value, softmax_bias)
     def run_bacward():

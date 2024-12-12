@@ -327,8 +327,8 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x head_size
 
     TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
 
-    TORCH_CHECK(head_size_og == 32 || head_size_og == 64 || head_size_og == 128 || head_size_og == 192 || head_size_og == 256, "Only support qk head size 64, 128, and 256 for now");
-    TORCH_CHECK(v_head_size_og == 64 || v_head_size_og == 128 || v_head_size_og == 256, "Only support v head size 64, 128, and 256 for now");
+    TORCH_CHECK(head_size_og == 32 || head_size_og == 64 || head_size_og == 96 || head_size_og == 128 || head_size_og == 192 || head_size_og == 256, "Only support qk head size 64, 96, 128, and 256 for now");
+    TORCH_CHECK(v_head_size_og == 64 || v_head_size_og == 128 || v_head_size_og == 192 || v_head_size_og == 256, "Only support v head size 64, 128, 192, and 256 for now");
     CHECK_SHAPE(q, batch_size, seqlen_q, num_heads, head_size_og);
     CHECK_SHAPE(k, batch_size, seqlen_k, num_heads_k, head_size_og);
     CHECK_SHAPE(v, batch_size, seqlen_k, num_heads_k, v_head_size_og);

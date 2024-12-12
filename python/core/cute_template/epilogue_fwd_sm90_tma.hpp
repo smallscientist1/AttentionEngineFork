@@ -57,7 +57,11 @@ struct CollectiveEpilogueFwd {
     // These are for storing the output tensor without TMA (e.g., for setting output to zero and var-seq-len)
     static constexpr int kNumVecElem = ceil_div(128, sizeof_bits_v<Element>);
     static_assert(kVHeadDim % kNumVecElem == 0); // TODO: check kQKHeadDim
-    static constexpr int kNumThreadsPerRow = kVHeadDim / kNumVecElem; // TODO: check kQKHeadDim
+    static constexpr int kVBytePerRow = kVHeadDim * sizeof(Element);
+    // block on KV to store
+    static constexpr int kBlockKVGmem = (kVBytePerRow % 128 == 0 ? 128 : (kVBytePerRow % 64 == 0 ? 64 : 32)) / sizeof(Element);
+    // static constexpr int kNumThreadsPerRow = kVHeadDim / kNumVecElem; // TODO: check kQKHeadDim
+    static constexpr int kNumThreadsPerRow = kBlockKVGmem / kNumVecElem;
     static_assert(NumMmaThreads % kNumThreadsPerRow == 0);
     static constexpr int kNumRows = NumMmaThreads / kNumThreadsPerRow;
     using TiledCopyOAtom = cute::Copy_Atom<cute::UniversalCopy<cutlass::uint128_t>, Element>;
