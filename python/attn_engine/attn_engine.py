@@ -91,13 +91,17 @@ class OnlineFunc:
  
 class AttentionEngine:
     def __init__(self, qkv_meta, custom_fwd_inputs, score_mod, block_mask,
-    online_func, device=H100(), backend="tl"):
+    online_func, mask_value="-inf", device=H100(), backend="tl"):
         # tunner
         need_engine_fuse, fuse_config  = decider(qkv_meta, device)
         
         # backend
         if backend == "tl":
-            tl_code = lower_tl(score_mod, block_mask, online_func, custom_fwd_inputs)
+            tl_dtype_map = {
+                torch.float16: "float16",
+                torch.bfloat16: "bfloat16",
+            }
+            tl_code = lower_tl(score_mod, block_mask, online_func, custom_fwd_inputs, qkv_meta[0].shape[3], qkv_meta[2].shape[3],tl_dtype_map[qkv_meta[0].dtype], mask_value)
             self.tl_code = tl_code # for debug
             # local_vars = {}
             # exec(tl_code, globals(), local_vars)

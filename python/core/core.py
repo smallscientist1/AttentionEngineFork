@@ -182,7 +182,7 @@ class SymbolicArray(SymbolScalar):
     def __init__(self, varname:str="", code:Node=Var(" "), prev=[], shape_idx:list=["block_M", "block_N"]):
         super().__init__(varname, code, prev, shape_idx)
 
-    def get_reduce(self,op:Literal["sum", "max"]):
+    def get_reduce(self,op:Literal["sum", "max", "abssum"]):
         """
         get reduce result of array
         """
@@ -190,6 +190,8 @@ class SymbolicArray(SymbolScalar):
             return self.op(ReduceSum, shape_idx=self.shape_idx[:-1], varname_suffix="sum")
         elif op == "max":
             return self.op(ReduceMax, shape_idx=self.shape_idx[:-1], varname_suffix="max")
+        elif op == "abssum":
+            return self.op(ReduceAbsSum, shape_idx=self.shape_idx[:-1], varname_suffix="abssum")
         else:
             raise NotImplementedError
     
@@ -207,8 +209,8 @@ class SymbolicConst(SymbolScalar):
     Const for constant value
     """
     def __init__(self, value):
-        # TODO: not float const
-        super().__init__(str(value)+(".f" if isinstance(value, int) else "f"), Const(value), prev=[], shape_idx=[],
+        # TODO: not float const # str(value)+(".f" if isinstance(value, int) else "f")
+        super().__init__(f"float({str(value)})", Const(value), prev=[], shape_idx=[],
                          require_grad=False)
 
         

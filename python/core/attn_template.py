@@ -7,6 +7,9 @@ import tvm.tl.language as T
 """
 
 TL_GLOBAL_FUNC = """
+def fast_tanh(A, B):
+    return T.call_extern("handle", "fasttanh", T.address_of(A), T.address_of(B))
+
 def make_dq_layout(dQ):
     # atomicAdd can not be vectorized, so we need to reorder dq to match the 8x8 gemm fragment
     return T.Layout(
@@ -16,17 +19,19 @@ def make_dq_layout(dQ):
 
 TL_KERNEL = """
 def kernel(batch, heads, seq_len, dim, dimv, 
-        block_M = None, block_N = None, num_stages = None, thread_num = None):
+        block_M = None, block_N = None, num_stages = None, thread_num = None,
+        shared_fuse = None):
     # scale = (1.0 / dim) ** 0.5 * 1.44269504  # log2(e) # 0.69314718  loge(2)
     shape = [batch, seq_len, heads, dim]
     shape_v = [batch, seq_len, heads, dimv]
     # TODO: seqlenkv
     seq_len_kv = seq_len
-    dtype = "float16"
+    dtype = "{{tl_dtype}}" # "float16"
     accum_dtype = "float"
     
     # TODO: mask
     is_casual = True
+    # shared_fuse = True
 """
 TL_MAIN = """
 
@@ -61,15 +66,22 @@ TL_MAIN = """
             Q_shared = T.alloc_shared([block_M, dim], dtype)
             K_shared = T.alloc_shared([block_N, dim], dtype)
             V_shared = T.alloc_shared([block_N, dimv], dtype)
-            # acc_s = T.alloc_fragment([block_M, block_N], accum_dtype)
+            scores = T.alloc_fragment([block_M, block_N], accum_dtype)
+            scores_shared = T.alloc_shared([block_M, block_N], accum_dtype)
+            scores_1 = T.alloc_fragment([block_M, block_N], accum_dtype)
             acc_s_cast = T.alloc_fragment([block_M, block_N], dtype)
+            acc_s_cast_1 = T.alloc_fragment([block_M, block_N], dtype)
             # acc_o = T.alloc_fragment([block_M, dimv], accum_dtype)
 
             {{custom_fwd_inputs_init | indent(12)}}
             {{online_func_init | indent(12)}}
             {{final_rowscales_init | indent(12)}}
 
-            T.annotate_layout({Q_shared: tl.layout.make_swizzled_layout(Q_shared)})
+            T.annotate_layout({
+                Q_shared: tl.layout.make_swizzled_layout(Q_shared),
+                scores_shared: tl.layout.make_swizzled_layout(scores_shared),
+                {{swizzle_shared | indent(16)}}
+            })
             T.copy(Q[bz, bx * block_M : (bx + 1) * block_M, by, :], Q_shared)
             {{custom_fwd_inputs_load_prolog | indent(12)}}
             T.fill(acc_o, 0)
@@ -97,7 +109,7 @@ TL_MAIN = """
                 else:
                     T.clear(scores)
                 
-                T.gemm(Q_shared, K_shared, scores, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                T.gemm(Q_shared, K_shared, scores, transpose_B=True, policy= (T.GemmWarpPolicy.FullRow if (not shared_fuse) else T.GemmWarpPolicy.FullCol))
                 T.copy(V[bz, k * block_N : (k + 1) * block_N, by, :], V_shared)
                     
                 {{custom_fwd_inputs_load_s2r | indent(16)}}
@@ -105,8 +117,15 @@ TL_MAIN = """
                 score_mod({{score_mod_inputs_list}}) # scores
                     
                 # call online_func
-                online_func({{online_func_inputs_list}}) # scores
-                T.copy(scores, acc_s_cast)
+                if shared_fuse:
+                    T.copy(scores, scores_shared)
+                    T.copy(scores_shared, scores_1)
+                    online_func({{online_func_inputs_list}})
+                    T.copy(scores_1, acc_s_cast_1)
+
+                else:
+                    online_func({{online_func_inputs_list}}) # scores
+                    T.copy(scores, acc_s_cast)
 
                 # for i, j in T.Parallel(block_M, dimv):
                 #     acc_o[i, j] *= o_scale[i]
@@ -115,7 +134,10 @@ TL_MAIN = """
                 # update online_rowscales
                 {{online_rowscales_update | indent(16)}}
 
-                T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                if shared_fuse:
+                    T.gemm(acc_s_cast_1, V_shared, acc_o, policy=(T.GemmWarpPolicy.FullCol))
+                else:
+                    T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
             
             # online_fwd_epilogue
             {{online_func_epilogue | indent(12)}}
@@ -345,12 +367,13 @@ class _attention(torch.autograd.Function):
     def forward(ctx, q, k, v, *custom_fwd_inputs):
         BATCH, N_CTX, H, D_HEAD = q.shape
         D_HEADV = v.shape[-1]
-        block_M = 128
-        block_N = 128 if D_HEAD <= 128 else 64
-        stages = 1
-        thread_num = 256
+        block_M = {{block_M}} # 128
+        block_N = {{block_N}} # 128 if D_HEAD <= 128 else 64
+        stages = {{stages}} # 2
+        thread_num = {{thread_num}} # 256
+        shared_fuse = {{shared_fuse}} # False
         output_idx_list = {{output_idx_list}}
-        mod = tl.cached(kernel, output_idx_list, BATCH, H, N_CTX, D_HEAD, D_HEADV, block_M, block_N, stages, thread_num)
+        mod = tl.cached(kernel, output_idx_list, BATCH, H, N_CTX, D_HEAD, D_HEADV, block_M, block_N, stages, thread_num, shared_fuse)
         if len(output_idx_list) == 1:
             o = mod(q, k, v, *custom_fwd_inputs)
             final_scale = []

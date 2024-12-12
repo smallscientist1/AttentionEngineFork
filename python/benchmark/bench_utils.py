@@ -675,13 +675,13 @@ def bench_sigmoidattn_fwd(attn, B, H, S, D, DV, causal=True):
     return latency, (tflops/latency*1e-9), latency_ref, (tflops/latency_ref*1e-9)
 
 
-def do_bench_retention(attn, B, H, S, D, DV):
+def do_bench_retention(attn, B, H, S, D, DV, dtype=torch.bfloat16):
     tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
     tflops = tflops * 0.5
     bwd_tflops = 4 * B * H * S * S * DV + 6 * B * H * S * S * D
     bwd_tflops = bwd_tflops * 0.5
     torch.cuda.manual_seed(0)
-    dtype = torch.bfloat16
+    dtype = dtype
     device = "cuda"
     accum_dtype = torch.float32
     query = torch.randn(
@@ -741,13 +741,13 @@ def do_bench_retention(attn, B, H, S, D, DV):
     # print("tl bwd: {:.2f} ms".format(latency))
     # print("tflops: {:.2f}".format(bwd_tflops/latency*1e-9))
 
-def bench_retention_fwd(attn, B, H, S, D, DV):
+def bench_retention_fwd(attn, B, H, S, D, DV, dtype=torch.bfloat16):
     tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
     tflops = tflops * 0.5
     bwd_tflops = 4 * B * H * S * S * DV + 6 * B * H * S * S * D
     bwd_tflops = bwd_tflops * 0.5
     torch.cuda.manual_seed(0)
-    dtype = torch.bfloat16
+    dtype = dtype
     device = "cuda"
     accum_dtype = torch.float32
     query = torch.randn(

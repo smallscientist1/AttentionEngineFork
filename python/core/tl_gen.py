@@ -13,6 +13,10 @@ def to_tl_op(type:str, *args:SymbolScalar):
         code.add_line(
             f"T.reduce_max({args[1].varname}, {args[0].varname},dim=1, clear=True)"
         )
+    elif type == "ReduceAbsSum":
+        code.add_line(
+            f"T.reduce_abssum({args[1].varname}, {args[0].varname},dim=1)"
+        )
     elif type == "Sub" or type == "Add" or type == "Mul" or type == "Div" or type == "Neg" or type == "Exp" or type == "Log" or type == "Abs" or type == "Max" or type == "Tanh":
         # args idx
         # note: assume input shape is validate: ["1",...] or [arg0[0], ...]
@@ -66,7 +70,8 @@ def to_tl_op(type:str, *args:SymbolScalar):
             )
         elif type == "Tanh":
             code.add_line(
-                f"{args[0].varname}[{idx_str}] = T.tanh({args[1].varname}{idx_strs[1]})"
+                # f"{args[0].varname}[{idx_str}] = T.tanh({args[1].varname}{idx_strs[1]})"
+                f"fast_tanh({args[1].varname}{idx_strs[1]}, {args[0].varname}[{idx_str}])"
             )
         elif type == "Abs":
             code.add_line(

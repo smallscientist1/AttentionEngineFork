@@ -176,6 +176,14 @@ class ReduceMax(Node):
     def _backward(self, grad:Node):
         raise NotImplementedError
 
+class ReduceAbsSum(Node):
+    def __init__(self, node:Node):
+        super().__init__("ReduceAbsSum")
+        self.inputs = [node]
+
+    def _backward(self, grad:Node):
+        raise NotImplementedError
+
 if __name__ == "__main__":
     a = Var("a")
     b = Var("b")

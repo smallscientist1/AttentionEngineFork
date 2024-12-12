@@ -4,6 +4,7 @@ from .graph import Var, Const
 from .utils import IndentedCode
 from .tl_gen import generate_tl_from_dag
 from .attn_template import TlAttnTemplate
+from dataclasses import dataclass
 
 # TODO: bwd map
 shape_idx_map = {
@@ -38,15 +39,29 @@ shape_idx_onchip_map_bwd = {
 
 RECURRENT_DIM = "block_N"
 
+@dataclass
+class lowerOutput:
+    swizzle_shared: str = ""
+    tl_dtype: str = "float16"
+    is_inf_mask: str = "True"
+
+@dataclass
+class TunnerOutput:
+    block_M: str = "128"
+    block_N: str = "128"
+    stages: str = "2"
+    thread_num: str = "256"
+    shared_fuse: str = "False"
+
+
 class lowerOnlineFuncOutput:
 
-    def __init__(self, is_inf_mask, final_rowscales_output, final_rowscales_init, online_rowscales_initvalue, online_func_init, online_func_inputs, online_func_body, online_func_inputs_list, o_scale, online_func_epilogue, final_rowscales_save,
+    def __init__(self, final_rowscales_output, final_rowscales_init, online_rowscales_initvalue, online_func_init, online_func_inputs, online_func_body, online_func_inputs_list, o_scale, online_func_epilogue, final_rowscales_save,
                  online_rowscales_update,
                  isused_doosum, final_rowscales_length, final_rowscales_load, online_func_fwd, custom_bwd_inputs_load, custom_bwd_body,
                  final_rowscales_shared_init,
                  custom_bwd_inputs,custom_bwd_inputs_init,
                  o_scale_varname):
-        self.is_inf_mask = is_inf_mask
         self.final_rowscales_output = final_rowscales_output
         self.final_rowscales_init = final_rowscales_init
         self.online_rowscales_initvalue = online_rowscales_initvalue
@@ -96,9 +111,9 @@ class lowerScoreModOutput:
         self.score_mod_bwd_inputs_declare = score_mod_bwd_inputs_declare
         self.score_mod_bwd_inputs_declare_shared = score_mod_bwd_inputs_declare_shared
 
-def lower_online_func(online_func): # OnlineFunc):
+def lower_online_func(online_func, lower_output:lowerOutput,scores_name="scores"): # OnlineFunc):
     online_fwd = online_func.online_fwd
-    scores = SymbolicArray("scores", Var("scores"), shape_idx=["block_M", "block_N"])
+    scores = SymbolicArray(scores_name, Var(scores_name), shape_idx=["block_M", "block_N"])
     online_rowscales = online_func.online_rowscales
     b = SymbolScalar("b", Var("b"))
     h = SymbolScalar("h", Var("h"))
@@ -118,6 +133,9 @@ def lower_online_func(online_func): # OnlineFunc):
     
     # online_fwd
     scores_new, new_online_rowscales, o_scalevar = online_fwd(scores, online_rowscales, b, h, q_idx)
+    for k,v in new_online_rowscales.items():
+        new_online_rowscales[k].count += 1
+    o_scalevar.count += 1
     tl_code, input_vars_online = generate_tl_from_dag(list(new_online_rowscales.values()) + [scores_new, o_scalevar])
     online_func_body = str(tl_code)
     if online_func_body == "":
@@ -166,6 +184,8 @@ def lower_online_func(online_func): # OnlineFunc):
     # for k,v in online_rowscales.items():
     #     online_func_init += f"{k} = T.alloc_fragment([{v.shape_idx}], accum_dtype)\n"
     for _, input_var in input_vars.items():
+        if input_var.varname == scores_name:
+            continue
         online_func_init += f"{input_var.varname} = T.alloc_fragment([{', '.join(input_var.shape_idx)}], accum_dtype)\n"
 
 
@@ -175,12 +195,12 @@ def lower_online_func(online_func): # OnlineFunc):
     # tl_code += generate_tl(acco, varname="acco")
 
     # tmp_solution: mask_value
-    mask_value = "0"
-    for used in scores.use_list:
-        if used.code.type == "ReduceMax":
-            mask_value = "-inf"
-            break
-    is_inf_mask = "True" if mask_value == "-inf" else "False"
+    # mask_value = "0"
+    # for used in scores.use_list:
+    #     if used.code.type == "ReduceMax":
+    #         mask_value = "-inf"
+    #         break
+    # is_inf_mask = "True" if mask_value == "-inf" else "False"
 
     # print(tl_code)
     # print("o_scalevar:", o_scalevar.varname)
@@ -222,7 +242,6 @@ def lower_online_func(online_func): # OnlineFunc):
 
 
     return lowerOnlineFuncOutput(
-        is_inf_mask=is_inf_mask,
         final_rowscales_output=final_rowscales_output,
         online_rowscales_initvalue=online_rowscales_initvalue,
         online_func_init=online_func_init,
@@ -247,7 +266,7 @@ def lower_online_func(online_func): # OnlineFunc):
         o_scale_varname=o_scale_varname
     )
 
-def lower_score_mod(score_mod, custom_fwd_inputs):
+def lower_score_mod(score_mod, custom_fwd_inputs, lower_output:lowerOutput):
     scores = SymbolScalar("scores", Var("scores"), shape_idx=["block_M", "block_N"])
     b = SymbolScalar("b", Var("b"))
     h = SymbolScalar("h", Var("h"))
@@ -322,7 +341,26 @@ def lower_score_mod(score_mod, custom_fwd_inputs):
     )
 
 def lower_tl(score_mod, block_mask, online_func,
-             custom_fwd_inputs, ):
+             custom_fwd_inputs, 
+             dimqk, dimv, tl_dtype, mask_value):
+
+    lower_output = lowerOutput()
+    lower_output.tl_dtype = tl_dtype
+    # TODO: mask_value: 0 or -inf
+    lower_output.is_inf_mask = "True" if mask_value == "-inf" else "False"
+
+    # tune
+    tune_output = TunnerOutput()
+    scores_name = "scores"
+    # TODO
+    if dimv > 256:
+        tune_output.block_M = "64"
+        tune_output.block_N = "64"
+        tune_output.stages = "1"
+        tune_output.shared_fuse = "True"
+    # TODO: ugly
+    if tune_output.shared_fuse == "True":
+        scores_name = "scores_1"
 
     custom_fwd_inputs_load_shared_bwd = ""
     # for k,v in custom_fwd_inputs.input_tensors.items():
@@ -379,6 +417,7 @@ def lower_tl(score_mod, block_mask, online_func,
             custom_fwd_inputs_init += f"{k}_shared = T.alloc_shared([{', '.join(shape_idx_block)}], {custom_input_dtype})\n"
             custom_fwd_inputs_load_shared += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k}_shared)\n"
             custom_fwd_inputs_load_s2r += f"T.copy({k}_shared, {k})\n"
+            lower_output.swizzle_shared += f"{k}_shared: tl.layout.make_swizzled_layout({k}_shared), \n"
         else:
             custom_fwd_inputs_load_shared += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k})\n"
         # TODO: dtype of custom_fwd_inputs
@@ -386,12 +425,14 @@ def lower_tl(score_mod, block_mask, online_func,
         custom_fwd_inputs_str += f"g_{k}: T.Buffer([{', '.join(v.shape_idx)}], {custom_input_dtype}), \n"
         custom_fwd_inputs.input_tensors[k].shape_idx = shape_idx_block
 
-    lower_score_mod_output = lower_score_mod(score_mod, custom_fwd_inputs)
-    lower_online_func_output = lower_online_func(online_func)
+    lower_score_mod_output = lower_score_mod(score_mod, custom_fwd_inputs, lower_output)
+    lower_online_func_output = lower_online_func(online_func, lower_output, scores_name)
     output_idx_list = [i for i in range(3+len(custom_fwd_inputs.input_tensors), 3+len(custom_fwd_inputs.input_tensors)+1+len(online_func.final_rowscales))]
     
     # TODO: custom_fwd_inputs grad
     bwd_output_idx_list = [i for i in range(4+len(custom_fwd_inputs.input_tensors)+len(online_func.final_rowscales)+int(lower_online_func_output.isused_doosum), 4+len(custom_fwd_inputs.input_tensors)+len(online_func.final_rowscales)+int(lower_online_func_output.isused_doosum)+3)]
+    
+
     return TlAttnTemplate(
         custom_fwd_inputs=custom_fwd_inputs_str,
         custom_fwd_inputs_init=custom_fwd_inputs_init,
@@ -401,6 +442,10 @@ def lower_tl(score_mod, block_mask, online_func,
         custom_fwd_inputs_load_shared_bwd=custom_fwd_inputs_load_shared_bwd,
         **lower_online_func_output.__dict__,
         **lower_score_mod_output.__dict__,
+        
+        **lower_output.__dict__,
+        **tune_output.__dict__,
+
         output_idx_list=str(output_idx_list),
         bwd_output_idx_list=str(bwd_output_idx_list)
     )()

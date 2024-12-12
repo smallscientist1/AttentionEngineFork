@@ -6,6 +6,7 @@ from core.core import CustomIO
 from core.core import create_block_mask
 from core.core import SymbolicArray, SymbolScalar, SymbolicTensor
 from core.core import Var
+from core.utils import meta_tensor
 
 def causal_mask(b, h, q_idx, kv_idx):
     return q_idx >= kv_idx
@@ -53,11 +54,17 @@ custom_fwd_inputs = CustomIO({
 })
 
 if __name__ == "__main__":
-    B, H ,S, D = 1,32,2048,64
+    B, H ,S, D = 1,24,4096,128
+    qkv_meta = (
+        meta_tensor(B, H, S, D, dtype=torch.float16),
+        meta_tensor(B, H, S, D, dtype=torch.float16),
+        meta_tensor(B, H, S, D, dtype=torch.float16),
+    )
 
     block_mask = create_block_mask(causal_mask, 1, 1, S, S, device="cuda")
 
     mod = AttentionEngine(
+        qkv_meta,
         custom_fwd_inputs, score_mod=score_mod, block_mask=block_mask,
         online_func=OnlineIdentity(),
     )

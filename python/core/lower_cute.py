@@ -66,6 +66,8 @@ def lower_online_func(online_func, lower_cute_output: LowerCuteOutput):
 
     # online_fwd
     scores_new, new_online_rowscales, o_scalevar = online_fwd(scores, online_rowscales, b, h, q_idx)
+    for k,v in new_online_rowscales.items():
+        new_online_rowscales[k].count += 1
     # o_scalevar usecount+1
     o_scalevar.count += 1
     # TODO: assert: scores_new==score

@@ -6,15 +6,16 @@ from core.core import CustomIO
 from core.core import create_block_mask
 from core.core import SymbolicArray, SymbolScalar, SymbolicTensor
 from core.core import Var
+from core.utils import meta_tensor
 
 def causal_mask(b, h, q_idx, kv_idx):
     return q_idx >= kv_idx
 
-Dimqk = 64
+Dimqk = 256
 softmax_scale = Dimqk**0.5
 def score_mod(score, custom_fwd_inputs, b, h, q_idx, kv_idx):
     mask = custom_fwd_inputs.input_tensors["mask"]
-    return score * mask / softmax_scale
+    return score * mask # / softmax_scale
 
 class OnlineRetention(OnlineFunc):
     def __init__(self):
@@ -33,7 +34,8 @@ class OnlineRetention(OnlineFunc):
     def online_fwd(scores,online_rowscales, b, h, q_idx):
         r_wo_clamp = online_rowscales["r_wo_clamp"]
         r = online_rowscales["r"]
-        r_wo_clamp = r_wo_clamp + scores.abs().get_reduce("sum")
+        # r_wo_clamp = r_wo_clamp + scores.abs().get_reduce("sum")
+        r_wo_clamp = r_wo_clamp + scores.get_reduce("abssum")
         r_new = r_wo_clamp.max(1.0)
         o_scale = r / r_new
 
@@ -71,8 +73,12 @@ class OnlineRetention(OnlineFunc):
 
 if __name__ == "__main__":
     # 16,16,8192 fail for H100 TMA mask
-    B, H ,S, D, DV = 16,8,8192,Dimqk,Dimqk
-
+    B, H ,S, D, DV = 1,20,2048,Dimqk,512
+    qkv_meta = (
+        meta_tensor(B, H, S, D, dtype=torch.float16),
+        meta_tensor(B, H, S, D, dtype=torch.float16),
+        meta_tensor(B, H, S, DV, dtype=torch.float16),
+    )
 
     # mask on attention score
     block_mask = create_block_mask(causal_mask, 1, 1, S, S, device="cuda")
@@ -83,12 +89,14 @@ if __name__ == "__main__":
 
     online = OnlineRetention()
     mod = AttentionEngine(
+    qkv_meta,
     custom_fwd_inputs, score_mod=score_mod, block_mask=block_mask,
     online_func=online,
+    mask_value="0"
     )
 
     with open("retention_tl.py", "w") as f:
         f.write(mod.tl_code)
 
     from benchmark.bench_utils import do_bench_retention
-    do_bench_retention(mod, B, H, S, D, DV)
+    do_bench_retention(mod, B, H, S, D, DV, dtype=torch.float16)
