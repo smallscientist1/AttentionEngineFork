@@ -32,7 +32,7 @@ def k_mod(k, custom_io): # (B,H,seqlen, D)
     return k * dt
 
 if __name__ == "__main__":
-    B, H, T, D, DV = 16, 8, 2048, 128, 128 # bug 16384
+    B, H, T, D, DV = 1, 80, 2048, 128, 64 # bug 16384
     custom_io = CustomIO(
         {
             "A": (1, H),
@@ -41,6 +41,8 @@ if __name__ == "__main__":
     )
     mod = LinearAttentionEngine(decay_mod=decay_mod, k_mod=k_mod,
                             custom_io = custom_io)
+    with open("mamba2_tl.py","w") as f:
+        f.write(mod.tl_code)
 
     from benchmark.bench_utils import do_bench_mamba
-    do_bench_mamba(mod, B, H, T, D, DV, BT=64)
+    do_bench_mamba(mod, B, H,H,H, T, D, DV, BT=64)

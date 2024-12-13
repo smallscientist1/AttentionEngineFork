@@ -342,7 +342,7 @@ def lower_score_mod(score_mod, custom_fwd_inputs, lower_output:lowerOutput):
 
 def lower_tl(score_mod, block_mask, online_func,
              custom_fwd_inputs, 
-             dimqk, dimv, tl_dtype, mask_value):
+             dimqk, dimv, tl_dtype, mask_value, tuned_config=None):
 
     lower_output = lowerOutput()
     lower_output.tl_dtype = tl_dtype
@@ -350,7 +350,10 @@ def lower_tl(score_mod, block_mask, online_func,
     lower_output.is_inf_mask = "True" if mask_value == "-inf" else "False"
 
     # tune
-    tune_output = TunnerOutput()
+    if tuned_config is None:
+        tune_output = TunnerOutput()
+    else:
+        tune_output = TunnerOutput(**tuned_config)
     scores_name = "scores"
     # TODO
     if dimv > 256:

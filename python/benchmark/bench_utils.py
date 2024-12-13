@@ -181,6 +181,70 @@ def print_debug(o, O_ref, rtol=1e-3, atol=1e-3):
         for idx, element in enumerate(o_1):# .flatten()):
             f.write(f"{idx}: {element}\n")
 
+
+# def bench_func_fwd(attn, B, H, S, D, DV, custom_fwd_input={}, causal=True, dtype=torch.float16):
+#     tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
+#     if causal:
+#         tflops = tflops * 0.5
+#     bwd_tflops = 4 * B * H * S * S * DV + 6 * B * H * S * S * D
+#     if causal:
+#         bwd_tflops = bwd_tflops * 0.5
+#     torch.cuda.manual_seed(0)
+#     dtype = dtype
+#     device = "cuda"
+#     accum_dtype = torch.float32
+#     query = torch.randn(
+#         B, S, H, D, device=device, dtype=dtype, requires_grad=True
+#     )
+#     key = torch.randn(
+#         B, S, H, D, device=device, dtype=dtype, requires_grad=True
+#     )
+#     value = torch.randn(
+#         B, S, H, DV, device=device, dtype=dtype, requires_grad=True
+#     )
+#     do = torch.randn(
+#         B, S, H, DV, device=device, dtype=dtype, requires_grad=True
+#     )
+#     # softmax_bias = 0.1*torch.randn(1, device=device, dtype=torch.float, requires_grad=False)
+#     custom_tensors = []
+#     for key, value in custom_fwd_input.items():
+#         # ["1", "heads", "seq_len", "seq_len_kv"]
+#         # -> (1, H, S, S)
+#         TENSOR_SHAPE_MAP = [
+#             B, H, S, S
+#         ]
+#         tensor_shape = [
+
+#         ]
+
+#     o = attn(query, key, value, softmax_bias)
+
+
+#     from flash_sigmoid import flash_attn_func
+
+#     o_ref = flash_attn_func(query, key, value, softmax_scale=1.0,causal=True, sigmoid_bias=softmax_bias_cpu)
+#     # print_debug(o, o_ref)
+
+#     from tvm.tl.utils import do_bench
+#     def run():
+#         o = attn(query, key, value, softmax_bias)
+
+#     def run_ref():
+#         o_ref = flash_attn_func(query, key, value, softmax_scale=1.0,causal=True, sigmoid_bias=softmax_bias_cpu)
+    
+#     do_bench(run)
+#     do_bench(run_ref)
+
+#     latency = do_bench(run, warmup=500,rep=1000)
+#     print("tl: {:.2f} ms".format(latency))
+#     print("tflops: {:.2f}".format(tflops/latency*1e-9))
+
+#     latency_ref = do_bench(run_ref, warmup=500,rep=1000)
+#     print("flash: {:.2f} ms".format(latency_ref))
+#     print("tflops: {:.2f}".format(tflops/latency_ref*1e-9))
+#     return latency, (tflops/latency*1e-9), latency_ref, (tflops/latency_ref*1e-9)
+
+
 def do_bench_mamba(linear_attention, B, HQ,HK,H, TLen, D, DV, BT):
     from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
     torch.cuda.manual_seed(0)

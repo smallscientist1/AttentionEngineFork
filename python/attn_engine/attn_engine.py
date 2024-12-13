@@ -91,37 +91,37 @@ class OnlineFunc:
  
 class AttentionEngine:
     def __init__(self, qkv_meta, custom_fwd_inputs, score_mod, block_mask,
-    online_func, mask_value="-inf", device=H100(), backend="tl"):
+    online_func, mask_value="-inf", device=H100(), backend="tl", tune=False):
         # tunner
         need_engine_fuse, fuse_config  = decider(qkv_meta, device)
         
         # backend
         if backend == "tl":
-            tl_dtype_map = {
-                torch.float16: "float16",
-                torch.bfloat16: "bfloat16",
-            }
-            tl_code = lower_tl(score_mod, block_mask, online_func, custom_fwd_inputs, qkv_meta[0].shape[3], qkv_meta[2].shape[3],tl_dtype_map[qkv_meta[0].dtype], mask_value)
-            self.tl_code = tl_code # for debug
-            # local_vars = {}
-            # exec(tl_code, globals(), local_vars)
-            # # 将 local_vars 转化为全局变量
-            # globals().update(local_vars)
-            # self.attention = local_vars["attention"]
-            code_hash = hashlib.md5(tl_code.encode()).hexdigest()
-            cache_dir = os.path.join(os.path.dirname(__file__),"cache")
-            file_path = os.path.join(cache_dir, f"{code_hash}.py")
-            os.makedirs(cache_dir, exist_ok=True)
-            if not os.path.exists(file_path):
-                with open(file_path, "w") as f:
-                    f.write(tl_code)
-                    f.flush()
-            # replace code
-            # file_path = "/home/aiscuser/cfy/AttentionEngine/attn_script/generated_tl_code_attention.py"
-            spec = importlib.util.spec_from_file_location("tl_attn", file_path)
-            tl_attn = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(tl_attn)
-            self.attention = tl_attn.attention
+            self._compile_tl(qkv_meta, custom_fwd_inputs, score_mod, block_mask, online_func, mask_value)
+
+            if tune:
+                from autotuner.attnfwd_tunner_engine2 import AttnFwdTunner
+                TUNE_SPACE = {
+                    "block_M" : [64,128,256],
+                    "block_N" : [32,64,128,256],
+                    "stages" : [1,2],# ,3],
+                    "num_threads" : [128,256],
+                    "shared_fuse" : [True, False],
+                }
+                B,H,S,DK = qkv_meta[0].shape
+                DV = qkv_meta[2].shape[3]
+                output_idx_list = [i for i in range(3+len(custom_fwd_inputs.input_tensors), 3+len(custom_fwd_inputs.input_tensors)+1+len(online_func.final_rowscales))]
+                tl_kernel = self.kernel
+                
+                st = AttnFwdTunner(DK, DV, **TUNE_SPACE)
+                configs = st.generate_config()
+                print(configs)
+                # program = tl_kernel(B, H, S, DK, DV, *configs[0].values())
+                # from tvm import tl
+                # mod, params = tl.lower(program)
+                tuned_config = st.tl_tune(tl_kernel, B, H, S, DK, DV, configs, output_idx_list, file_path="tuned_result.json")
+                self._compile_tl(qkv_meta, custom_fwd_inputs, score_mod, block_mask, online_func, mask_value, tuned_config)
+
         elif backend == "cute":
             # must be same with cute_template.py
             OUTPUT_DIR = osp.join(osp.dirname(osp.abspath(__file__)), "../core/cute_template_output")
@@ -136,6 +136,35 @@ class AttentionEngine:
             spec.loader.exec_module(cute_attn)
             # TODO: causal
             self.attention = partial(cute_attn.flash_attn_func, causal=True)
+
+    def _compile_tl(self, qkv_meta, custom_fwd_inputs, score_mod, block_mask,
+    online_func, mask_value="-inf", tuned_config=None):
+        tl_dtype_map = {
+            torch.float16: "float16",
+            torch.bfloat16: "bfloat16",
+        }
+        tl_code = lower_tl(score_mod, block_mask, online_func, custom_fwd_inputs, qkv_meta[0].shape[3], qkv_meta[2].shape[3],tl_dtype_map[qkv_meta[0].dtype], mask_value, tuned_config)
+        self.tl_code = tl_code # for debug
+        # local_vars = {}
+        # exec(tl_code, globals(), local_vars)
+        # # 将 local_vars 转化为全局变量
+        # globals().update(local_vars)
+        # self.attention = local_vars["attention"]
+        code_hash = hashlib.md5(tl_code.encode()).hexdigest()
+        cache_dir = os.path.join(os.path.dirname(__file__),"cache")
+        file_path = os.path.join(cache_dir, f"{code_hash}.py")
+        os.makedirs(cache_dir, exist_ok=True)
+        if not os.path.exists(file_path):
+            with open(file_path, "w") as f:
+                f.write(tl_code)
+                f.flush()
+        # replace code
+        # file_path = "/home/aiscuser/cfy/AttentionEngine/attn_script/generated_tl_code_attention.py"
+        spec = importlib.util.spec_from_file_location("tl_attn", file_path)
+        tl_attn = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tl_attn)
+        self.kernel = tl_attn.kernel
+        self.attention = tl_attn.attention
 
     def __call__(self, *args, **kargs):
         
