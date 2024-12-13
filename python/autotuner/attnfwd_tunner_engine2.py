@@ -12,14 +12,16 @@ import tvm.tl.language as T
 
 def cache_module(tuned_config, kernel, output_idx_list, BATCH, H, N_CTX, D_HEAD, D_HEADV):
     try:# cache
-        mod = tl.cached(kernel, output_idx_list, BATCH, H, N_CTX, D_HEAD, D_HEADV, *tuned_config.values())
-        return mod, tuned_config
+        # mod = tl.cached(kernel, output_idx_list, BATCH, H, N_CTX, D_HEAD, D_HEADV, *tuned_config.values())
+        program = kernel(BATCH, H, N_CTX, D_HEAD, D_HEADV, *tuned_config.values())
+        mod, params = tl.lower(program)
+        return mod, params, tuned_config
     except Exception as e:
         print(traceback.format_exc())
-        return None, tuned_config
+        return None, None, tuned_config
     
 class AttnFwdTunner:
-    def __init__(self,DK, DV, block_M, block_N, num_threads, stages):
+    def __init__(self,DK, DV, block_M, block_N, num_threads, stages, **kwargs):
         self.DK = DK
         self.DV = DV
         self.block_M = block_M
@@ -33,7 +35,7 @@ class AttnFwdTunner:
         _configs = list(product(block_M, block_N, num_threads, stages))
         configs  = [
             {
-                'block_M': c[0], 'block_N': c[1], 'num_stages': c[3], 'thread_num': c[2]
+                'block_M': c[0], 'block_N': c[1], 'stages': c[3], 'thread_num': c[2], 'shared_fuse': False
             }
             for c in _configs
         ]
@@ -51,7 +53,7 @@ class AttnFwdTunner:
 
     
     
-    def tune(self, kernel, BATCH, H, N_CTX, D_HEAD, D_HEADV, tuned_configs, output_idx_list=[4,], bench_func=bench_sigmoidattn_fwd, file_path="tuned_result.json"):
+    def tl_tune(self, kernel, BATCH, H, N_CTX, D_HEAD, D_HEADV, tuned_configs, output_idx_list=[4,], file_path="tuned_result.json"):
 
         problem_keys = {
             "B": BATCH, "H": H, "N_CTX": N_CTX, "D_HEAD": D_HEAD, "D_HEADV": D_HEADV, "causal":True
@@ -92,17 +94,25 @@ class AttnFwdTunner:
             futures = {executor.submit(cache_module, config, kernel, output_idx_list, BATCH, H, N_CTX, D_HEAD, D_HEADV): config for config in tuned_configs}
     
             for future in concurrent.futures.as_completed(futures):
-                mod, tuned_config = future.result()
+                mod, params, tuned_config = future.result()
                 if mod is not None:
-                    cached_results.append((mod, tuned_config))
+                    cached_results.append((mod, params, tuned_config))
+        # print(cached_results)
         # Step 2: Benchmark serially
-        for mod, tuned_config in cached_results:
+        for mod, params, tuned_config in cached_results:
             try:
                 # mod = tl.cached(kernel, output_idx_list, BATCH, H, N_CTX, D_HEAD, D_HEADV, *tuned_config.values())
-                output_dict  = bench_func(mod, BATCH, H, N_CTX, D_HEAD, D_HEADV)
-                latency = output_dict['latency']
-                tflops = output_dict['tflops']
-                ref_tflops = output_dict['tflops_ref']
+                # output_dict  = bench_func(mod, BATCH, H, N_CTX, D_HEAD, D_HEADV)
+                mod_profile = tl.Profiler(mod, params, output_idx_list, tl.TensorSupplyType.Randn)
+                latency = mod_profile.do_bench(mod_profile, n_warmup=50, n_repeat=100, profiler="torch")
+                # latency = output_dict['latency']
+                # tflops = output_dict['tflops']
+                # ref_tflops = output_dict['tflops_ref']
+                output_dict = {
+                    "latency": latency,
+                    # "tflops": tflops,
+                    # "tflops_ref": ref_tflops
+                }
             except Exception as e:
                 print(traceback.format_exc())
                 latency = 1e6
@@ -113,9 +123,9 @@ class AttnFwdTunner:
     
             if latency < best_latency:
                 best_latency = latency
-                best_tflops = tflops
+                # best_tflops = tflops
                 best_config = tuned_config
-                best_tflops_ref = ref_tflops
+                # best_tflops_ref = ref_tflops
                 best_output_dict = output_dict
     
             # print(latency, tflops, ref_tflops)
@@ -158,3 +168,5 @@ class AttnFwdTunner:
                 data.append(new_entry)
                 file.seek(0)
                 json.dump(data, file, ensure_ascii=False, indent=4)
+
+        return best_config
