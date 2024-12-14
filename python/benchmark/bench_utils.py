@@ -1101,4 +1101,80 @@ def bench_attention_fwd(attn, B, H, S, D, DV):
     }
     return output_dict
 
+def do_bench_attention_128256(B, H, S, D, DV, dtype=torch.float16):
+    tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
+    tflops = tflops * 0.5
+    bwd_tflops = 4 * B * H * S * S * DV + 6 * B * H * S * S * D
+    bwd_tflops = bwd_tflops * 0.5
+    torch.cuda.manual_seed(0)
+    dtype = dtype
+    device = "cuda"
+    accum_dtype = torch.float32
+    require_grad = True
+    query = torch.randn(
+        B, S, H, D, device=device, dtype=dtype, requires_grad=require_grad
+    )
+    key = torch.randn(
+        B, S, H, D, device=device, dtype=dtype, requires_grad=require_grad
+    )
+    value = torch.randn(
+        B, S, H, DV, device=device, dtype=dtype, requires_grad=require_grad
+    )
+    do = torch.randn(
+        B, S, H, DV, device=device, dtype=dtype, requires_grad=False
+    )
+
+    from flash_attn_interface import flash_attn_func as flash_attn_func_hopper
+    # from flash_attn import flash_attn_func as flash_attn_func_hopper
+    
+    DIM_HOPPER = [64,128,256]
+    assert(D == 128 and DV == 256)
+    def fa3_split():
+        query_padded = query
+        key_padded = key
+        value1, value2 = torch.split(value, 128, dim=-1)
+        o_ref1 = flash_attn_func_hopper(query_padded,key_padded,value1, softmax_scale=(1/D)**0.5,causal=True)[0]
+        o_ref2 = flash_attn_func_hopper(query_padded,key_padded,value2, softmax_scale=(1/D)**0.5,causal=True)[0]
+        o_ref = torch.cat([o_ref1,o_ref2],dim=-1)
+        return o_ref
+    
+    o_ref3 = fa3_split()
+
+    from flash_attn import flash_attn_func
+    dim_padded_fa2 = max(D,DV)
+    def fa2(dim_padded):
+        if D < dim_padded:
+            query_padded = F.pad(query, (0, dim_padded-D), value=0.)
+            key_padded = F.pad(key, (0, dim_padded-D), value=0.)
+        else:
+            query_padded = query
+            key_padded = key
+        if DV < dim_padded:
+            value_padded = F.pad(value, (0,dim_padded-DV), value=0.)
+        else:
+            value_padded = value
+        o_ref = flash_attn_func(query_padded,key_padded,value_padded, softmax_scale=(1/D)**0.5,causal=True)
+        if DV < dim_padded:
+            o_ref = o_ref[:,:,:,:DV]
+        return o_ref
+    o_ref = fa2(dim_padded_fa2)
+    print_debug(o_ref,o_ref3)
+
+    # from tvm.tl.utils import do_bench
+    def run_ref():
+        fa2(dim_padded_fa2)
+    def run_ref_fa3():
+        fa3_split()
+
+    # tl slow down when rep too large
+    latency_ref = do_bench(run_ref, warmup=50,rep=100)
+    print("flash: {:.2f} ms".format(latency_ref))
+    print("tflops: {:.2f}".format(tflops/latency_ref*1e-9))
+    latency_reffa3 = do_bench(run_ref_fa3, warmup=50,rep=100)
+    print("flash fa3: {:.2f} ms".format(latency_reffa3))
+    print("tflops: {:.2f}".format(tflops/latency_reffa3*1e-9))
+
+    # latency = do_bench(run_bacward, warmup=500,rep=1000)
+    # print("tl bwd: {:.2f} ms".format(latency))
+    # print("tflops: {:.2f}".format(bwd_tflops/latency*1e-9))
 

@@ -17,10 +17,10 @@ When online_func is Identity, and score_mod&block_mask is a lower triangular mat
 Linear Attention has a more performant implementation for forward&backward.
 User can define their own linear attention as follows:
 ```py
-# q_1, ..., q_T = query[:,:,:T,:]
-# k_1, ..., k_T = key[:,:,:T,:]
-# v_1, ..., v_T = value[:,:,:T,:]
-# decay_1, ..., decay_T = decay[:,:,:T,:]
+# q_1, ..., q_T = query[:,:,:T,:] # query [batch,head,T,D]
+# k_1, ..., k_T = key[:,:,:T,:] # key [batch,head,T,D]
+# v_1, ..., v_T = value[:,:,:T,:] # value [batch, head, T, DV]
+# decay_1, ..., decay_T = decay[:,:,:T] # decay [batch, head, T]
 h_i = h_{i-1} * exp(decay_mod(decay)_i) + K_mod(K_i) @ V_mod(V_i)
 o_i = Q_mod(q_i) @ h_i
 ```
@@ -32,6 +32,8 @@ o_i = Q_mod(q_i) @ h_i
 def decay_mod(decay):
     return decay*A
 
+def k_mod(k):
+    return k*dt
 ```
 
 ## Simple GLA

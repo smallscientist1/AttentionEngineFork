@@ -66,6 +66,7 @@ TL_MAIN = """
             Q_shared = T.alloc_shared([block_M, dim], dtype)
             K_shared = T.alloc_shared([block_N, dim], dtype)
             V_shared = T.alloc_shared([block_N, dimv], dtype)
+            # V_local = T.alloc_fragment([block_N, dimv], dtype)
             scores = T.alloc_fragment([block_M, block_N], accum_dtype)
             scores_shared = T.alloc_shared([block_M, block_N], accum_dtype)
             scores_1 = T.alloc_fragment([block_M, block_N], accum_dtype)

@@ -39,7 +39,7 @@ def chunk_local_cumsum_scalar(g, BT):
 
 TL_KERNEL_H = """
 def chunk_fwd_h(
-        batch, head, seqlen, dim, dimv,
+        batch, headq, headk, head, seqlen, dim, dimv,
         BT, BK, BV, num_stages, num_threads
 ):
     # BT = 64
@@ -53,9 +53,12 @@ def chunk_fwd_h(
     num_stages = num_stages
     LOG2E = 1.44269504
 
+    assert(head % headk == 0)
+    head_headk_ratio = head // headk
+
     @T.prim_func
     def main(
-        k: T.Buffer((batch, head, seqlen, dim), dtype), # type: ignore
+        k: T.Buffer((batch, headk, seqlen, dim), dtype), # type: ignore
         v: T.Buffer((batch, head, seqlen, dimv), dtype), # type: ignore
         g: T.Buffer((batch, head, seqlen), accum_dtype), # type: ignore
         h: T.Buffer((batch, head, NT*dim, dimv), dtype), # type: ignore
@@ -75,6 +78,8 @@ def chunk_fwd_h(
 
             bhead = bz % head
             bb = bz // head
+
+            bheadk = bhead // head_headk_ratio
             
             T.annotate_layout({
                 # b_v_shared: tl.layout.make_swizzled_layout(b_v_shared),
@@ -88,7 +93,7 @@ def chunk_fwd_h(
                 # T.copy(b_h, b_h_shared)
                 # T.copy(h[bb,bhead,(i_t*dim+bx*BK):(i_t*dim+(bx+1)*BK), by*BV:(by+1)*BV], b_h)
                 # T.copy(k[bb,bhead,i_t*BT:(i_t+1)*BT,bx*BK:(bx+1)*BK], b_k)
-                T.copy(k[bb,bhead,i_t*BT:(i_t+1)*BT,bx*BK:(bx+1)*BK], b_k_shared)
+                T.copy(k[bb,bheadk,i_t*BT:(i_t+1)*BT,bx*BK:(bx+1)*BK], b_k_shared)
                 T.copy(v[bb,bhead,i_t*BT:(i_t+1)*BT,by*BV:(by+1)*BV], b_v_shared)
                 # T.copy(v[bb,bhead,i_t*BT:(i_t+1)*BT,by*BV:(by+1)*BV], b_v)
                 # T.copy(b_v, b_v_shared)
@@ -125,7 +130,7 @@ def chunk_fwd_h(
 
 TL_KERNEL_O = """
 def chunk_o(
-        batch, head, seqlen, dim, dimv,
+        batch, headq,headk, head, seqlen, dim, dimv,
         BT, BK, BV, num_stages, num_threads
 ):
     # BT = 64
@@ -141,11 +146,16 @@ def chunk_o(
 
     scale = 1.0
 
+    assert(head % headk == 0)
+    head_headk_ratio = head // headk
+    assert(head % headq == 0)
+    head_headq_ratio = head // headq
+
     @T.prim_func
     def main(
         h: T.Buffer((batch,head,NT*dim,dimv), dtype), # type: ignore
-        q: T.Buffer((batch,head,seqlen,dim), dtype), # type: ignore
-        k: T.Buffer((batch,head,seqlen,dim), dtype), # type: ignore
+        q: T.Buffer((batch,headq,seqlen,dim), dtype), # type: ignore
+        k: T.Buffer((batch,headk,seqlen,dim), dtype), # type: ignore
         v: T.Buffer((batch,head,seqlen,dimv), dtype), # type: ignore
         g: T.Buffer((batch,head,seqlen), accum_dtype), # type: ignore
         o: T.Buffer((batch,head,seqlen,dimv), dtype), # type: ignore
@@ -170,6 +180,9 @@ def chunk_o(
             bb = bz // head
             bh = bz % head
 
+            bhk = bh // head_headk_ratio
+            bhq = bh // head_headq_ratio
+
             T.annotate_layout({
                 bq_shared: tl.layout.make_swizzled_layout(bq_shared),
                 bo_shared: tl.layout.make_swizzled_layout(bo_shared),
@@ -178,9 +191,9 @@ def chunk_o(
             T.clear(bs)
             for ik in T.Pipelined(NK, num_stages=num_stages):
                 # pipeline here
-                T.copy(q[bb, bh, by*BT:(by+1)*BT, ik*BK:(ik+1)*BK], bq_shared)
+                T.copy(q[bb, bhq, by*BT:(by+1)*BT, ik*BK:(ik+1)*BK], bq_shared)
                 # T.copy(q[bb, bh, by*BT:(by+1)*BT, ik*BK:(ik+1)*BK], bq)
-                T.copy(k[bb, bh, by*BT:(by+1)*BT, ik*BK:(ik+1)*BK], bk_shared)
+                T.copy(k[bb, bhk, by*BT:(by+1)*BT, ik*BK:(ik+1)*BK], bk_shared)
 
                 T.copy(h[bb, bh, by*dim+ik*BK:by*dim+(ik+1)*BK, bx*BV:(bx+1)*BV], b_state_shared)
                 
@@ -220,13 +233,17 @@ def chunk_o(
     return main
 """
 
+# TL_KERNEL_
 TL_INTERFACE = """
 class LinearAttention(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, q, k, v, decay, {{custom_inputs_list}} *custom_fwd_inputs):
-        BATCH, H, N_CTX, D_HEAD = q.shape
+        BATCH, HQ, N_CTX, D_HEAD = q.shape
         D_HEADV = v.shape[-1]
+        HK = k.shape[1]
+        H = v.shape[1]
+
         # autotuner here
         BT = 64
         BK_h = 64
@@ -245,13 +262,14 @@ class LinearAttention(torch.autograd.Function):
         {{k_mod_expr | indent(8)}}
 
         # v_mod here
+        {{v_mod_expr | indent(8)}}
 
         decay_cumsum = chunk_local_cumsum_scalar(
             decay, BT
         )
-        chunk_fwd_h_mod = tl.cached(chunk_fwd_h, [3,], BATCH, H, N_CTX, D_HEAD, D_HEADV, BT, BK_h, BV_h, num_stages_h, num_threads_h)
+        chunk_fwd_h_mod = tl.cached(chunk_fwd_h, [3,], BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_h, BV_h, num_stages_h, num_threads_h)
         output_idx_list = [5,]
-        chunk_fwd_o_mod = tl.cached(chunk_o, output_idx_list, BATCH, H, N_CTX, D_HEAD, D_HEADV, BT, BK_o, BV_o, num_stages_o, num_threads_o)
+        chunk_fwd_o_mod = tl.cached(chunk_o, output_idx_list, BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_o, BV_o, num_stages_o, num_threads_o)
 
         h = chunk_fwd_h_mod(k, v, decay_cumsum)
         o = chunk_fwd_o_mod(h, q, k, v, decay_cumsum,*custom_fwd_inputs)

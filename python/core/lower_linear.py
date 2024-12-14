@@ -12,6 +12,10 @@ class lowerKmodOutput:
     # custom_inputs_list: str = ""
 
 @dataclass
+class lowerVmodOutput:
+    v_mod_expr: str = ""
+
+@dataclass
 class lowerDecaymodOutput:
     decay_mod_expr: str = ""
 
@@ -28,6 +32,13 @@ def lowerKmod(k_mod, custom_io) -> lowerKmodOutput:
     # custom_inputs_list = ", ".join([f"{varname}={varname}" for varname in input_vars.keys()])
     # custom_inputs_list += ","
     return lowerKmodOutput(k_mod_expr=k_mod_expr)# , custom_inputs_list=custom_inputs_list)
+
+def lowerVmod(v_mod, custom_io) -> lowerVmodOutput:
+    v = SymbolicArray("v", Var("v"), shape_idx=["B", "H", "T", "D"])
+    new_v = v_mod(v, custom_io)
+    pytorch_code, input_vars = generate_tl_from_dag([new_v], to_tl=False)
+    v_mod_expr = str(pytorch_code)
+    return lowerVmodOutput(v_mod_expr=v_mod_expr)
 
 def lowerDecaymod(decay_mod, custom_io) -> lowerDecaymodOutput:
     decay = SymbolicArray("decay", Var("decay"), shape_idx=["B", "H", "T"])
@@ -46,6 +57,8 @@ def lowerQmod(q_mod, custom_io) -> lowerQmodOutput:
 def lower_tl(q_mod, k_mod, v_mod, decay_mod, custom_io):
     if k_mod:
         lower_kmod_output = lowerKmod(k_mod, custom_io)
+    if v_mod:
+        lower_vmod_output = lowerVmod(v_mod, custom_io)
     if decay_mod:
         lower_decaymod_output = lowerDecaymod(decay_mod, custom_io)
     if q_mod:
@@ -54,6 +67,7 @@ def lower_tl(q_mod, k_mod, v_mod, decay_mod, custom_io):
     custom_inputs_list += "," if custom_inputs_list else ""
     return TlLinearAttnTemplate(
         **(lower_kmod_output.__dict__ if k_mod else lowerKmodOutput().__dict__),
+        **(lower_vmod_output.__dict__ if v_mod else lowerVmodOutput().__dict__),
         **(lower_decaymod_output.__dict__ if decay_mod else lowerDecaymodOutput().__dict__),
         **(lower_qmod_output.__dict__ if q_mod else lowerQmodOutput().__dict__),
         custom_inputs_list=custom_inputs_list
