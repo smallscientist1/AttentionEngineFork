@@ -7,70 +7,71 @@ from .linear_attn_template import TlLinearAttnTemplate
 from dataclasses import dataclass
 
 @dataclass
-class lowerKmodOutput:
+class lowerOutput:
     k_mod_expr: str = ""
-    # custom_inputs_list: str = ""
-
-@dataclass
-class lowerVmodOutput:
     v_mod_expr: str = ""
-
-@dataclass
-class lowerDecaymodOutput:
     decay_mod_expr: str = ""
-
-@dataclass
-class lowerQmodOutput:
     q_mod_expr: str = ""
+    custom_inputs_list: str = ""
 
-def lowerKmod(k_mod, custom_io) -> lowerKmodOutput:
+# @dataclass
+# class lowerKmodOutput:
+#     k_mod_expr: str = ""
+#     # custom_inputs_list: str = ""
+
+# @dataclass
+# class lowerVmodOutput:
+#     v_mod_expr: str = ""
+
+# @dataclass
+# class lowerDecaymodOutput:
+#     decay_mod_expr: str = ""
+
+# @dataclass
+# class lowerQmodOutput:
+#     q_mod_expr: str = ""
+
+def lowerKmod(k_mod, custom_io, lower_output: lowerOutput):
     k = SymbolicArray("k", Var("k"), shape_idx=["B", "H", "T", "D"])
     new_k = k_mod(k, custom_io)
     pytorch_code, input_vars = generate_tl_from_dag([new_k], to_tl=False)
-    k_mod_expr = str(pytorch_code)
+    lower_output.k_mod_expr = str(pytorch_code)
 
     # custom_inputs_list = ", ".join([f"{varname}={varname}" for varname in input_vars.keys()])
     # custom_inputs_list += ","
-    return lowerKmodOutput(k_mod_expr=k_mod_expr)# , custom_inputs_list=custom_inputs_list)
 
-def lowerVmod(v_mod, custom_io) -> lowerVmodOutput:
+def lowerVmod(v_mod, custom_io, lower_output: lowerOutput):
     v = SymbolicArray("v", Var("v"), shape_idx=["B", "H", "T", "D"])
     new_v = v_mod(v, custom_io)
     pytorch_code, input_vars = generate_tl_from_dag([new_v], to_tl=False)
-    v_mod_expr = str(pytorch_code)
-    return lowerVmodOutput(v_mod_expr=v_mod_expr)
+    lower_output.v_mod_expr = str(pytorch_code)
 
-def lowerDecaymod(decay_mod, custom_io) -> lowerDecaymodOutput:
+def lowerDecaymod(decay_mod, custom_io, lower_output: lowerOutput):
     decay = SymbolicArray("decay", Var("decay"), shape_idx=["B", "H", "T"])
     new_decay = decay_mod(decay, custom_io)
     pytorch_code, input_vars = generate_tl_from_dag([new_decay], to_tl=False)
-    decay_mod_expr = str(pytorch_code)
-    return lowerDecaymodOutput(decay_mod_expr=decay_mod_expr)
+    lower_output.decay_mod_expr = str(pytorch_code)
 
-def lowerQmod(q_mod, custom_io) -> lowerQmodOutput:
+def lowerQmod(q_mod, custom_io, lower_output: lowerOutput):
     bq = SymbolScalar("bq", Var("bq"), shape_idx=["BT", "BK"])
     new_q = q_mod(bq, custom_io)
     tl_code, input_vars = generate_tl_from_dag([new_q])
-    q_mod_expr = str(tl_code)
-    return lowerQmodOutput(q_mod_expr=q_mod_expr)
+    lower_output.q_mod_expr = str(tl_code)
 
 def lower_tl(q_mod, k_mod, v_mod, decay_mod, custom_io):
+    lower_output = lowerOutput()
     if k_mod:
-        lower_kmod_output = lowerKmod(k_mod, custom_io)
+        lowerKmod(k_mod, custom_io, lower_output)
     if v_mod:
-        lower_vmod_output = lowerVmod(v_mod, custom_io)
+        lowerVmod(v_mod, custom_io, lower_output)
     if decay_mod:
-        lower_decaymod_output = lowerDecaymod(decay_mod, custom_io)
+        lowerDecaymod(decay_mod, custom_io, lower_output)
     if q_mod:
-        lower_qmod_output = lowerQmod(q_mod, custom_io)
-    custom_inputs_list = ", ".join([f"{varname}" for varname in custom_io.input_tensors.keys()])
-    custom_inputs_list += "," if custom_inputs_list else ""
+        lowerQmod(q_mod, custom_io, lower_output)
+    lower_output.custom_inputs_list = ", ".join([f"{varname}" for varname in custom_io.input_tensors.keys()])
+    lower_output.custom_inputs_list += "," if lower_output.custom_inputs_list else ""
     return TlLinearAttnTemplate(
-        **(lower_kmod_output.__dict__ if k_mod else lowerKmodOutput().__dict__),
-        **(lower_vmod_output.__dict__ if v_mod else lowerVmodOutput().__dict__),
-        **(lower_decaymod_output.__dict__ if decay_mod else lowerDecaymodOutput().__dict__),
-        **(lower_qmod_output.__dict__ if q_mod else lowerQmodOutput().__dict__),
-        custom_inputs_list=custom_inputs_list
+        **(lower_output.__dict__),
     )()
 
 
