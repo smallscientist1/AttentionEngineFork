@@ -370,10 +370,27 @@ list(APPEND COMPILER_SRCS "src/target/datatype/myfloat/myfloat.cc")
 tvm_file_glob(GLOB TILE_LIBRARY_SRCS 
     src/tl/*.cc 
     src/tl/layout/*.cc
-    src/tl/target/*.cc 
     src/tl/transform/*.cc
     src/tl/op/*.cc
+    src/tl/target/utils.cc
     )
+
+if(USE_CUDA)
+tvm_file_glob(GLOB TILE_LIBRARY_CUDA_SRCS
+  src/tl/target/codegen_cuda.cc
+  src/tl/target/rt_mod_cuda.cc
+)
+list(APPEND TILE_LIBRARY_SRCS ${TILE_LIBRARY_CUDA_SRCS})
+endif(USE_CUDA)
+
+if(USE_ROCM)
+tvm_file_glob(GLOB TILE_LIBRARY_HIP_SRCS
+  src/tl/target/codegen_hip.cc
+  src/tl/target/rt_mod_hip.cc
+)
+list(APPEND TILE_LIBRARY_SRCS ${TILE_LIBRARY_HIP_SRCS})
+endif(USE_ROCM)
+
 list(APPEND COMPILER_SRCS ${TILE_LIBRARY_SRCS})
 
 tvm_file_glob(GLOB RUNTIME_SRCS
@@ -383,8 +400,14 @@ tvm_file_glob(GLOB RUNTIME_SRCS
   src/runtime/disco/*.cc
   src/runtime/minrpc/*.cc
   src/runtime/relax_vm/*.cc
-  src/tl/runtime/*.cc
 )
+if(USE_CUDA)
+  tvm_file_glob(GLOB TILELANG_RUNTIME_SRCS
+    src/tl/runtime/*.cc
+  )
+  list(APPEND RUNTIME_SRCS ${TILELANG_RUNTIME_SRCS})
+endif(USE_CUDA)
+
 set(TVM_RUNTIME_EXT_OBJS "")
 
 if(BUILD_FOR_HEXAGON)
@@ -555,6 +578,10 @@ else()
   set(CMAKE_CUDA_STANDARD 17)
 endif()
 
+if(USE_ROCM)
+check_cxx_compiler_flag("-std=c++17" SUPPORT_CXX17)
+set(CMAKE_CXX_FLAGS "-D__HIP_PLATFORM_AMD__ ${CMAKE_CXX_FLAGS}")
+endif()
 # Module rules
 include(cmake/modules/VTA.cmake)
 include(cmake/modules/StandaloneCrt.cmake)

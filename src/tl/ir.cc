@@ -30,7 +30,7 @@ namespace tl {
 
 using namespace script::ir_builder::tir;
 
-ForFrame ParallelFor(Array<PrimExpr> extents) {
+ForFrame ParallelFor(Array<PrimExpr> extents, Map<String, ObjectRef> annotations) {
   using namespace tvm::tir;
   ObjectPtr<ForFrameNode> n = make_object<ForFrameNode>();
   n->vars.reserve(extents.size());
@@ -40,14 +40,14 @@ ForFrame ParallelFor(Array<PrimExpr> extents) {
     n->vars.push_back(Var("v", extent.dtype()));
     n->doms.push_back(Range(make_const(dtype, 0), extent));
   }
-  n->f_make_for_loop = [](Array<Var> vars, Array<Range> doms, Stmt body) -> Stmt {
+  n->f_make_for_loop = [annotations](Array<Var> vars, Array<Range> doms, Stmt body) -> Stmt {
     ICHECK_EQ(vars.size(), doms.size());
     int n = vars.size();
     for (int i = n - 1; i >= 0; --i) {
       Range dom = doms[i];
       Var var = vars[i];
       body = For(var, dom->min, dom->extent, ForKind::kParallel, std::move(body),
-                 /*thread_binding=*/NullOpt, /*annotations=*/{});
+                 /*thread_binding=*/NullOpt, /*annotations=*/annotations);
     }
     return body;
   };
@@ -74,10 +74,10 @@ ForFrame PipelinedFor(
     ICHECK(n == 1);
     Map<String, ObjectRef> anno;
     if (num_stages > 0) anno.Set("num_stages", PrimExpr(num_stages));
-    anno.Set("tl_pipeline_order", order);
-    anno.Set("tl_pipeline_stage", stages);
-    anno.Set("tl_pipeline_sync", sync);
-    anno.Set("tl_pipeline_group", groups);
+    if (order.size() > 0) anno.Set("tl_pipeline_order", order);
+    if (stages.size() > 0) anno.Set("tl_pipeline_stage", stages);
+    if (sync.size() > 0) anno.Set("tl_pipeline_sync", sync);
+    if (groups.size() > 0) anno.Set("tl_pipeline_group", groups);
     body = For(vars[0], doms[0]->min, doms[0]->extent, ForKind::kSerial, std::move(body),
                /*thread_binding=*/NullOpt, /*annotations=*/anno);
     return body;

@@ -571,8 +571,6 @@ transform::Sequential MixedModulePassManager(IRModule mixed_mod, Target target) 
 
   // FPComputeLegalize uses the target attrs added by BindTarget, so it must come first
   mixed_pass_list.push_back(tir::transform::BindTarget(target));
-  mixed_pass_list.push_back(tir::transform::BF16ComputeLegalize());
-  mixed_pass_list.push_back(tir::transform::FP8ComputeLegalize());
 
   // VerifyVTCMLimit must occur before LowerVtcmAlloc
   mixed_pass_list.push_back(tir::transform::VerifyVTCMLimit(target));
@@ -583,15 +581,6 @@ transform::Sequential MixedModulePassManager(IRModule mixed_mod, Target target) 
 
   mixed_pass_list.push_back(tir::transform::AnnotateEntryFunc());
 
-  bool detect_global_barrier =
-      pass_ctx->GetConfig<Bool>("tir.detect_global_barrier", Bool(false)).value();
-  if (detect_global_barrier) {
-    mixed_pass_list.push_back(tir::transform::ThreadSync("global"));
-  }
-
-  mixed_pass_list.push_back(tir::transform::ThreadSync("shared"));
-  mixed_pass_list.push_back(tir::transform::ThreadSync("shared.dyn"));
-  mixed_pass_list.push_back(tir::transform::ThreadSync("warp"));
   mixed_pass_list.push_back(tir::transform::InferFragment());
   mixed_pass_list.push_back(tir::transform::LowerThreadAllreduce());
 
@@ -612,6 +601,16 @@ transform::Sequential MixedModulePassManager(IRModule mixed_mod, Target target) 
   // because the merged allocation site is at the beginning of each device function
   mixed_pass_list.push_back(tir::transform::MergeSharedMemoryAllocations());
 
+  bool detect_global_barrier =
+      pass_ctx->GetConfig<Bool>("tir.detect_global_barrier", Bool(false)).value();
+  if (detect_global_barrier) {
+    mixed_pass_list.push_back(tir::transform::ThreadSync("global"));
+  }
+
+  mixed_pass_list.push_back(tir::transform::ThreadSync("shared"));
+  mixed_pass_list.push_back(tir::transform::ThreadSync("shared.dyn"));
+  mixed_pass_list.push_back(tir::transform::ThreadSync("warp"));
+  
   bool unpacked_api = mixed_mod->GetAttr<relay::Executor>(tvm::attr::kExecutor)
                           .value_or(relay::Executor::Create("graph", {}))
                           ->GetAttr<Bool>("unpacked-api")
@@ -621,6 +620,9 @@ transform::Sequential MixedModulePassManager(IRModule mixed_mod, Target target) 
   } else {
     mixed_pass_list.push_back(tir::transform::MakePackedAPI());
   }
+  mixed_pass_list.push_back(tir::transform::BF16ComputeLegalize());
+  mixed_pass_list.push_back(tir::transform::FP8ComputeLegalize());
+
   mixed_pass_list.push_back(tir::transform::FP8StorageLegalize());
   mixed_pass_list.push_back(tir::transform::BF16StorageLegalize());
 

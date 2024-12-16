@@ -16,7 +16,7 @@
 # under the License.
 """The language interface for tl programs."""
 
-from typing import Union, List, Optional, Tuple
+from typing import Union, List, Optional, Tuple, Dict, Any
 from tvm import tir
 from tvm.script import tir as T
 from tvm.script.parser.tir import *
@@ -26,7 +26,7 @@ from . import _ffi_api
 from .layout import Layout, Fragment
 
 
-def Parallel(*extents: tir.PrimExpr):
+def Parallel(*extents: tir.PrimExpr, coalesced_width: Optional[int] = None):
     """Tools to construct nested parallel for loop.
        This can be used to create element-wise tensor expression.
 
@@ -40,17 +40,20 @@ def Parallel(*extents: tir.PrimExpr):
     res : frame.ForFrame
         The ForFrame.
     """
-    return _ffi_api.Parallel(extents)  # type: ignore[attr-defined] # pylint: disable=no-member
+    annotations: Dict[str, Any] = {}
+    if coalesced_width is not None:
+        annotations.update({"coalesced_width": coalesced_width})
+    return _ffi_api.Parallel(extents, annotations)  # type: ignore[attr-defined] # pylint: disable=no-member
 
 
 def Pipelined(
         start: tir.PrimExpr, 
         stop: tir.PrimExpr = None, 
         num_stages: int = 0, 
-        order: List[int] = None, 
-        stage: List[int] = None, 
-        sync: List[List[int]] = None, 
-        group: List[List[int]] = None
+        order: Optional[List[int]] = None, 
+        stage: Optional[List[int]] = None, 
+        sync: Optional[List[List[int]]] = None,
+        group: Optional[List[List[int]]] = None
     ):
     """Tools to construct pipelined for loop.
 
@@ -162,8 +165,8 @@ def annotate_layout(layout_map):
     return T.block_attr({"layout_map": layout_map})
 
 
-def import_source(source:str):
-    return T.block_attr({"pragma_import_c": source})
+def import_source(source:Optional[str] = None):
+    return T.block_attr({"pragma_import_c": source}) if source is not None else None
 
 
 def region(buffer: tir.BufferLoad, access_type: str, *args: tir.PrimExpr):
@@ -190,6 +193,7 @@ def buffer_region_to_tile_region(buffer_region: tir.BufferRegion, access_type: s
 def copy(
     src: Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion],
     dst: Union[tir.Buffer, tir.BufferLoad],
+    coalesced_width: Optional[int] = None,
 ):
     def get_extent(data):
         if isinstance(data, tir.Buffer):
@@ -220,8 +224,10 @@ def copy(
 
     src = _to_region(src, "r")
     dst = _to_region(dst, "w")
-
-    return tir.call_intrin("handle", tir.op.Op.get("tl.copy"), src, dst)
+    if coalesced_width is not None:
+        return tir.call_intrin("handle", tir.op.Op.get("tl.copy"), src, dst, coalesced_width)
+    else:
+        return tir.call_intrin("handle", tir.op.Op.get("tl.copy"), src, dst)
 
 
 def c2d_im2col(
@@ -261,7 +267,13 @@ def gemm(
     transpose_A: bool = False,
     transpose_B: bool = False,
     policy: GemmWarpPolicy = GemmWarpPolicy.Square,
+    k_pack: int = 1,
 ):
+    '''
+    k_pack: int
+        The number of k dimension that is packed into a single warp.
+        please ref to mfma macro generator for the detail information.
+    '''
     M = C.shape[0]
     N = C.shape[1]
     K = A.shape[0] if transpose_A else A.shape[1]
@@ -282,6 +294,7 @@ def gemm(
         N,
         K,
         policy,
+        k_pack,
     )
 
 
@@ -339,3 +352,8 @@ def atomic_add(dst, value):
 
 def atomic_addx2(dst, value):
     return T.call_extern("handle", "atomicAddx2", T.address_of(dst), T.address_of(value))
+
+def dp4a(A, B, C):
+    return T.call_extern(
+        "handle", "DP4A", T.address_of(A), T.address_of(B), T.address_of(C)
+    )
