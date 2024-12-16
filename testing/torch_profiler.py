@@ -183,3 +183,117 @@ for N, C, H, W, F, K, S, D, P in shapes:
     A = torch.randn(N, H, W, C, dtype=torch.float16, device=device)
     B = torch.randn(K, K, C, F, dtype=torch.float16, device=device)
     profile_function(conv2d_nhwc, A, B, S, P, D)
+
+def chunk_state_triton(B, x, dt, dA_cumsum):
+    from mamba_ssm.ops.triton.ssd_chunk_state import _chunk_state_fwd
+    return _chunk_state_fwd(B, x, dt, dA_cumsum, states_in_fp32=False)
+
+def chunk_scan_triton(cb, x, dt, dA_cumsum, C, states):
+    from mamba_ssm.ops.triton.ssd_chunk_scan import _chunk_scan_fwd
+    out, _ =  _chunk_scan_fwd(cb, x, dt, dA_cumsum, C, states)
+    return out
+
+configs = [
+    (1, 64, 1, 1024, 64, 128),
+    (1, 64, 1, 2048, 64, 128),
+    (1, 64, 1, 8192, 64, 128),
+    (1, 64, 1, 16384, 64, 128),
+    (64, 64, 1, 1024, 64, 128),
+    (64, 64, 1, 2048, 64, 128),
+    (64, 64, 1, 8192, 64, 128),
+    (64, 64, 1, 16384, 64, 128),
+    # (1, 80, 1, 1024, 64, 128),
+    # (1, 80, 1, 2048, 64, 128),
+    # (1, 80, 1, 8192, 64, 128),
+    # (1, 80, 1, 16384, 64, 128),
+    # (64, 80, 1, 1024, 64, 128),
+    # (64, 80, 1, 2048, 64, 128),
+    # (64, 80, 1, 8192, 64, 128),
+    # (64, 80, 1, 16384, 64, 128),
+]
+chunk_size = 256
+
+for config in configs:
+    batch, nheads, ngroups, seqlen, headdim, dstate = config
+    nchunks = seqlen // chunk_size
+    B = torch.randn(batch, seqlen, ngroups, dstate, dtype=torch.float16, device=device)
+    x = torch.randn(batch, seqlen, nheads, headdim, dtype=torch.float16, device=device)
+    dt = torch.randn(batch, nheads, nchunks, chunk_size, dtype=torch.float16, device=device)
+    dA_cumsum = torch.randn(batch, nheads, nchunks, chunk_size, dtype=torch.float16, device=device)
+    profile_function(chunk_state_triton, B, x, dt, dA_cumsum)
+
+
+    cb = torch.randn(batch, nchunks, ngroups, chunk_size, chunk_size, dtype=torch.float16, device=device)
+    x = torch.randn(batch, seqlen, nheads, headdim, dtype=torch.float16, device=device)
+    dt = torch.randn(batch, nheads, nchunks, chunk_size, dtype=torch.float16, device=device)
+    dA_cumsum = torch.randn(batch, nheads, nchunks, chunk_size, dtype=torch.float16, device=device)
+    C = torch.randn(batch, seqlen, ngroups, dstate, dtype=torch.float16, device=device)
+    prev_states = torch.randn(batch, nchunks, nheads, headdim, dstate, dtype=torch.float16, device=device)
+    D = torch.randn(nheads, dtype=torch.float16, device=device)
+    profile_function(chunk_scan_triton, cb, x, dt, dA_cumsum, C, prev_states)
+
+configs = [
+    (1, 32, 512, 128, True),
+    (1, 32, 512, 128, False),
+    (1, 32, 1024, 128, True),
+    (1, 32, 1024, 128, False),
+    (1, 64, 512, 128, True),
+    (1, 64, 512, 128, False),
+    (1, 64, 1024, 128, True),
+    (1, 64, 1024, 128, False),
+    # (1, 8, 512, 64, True),
+    # (1, 8, 512, 64, False),
+    # (64, 8, 512, 64, True),
+    # (64, 8, 512, 64, False),
+    # (1, 6, 1024, 64, True),
+    # (1, 6, 1024, 64, False),
+    # (64, 6, 1024, 64, True),
+    # (64, 6, 1024, 64, False),
+    # (1, 32, 4096, 128, True),
+    # (1, 64, 4096, 128, True),
+    # (1, 32, 4096, 128, False),
+    # (1, 64, 4096, 128, False),
+    # (1, 32, 8192, 128, True),
+    # (1, 64, 8192, 128, True),
+    # (1, 32, 8192, 128, False),
+    # (1, 64, 8192, 128, False),
+    # (64, 32, 4096, 128, True),
+    # (64, 64, 4096, 128, True),
+    # (64, 32, 4096, 128, False),
+    # (64, 64, 4096, 128, False),
+]
+
+def torch_flash_attn(query_states, key_states, value_states, is_causal):
+    attn_output = torch.nn.functional.scaled_dot_product_attention(
+        query_states,
+        key_states,
+        value_states,
+        attn_mask=None,
+        dropout_p=0.0,
+        is_causal=is_causal,
+    )
+    return attn_output
+
+
+for config in configs:
+    batch, nheads, seqlen, dim, causal = config
+    Q = torch.randn(batch, nheads, seqlen, dim, dtype=torch.float16, device=device)
+    K = torch.randn(batch, nheads, seqlen, dim, dtype=torch.float16, device=device)
+    V = torch.randn(batch, nheads, seqlen, dim, dtype=torch.float16, device=device)
+
+    profile_function(torch_flash_attn, Q, K, V, causal)
+    total_tflops = 4 * batch * nheads * seqlen * seqlen * dim / 1e12
+    
+configs = [
+    (1, 32, 1, 8192, 128, False),
+    (1, 32, 128, 8192, 128, False),
+    (1, 64, 1, 8192, 128, False),
+    (1, 64, 128, 8192, 128, False),
+]
+for config in configs:
+    batch, nheads, seqlen_q, seqlen_kv, dim, causal = config
+    Q = torch.randn(batch, nheads, seqlen_q, dim, dtype=torch.float16, device=device)
+    K = torch.randn(batch, nheads, seqlen_kv, dim, dtype=torch.float16, device=device)
+    V = torch.randn(batch, nheads, seqlen_kv, dim, dtype=torch.float16, device=device)
+
+    profile_function(torch_flash_attn, Q, K, V, causal)

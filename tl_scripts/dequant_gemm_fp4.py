@@ -470,9 +470,9 @@ def matmul_(
     num_bits=4,
 ):
     def get_configs():
-        block_M = [64]
+        block_M = [64, 128, 256]
         block_N = [64, 128, 256]
-        block_K = [64]
+        block_K = [128]
         num_stages = [2, 3, 4]
         thread_num = [128, 256]
         _configs = list(itertools.product(block_M, block_N, block_K, num_stages, thread_num))
@@ -513,7 +513,7 @@ def matmul_(
 
                 T.annotate_layout(
                     {
-                        # B_shared: tl.layout.make_swizzled_layout(B_shared),
+                        B_shared: tl.layout.make_swizzled_layout(B_shared),
                         Ct_shared: tl.layout.make_swizzled_layout(Ct_shared),
                     }
                 )
@@ -588,16 +588,16 @@ def test_run_dequantize_gemm():
 
 
 if __name__ == "__main__":
-    test_run_dequantize_gemm()
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument('--m', type=int, default=128, help='M')
-    # parser.add_argument('--n', type=int, default=8192, help='N')
-    # parser.add_argument('--k', type=int, default=8192, help='K')
-    # args = parser.parse_args()
-    # M, N, K = args.m, args.n, args.k
-    # total_flops = 2 * M * N * K
-    # best_latency, best_config, ref_latency = tune_gemm(M, N, K, "float16", "float16", "float32")
-    # print(f"Best latency: {best_latency}")
-    # print(f"Best TFlops: {total_flops / best_latency * 1e-9}")
-    # print(f"Best config: {best_config}")
+    # test_run_dequantize_gemm()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--m', type=int, default=128, help='M')
+    parser.add_argument('--n', type=int, default=8192, help='N')
+    parser.add_argument('--k', type=int, default=8192, help='K')
+    args = parser.parse_args()
+    M, N, K = args.m, args.n, args.k
+    total_flops = 2 * M * N * K
+    best_latency, best_config, ref_latency = tune_gemm(M, N, K, "float16", "float16", "float32")
+    print(f"Best latency: {best_latency}")
+    print(f"Best TFlops: {total_flops / best_latency * 1e-9}")
+    print(f"Best config: {best_config}")
 

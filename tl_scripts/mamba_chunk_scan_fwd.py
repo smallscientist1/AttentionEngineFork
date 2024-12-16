@@ -15,9 +15,9 @@ chunk_size = 256
 # chunk_scan
 ####################################################################################################
 
-def chunk_scan_triton(cb, x, dt, dA_cumsum, C, states):
+def chunk_scan_triton(cb, x, dt, dA_cumsum, C, states, D):
     from mamba_ssm.ops.triton.ssd_chunk_scan import _chunk_scan_fwd
-    out, _ =  _chunk_scan_fwd(cb, x, dt, dA_cumsum, C, states)
+    out, _ =  _chunk_scan_fwd(cb, x, dt, dA_cumsum, C, states, D)
     return out
 
 def chunk_scan_ref(cb, x, dt, dA_cumsum, C, prev_states, D):

@@ -574,7 +574,7 @@ BATCH, N_HEADS, HEAD_DIM = 4, 32, 64
 configs = []
 for mode in ["fwd", "bwd"]:
     # for causal in [True, False]:
-    for causal in [True]:
+    for causal in [False]:
         if mode == "bwd" and not causal:
             continue
         configs.append(
@@ -582,32 +582,36 @@ for mode in ["fwd", "bwd"]:
                 x_names=["BATCH", "H", "N_CTX", "HEAD_DIM"],
                 # x_vals=[2**i for i in range(10, 15)],
                 x_vals=[
-                    (1, 12, 1024, 64),
-                    (1, 8, 512, 64),  
-                    (1, 12, 512, 64),
-                    (1, 16, 512, 64),
-                    (1, 32, 4096, 128),
-                    (1, 40, 4096, 128),
-                    (1, 64, 4096, 128),
-                    (1, 16, 2048, 64),
-                    (1, 40, 2048, 128),
-                    (1, 96, 2048, 128),
-                    (1, 6, 1024, 64),
-                    (1, 12, 1024, 64),
-                    (1, 16, 1024, 64),
-                    (64, 12, 1024, 64),
-                    (64, 8, 512, 64),  
-                    (64, 12, 512, 64),
-                    (64, 16, 512, 64),
-                    (64, 32, 4096, 128),
-                    (64, 40, 4096, 128),
-                    (64, 64, 4096, 128),
-                    (64, 16, 2048, 64),
-                    (64, 40, 2048, 128),
-                    (64, 96, 2048, 128),
-                    (64, 6, 1024, 64),
-                    (64, 12, 1024, 64),
-                    (64, 16, 1024, 64),
+                    # (1, 12, 1024, 64),
+                    # (1, 8, 512, 64),  
+                    # (1, 12, 512, 64),
+                    # (1, 16, 512, 64),
+                    # (1, 32, 4096, 128),
+                    # (1, 40, 4096, 128),
+                    # (1, 64, 4096, 128),
+                    # (1, 16, 2048, 64),
+                    # (1, 40, 2048, 128),
+                    # (1, 96, 2048, 128),
+                    # (1, 6, 1024, 64),
+                    # (1, 12, 1024, 64),
+                    # (1, 16, 1024, 64),
+                    # (64, 12, 1024, 64),
+                    # (64, 8, 512, 64),  
+                    # (64, 12, 512, 64),
+                    # (64, 16, 512, 64),
+                    # (64, 32, 4096, 128),
+                    # (64, 40, 4096, 128),
+                    # (64, 64, 4096, 128),
+                    # (64, 16, 2048, 64),
+                    # (64, 40, 2048, 128),
+                    # (64, 96, 2048, 128),
+                    # (64, 6, 1024, 64),
+                    # (64, 12, 1024, 64),
+                    # (64, 16, 1024, 64),
+                    (1, 32, 512, 128),
+                    (1, 32, 1024, 128),
+                    (1, 64, 512, 128),
+                    (1, 64, 1024, 128),
                 ],
                 line_arg="provider",
                 line_vals=["triton-fp16"] + (["triton-fp8"] if TORCH_HAS_FP8 else []) +
@@ -629,7 +633,7 @@ for mode in ["fwd", "bwd"]:
 
 @triton.testing.perf_report(configs)
 def bench_flash_attention(BATCH, H, N_CTX, HEAD_DIM, causal, mode, provider, device="cuda"):
-    assert mode in ["fwd", "bwd"]
+    assert mode in ["fwd"]
     warmup = 25
     rep = 100
     dtype = torch.float16
@@ -659,6 +663,7 @@ def bench_flash_attention(BATCH, H, N_CTX, HEAD_DIM, causal, mode, provider, dev
             do = torch.randn_like(o)
             fn = lambda: o.backward(do, retain_graph=True)
         ms = triton.testing.do_bench(fn, warmup=warmup, rep=rep)
+    print(f"time: {ms} ms")
     flops_per_matmul = 2.0 * BATCH * H * N_CTX * N_CTX * HEAD_DIM
     total_flops = 2 * flops_per_matmul
     if causal:

@@ -193,24 +193,28 @@ def retnet_triton(Q, K, V, mask):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch', type=int, default=1, help='Batch size')
-    parser.add_argument('--h', type=int, default=1, help='Number of heads')
+    parser.add_argument('--h', type=int, default=10, help='Number of heads')
     parser.add_argument('--n_ctx', type=int, default=4096, help='Context size')
     parser.add_argument('--dim_qk', type=int, default=256, help='Head dimension')
-    parser.add_argument('--dim_v', type=int, default=256, help='Head dimension')
+    parser.add_argument('--dim_v', type=int, default=448, help='Head dimension')
     args = parser.parse_args()
     BATCH, H, N_CTX, dim_qk, dim_v = args.batch, args.h, args.n_ctx, args.dim_qk, args.dim_v
     total_flops = 2.0 * BATCH * H * N_CTX * N_CTX * (dim_qk + dim_v)
     BLOCK_M = 64
     BLOCK_N = 64
-    # program = retnet(BATCH, H, N_CTX, dim_qk, dim_v, BLOCK_M, BLOCK_N)
-    program = retnet_inference(BATCH, H, dim_qk, dim_v, BLOCK_M)
+    program = retnet(BATCH, H, N_CTX, dim_qk, dim_v, BLOCK_M, BLOCK_N)
     mod, params = tl.lower(program)
-    mod = tl.Profiler(mod, params, [6], tl.TensorSupplyType.Integer)
-    mod.assert_allclose(ref_inference, rtol=0.01, atol=0.01)
+    mod = tl.Profiler(mod, params, [4], tl.TensorSupplyType.Integer)
+    # mod.assert_allclose(ref_program, rtol=0.01, atol=0.01)
+
+    # program = retnet_inference(BATCH, H, dim_qk, dim_v, BLOCK_M)
+    # mod, params = tl.lower(program)
+    # mod = tl.Profiler(mod, params, [6], tl.TensorSupplyType.Integer)
+    # mod.assert_allclose(ref_inference, rtol=0.01, atol=0.01)
 
     # latency = mod.do_bench(ref_program, n_warmup=10, n_repeat=1)
     # print("torch: {:.2f} ms".format(latency))
     # print("torch: {:.2f} TFlops".format(total_flops / latency * 1e-9))
-    # latency = mod.do_bench(mod, n_warmup=10, n_repeat=10, profiler="torch")
-    # print("tl: {:.2f} ms".format(latency))
-    # print("tl: {:.2f} TFlops".format(total_flops / latency * 1e-9))
+    latency = mod.do_bench(mod, n_warmup=10, n_repeat=10, profiler="torch")
+    print("tl: {:.2f} ms".format(latency))
+    print("tl: {:.2f} TFlops".format(total_flops / latency * 1e-9))

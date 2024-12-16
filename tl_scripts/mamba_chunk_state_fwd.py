@@ -199,3 +199,79 @@ if __name__ == "__main__":
     latency = mod.do_bench(mod, n_warmup=10, n_repeat=10, profiler="auto")
     print("{:.4f} ms".format(latency))
     print("{:.2f} TFlops".format(total_flops / latency * 1e-9))
+
+
+# # for ablation:
+# def chunk_state_fwd(batch, seqlen, ngroups, nheads, headdim, dstate, block_M, block_N, block_K):
+#     dtype = "float16"
+#     accum_dtype = "float"
+#     nchunks = T.ceildiv(seqlen, chunk_size)
+#     p = 1.44269504
+#     @T.prim_func
+#     def main(
+#         B: T.Buffer((batch, seqlen, ngroups, dstate), dtype),
+#         x: T.Buffer((batch, seqlen, nheads, headdim), dtype),
+#         dt: T.Buffer((batch, nheads, nchunks, chunk_size), dtype),
+#         dA_cumsum: T.Buffer((batch, nheads, nchunks, chunk_size), dtype),
+#         Output: T.Buffer((batch, nchunks, nheads, headdim, dstate), dtype)
+#     ):
+#         with T.Kernel(nheads, T.ceildiv(headdim, block_M) * T.ceildiv(dstate, block_N), batch * nchunks, threads=128) as (bz, bx, by):
+#             x_shared = T.alloc_shared((block_K, block_M), dtype)
+#             x_local = T.alloc_fragment((block_K, block_M), dtype)
+#             xt_local = T.alloc_fragment((block_M, block_K), dtype)
+#             B_shared = T.alloc_shared((block_K, block_N), dtype)
+#             dt_shared = T.alloc_shared((block_K), dtype)
+#             dA_cumsum_shared = T.alloc_shared((block_K), dtype)
+#             acc_o = T.alloc_fragment((block_M, block_N), accum_dtype)
+#             acc_o_shared = T.alloc_shared((block_M, block_N), dtype)
+#             scale = T.alloc_fragment((block_K), accum_dtype)
+#             dA_cs_last = T.alloc_fragment((1), accum_dtype)
+#             dA_cumsum_local = T.alloc_fragment((block_K), accum_dtype)
+#             dt_local = T.alloc_fragment((block_K), accum_dtype)
+
+#             loop_range = T.ceildiv(chunk_size, block_K)
+            
+#             batch_idx = by % batch
+#             chunk_idx = by // batch
+#             m_idx = bx // T.ceildiv(dstate, block_N)
+#             n_idx = bx % T.ceildiv(dstate, block_N)
+
+#             T.annotate_layout({
+#                 x_shared: tl.layout.make_swizzled_layout(x_shared),
+#                 acc_o_shared: tl.layout.make_swizzled_layout(acc_o_shared)
+#             })
+            
+#             dA_cs_last[0] = dA_cumsum[batch_idx, bz, chunk_idx, chunk_size - 1]
+#             T.clear(acc_o)
+#             for k in T.serial(loop_range):
+#             # for k in T.Pipelined(loop_range, num_stages=1):
+#             # for k in T.Pipelined(
+#             #     loop_range, 
+#             #     num_stages=4, 
+#             #     order=[-1,-1,-1,1,-1,0],
+#             #     stage=[-1,-1,-1,0,-1,1],
+#             #     group=[[0],[1],[2],[3,4,5,6,7],[8],[9]],
+#             # ):
+#                 T.copy(x[batch_idx, 
+#                     chunk_idx * chunk_size + k * block_K : chunk_idx * chunk_size + (k + 1) * block_K, 
+#                     bz, 
+#                     m_idx * block_M : (m_idx + 1) * block_M], 
+#                     x_shared)
+#                 T.copy(B[batch_idx,
+#                     chunk_idx * chunk_size + k * block_K : chunk_idx * chunk_size + (k + 1) * block_K,
+#                     bz // (nheads // ngroups),
+#                     n_idx * block_N : (n_idx + 1) * block_N],
+#                     B_shared)
+#                 T.copy(dA_cumsum[batch_idx, bz, chunk_idx, k * block_K : (k + 1) * block_K], dA_cumsum_shared)
+#                 T.copy(dt[batch_idx, bz, chunk_idx, k * block_K : (k + 1) * block_K], dt_shared)
+#                 T.copy(dt_shared, dt_local)
+#                 T.copy(dA_cumsum_shared, dA_cumsum_local)
+#                 for i in T.Parallel(block_K):
+#                     scale[i] = T.exp2(dA_cs_last[0] * p - dA_cumsum_local[i] * p) * dt_local[i]
+#                 T.copy(x_shared, x_local)
+#                 for i, j in T.Parallel(block_M, block_K):
+#                     xt_local[i, j] = x_local[j, i] * scale[j]
+#                 T.gemm(xt_local, B_shared, acc_o)
+#             T.copy(acc_o, acc_o_shared)
+#             T.copy(acc_o_shared, Output[batch_idx, chunk_idx, bz, m_idx * block_M : (m_idx + 1) * block_M, n_idx * block_N : (n_idx + 1) * block_N])
+#     return main
