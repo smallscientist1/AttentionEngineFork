@@ -204,8 +204,8 @@ if __name__ == "__main__":
     BLOCK_N = 64
     program = retnet(BATCH, H, N_CTX, dim_qk, dim_v, BLOCK_M, BLOCK_N)
     mod, params = tl.lower(program)
-    mod = tl.Profiler(mod, params, [4], tl.TensorSupplyType.Integer)
-    # mod.assert_allclose(ref_program, rtol=0.01, atol=0.01)
+    mod = tl.Profiler(mod, params, [4], tl.TensorSupplyType.Normal)
+    mod.assert_allclose(ref_program, rtol=0.01, atol=0.01)
 
     # program = retnet_inference(BATCH, H, dim_qk, dim_v, BLOCK_M)
     # mod, params = tl.lower(program)

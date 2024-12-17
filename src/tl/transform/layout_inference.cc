@@ -34,7 +34,6 @@
 #include "../op/parallel.h"
 #include "loop_partition.h"
 #include "loop_vectorize.h"
-#include "common/loop_fusion_utils.h"
 
 namespace tvm {
 namespace tl {
@@ -231,14 +230,12 @@ class BufferUseDefCollector : public StmtExprVisitor {
 class LayoutInferencer : public IRMutatorWithAnalyzer {
  public:
   static PrimFunc Substitute(PrimFunc f) {
-    ParallelLoopFuser fuser;
-    PrimFuncNode* fptr = f.CopyOnWrite();
-    fptr->body = fuser(f->body);
     BufferUseDefCollector collector;
     collector.Collect(f);
     auto result = collector.Run();
     arith::Analyzer analyzer;
     LayoutInferencer substituter(result, &analyzer);
+    PrimFuncNode* fptr = f.CopyOnWrite();
     fptr->body = substituter.VisitStmt(f->body);
     return f;
   }
