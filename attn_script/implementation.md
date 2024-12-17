@@ -6,6 +6,11 @@
 - codegen: generate the custom code needed for the template.
 - autotuner: parallel compile and profile the template configs, return the best config.
 
+# examples
+attention: softmax attention `attn_script/mha.py`; retnet parallel `attn_script/retention.py`; sigmoid attention `attn_script/sigmoidattn.py`;  
+linear attention: `attn_script/mamba2_ngroup1.py` `attn_script/simple_gla.py`
+
+# Code Details
 
 ## attention operator Interface 
 `python/attn_engine/attn_engine.py` `python/attn_engine/linear_attn_engine.py`
