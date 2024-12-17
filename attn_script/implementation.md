@@ -1,9 +1,17 @@
-# AttentionEngine
+# AttentionEngine iMPLEMENTATION
+
+- decider: decide whether to fuse according to qkv shape
+- lower: define the computing primitive: `reduce_max`, `reduce_sum`, `elementwise`, generate forward&backward computation graph
+- template: define the code template for attention & linear attention; define the place where custom code is needed.
+- codegen: generate the custom code needed for the template.
+- autotuner: parallel compile and profile the template configs, return the best config.
+
 
 ## attention operator Interface 
 `python/attn_engine/attn_engine.py` `python/attn_engine/linear_attn_engine.py`
 
-## FrontEnd Computation Graph
+
+## FrontEnd Computation Graph&Op
 `python/core/core.py` `python/core/graph.py`
 define the operator, and computing graph.
 
@@ -13,7 +21,7 @@ define the operator, and computing graph.
 
 return isneedtofuse: True/False; configs: tile, memory
 
-## lowering & template
+## codegen & template
 - tl attn
 `python/core/lower.py` `python/tl_gen.py` `python/tl_template/attn`
 template defines the place where custom code is needed.
