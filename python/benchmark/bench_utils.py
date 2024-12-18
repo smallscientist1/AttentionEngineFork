@@ -256,7 +256,7 @@ def do_bench_mamba(linear_attention, B, HQ,HK,H, TLen, D, DV, BT):
     accum_dtype = torch.float32
     device = "cuda"
 
-    X_mamba = 0.4 * torch.randn(B, TLen, H, D, dtype=dtype, device=device)
+    X_mamba = 0.4 * torch.randn(B, TLen, H, DV, dtype=dtype, device=device)
     dt_mamba = 0.7*torch.randn(B, TLen, H, dtype=accum_dtype, device=device)
     A_mamba =  1.5*torch.randn(H, dtype=dtype, device=device) - 4
     B_mamba =  0.8 * torch.randn(B, TLen, HK, D, dtype=dtype, device=device)
@@ -305,7 +305,7 @@ def do_bench_mamba(linear_attention, B, HQ,HK,H, TLen, D, DV, BT):
     )
     out = out.transpose(1, 2).contiguous()
 
-    print_debug(out, out_ref)
+    print_debug(out, out_ref, rtol=1e-2, atol=1e-2)
     # torch.testing.assert_close(out, out_ref, rtol=1e-2, atol=4e-2)
     # assert check_close(out, out_ref, rtol=5e-2, atol=4e-2)
 
@@ -324,10 +324,10 @@ def do_bench_mamba(linear_attention, B, HQ,HK,H, TLen, D, DV, BT):
     do_bench(run)
     do_bench(run_ref)
 
-    latency = do_bench(run, warmup=500,rep=1000)
+    latency = do_bench(run, warmup=100,rep=100)
     print("tl: {:.5f} ms".format(latency))
 
-    latency = do_bench(run_ref, warmup=500,rep=1000)
+    latency = do_bench(run_ref, warmup=100, rep=100)
     print("MAMBA2: {:.5f} ms".format(latency))
 
 def test_mamba_simple_gla():
@@ -763,6 +763,11 @@ def do_bench_retention(attn, B, H, S, D, DV, dtype=torch.bfloat16):
     mask = torch.rand(
         1, H, S, S, device="cuda", dtype=dtype, requires_grad=False
     ).tril().contiguous()
+    # query = torch.empty(B, S, H, D, device=device, dtype=dtype).normal_(-0.1, 0.1)
+    # key = torch.empty(B, S, H, D, device=device, dtype=dtype).normal_(-0.1, 0.1)
+    # value = torch.empty(B, S, H, DV, device=device, dtype=dtype).normal_(-0.1, 0.1)
+    # do = torch.empty(B, S, H, DV, device=device, dtype=dtype).normal_(-0.1, 0.1)
+    # mask = torch.empty(1, H, S, S, device=device, dtype=dtype).normal_(-0.1,0.1)# .tril().contiguous()
 
     o = attn(query, key, value, mask)
     # o.backward(do, retain_graph=True)
@@ -780,6 +785,11 @@ def do_bench_retention(attn, B, H, S, D, DV, dtype=torch.bfloat16):
     # print("o",o)
     # print("o_ref",o_ref)
     print_debug(o,o_ref,1e-2,1e-2)
+    # print(o.shape)
+    # print(o_ref.shape)
+    # analysis_tensor_data(o, plot=True, figure_name='tensor_distribution_o.png')
+    # analysis_tensor_data(o_ref, plot=True, figure_name='tensor_distribution_o_ref.png')
+    # analysis_tensor_data(o-o_ref, plot=True, figure_name='tensor_distribution_o_diff.png')
     # torch.testing.assert_close(o,o_ref)
 
     from tvm.tl.utils import do_bench

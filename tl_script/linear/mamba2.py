@@ -65,6 +65,8 @@ class SSD(torch.autograd.Function):
         # k_mod here
 
         # v_mod here
+    #    h = exp(decay)*h+ k@v
+    #    o = q@h
 
         decay_cumsum = chunk_local_cumsum_scalar(
             decay, BT

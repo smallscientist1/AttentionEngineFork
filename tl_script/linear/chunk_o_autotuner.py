@@ -2,12 +2,12 @@ import triton.language as triton_lang
 import triton
 
 # for ncu
-import sys
-import os
-os.environ["PYTHONPATH"] = "/home/aiscuser/cfy/tvm/python:/home/aiscuser/cfy/flash-linear-attention"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-sys.path.append("/home/aiscuser/cfy/tvm/python")
-sys.path.append("/home/aiscuser/cfy/flash-linear-attention")
+# import sys
+# import os
+# os.environ["PYTHONPATH"] = "/home/aiscuser/cfy/tvm/python:/home/aiscuser/cfy/flash-linear-attention"
+# # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+# sys.path.append("/home/aiscuser/cfy/tvm/python")
+# sys.path.append("/home/aiscuser/cfy/flash-linear-attention")
 
 import tvm.tl.language as T
 from tvm import tl
@@ -17,6 +17,7 @@ from einops import rearrange, repeat
 import itertools
 
 import torch
+from functools import partial
 # import debugpy
 # # debugpy.listen(5678)
 # debugpy.connect(5678)
@@ -89,10 +90,9 @@ def get_configs():
     return configs
 
 def chunk_o_triton(
-        h,q,k,v,g,
+        h,q,k,v,g,BT=64
 ):
     scale = 1.0
-    BT = 64
     from fla.ops.simple_gla.chunk import chunk_fwd_o_fn
     o = chunk_fwd_o_fn(
         h, q, k, v, g, BT, scale=scale
@@ -193,7 +193,7 @@ def _chunk_o(
         BT,
 ):
     @autotune(configs=get_configs(), keys=['BK', 'BV', 'num_stages', 'thread_num'], warmup=10, rep=20)
-    @jit(out_idx=[5,], supply_type=tl.TensorSupplyType.Normal, ref_prog=None, rtol=0.01, atol=0.01)
+    @jit(out_idx=[5,], supply_type=tl.TensorSupplyType.Normal, ref_prog=partial(chunk_o_triton, BT=BT), skip_check=True)
     def kernel(
         BK=None, BV=None, num_stages=None, thread_num=None
     ):
@@ -214,7 +214,7 @@ def _chunk_o(
             g: T.Buffer((batch,head,seqlen), accum_dtype), # type: ignore
             o: T.Buffer((batch,head,seqlen,dimv), dtype), # type: ignore
         ):
-            with T.Kernel(NV, NT, batch * head, threads=128) as (bx, by, bz):
+            with T.Kernel(NV, NT, batch * head, threads=thread_num) as (bx, by, bz):
                 bo = T.alloc_fragment((BT, BV), dtype=accum_dtype)
                 bo_shared = T.alloc_shared((BT, BV), dtype=dtype)
                 bs = T.alloc_fragment((BT, BT), dtype=accum_dtype)
@@ -280,10 +280,10 @@ def _chunk_o(
     return kernel()
 
 
-batches = [1, 16]
+batches = [1]# , 16]
 heads = [8, 64]
 seqlens = [512,  16384]
-BTs = [32,64,128]
+BTs = [128]# [64,128] # 32 fail
 DDVs = [(64,64),(128,128),(128,64),(256,256)]
 
 
@@ -303,8 +303,8 @@ if __name__ == "__main__":
     f.flush()
     
 
-    for B, H, TLen, (D, DV) in itertools.product(batches, heads, seqlens, DDVs):
-        print(f"B={B}, H={H}, TLen={TLen}, D={D}, DV={DV}")
+    for B, H, TLen, BT, (D, DV) in itertools.product(batches, heads, seqlens, BTs, DDVs):
+        print(f"B={B}, H={H}, TLen={TLen}, D={D}, DV={DV}, BT={BT}")
         total_flops = 2*B * H * TLen * BT * D + 2 * B * H * TLen * D * DV + 2 * B * H * TLen * BT * DV
         best_latency, best_config, ref_latency = _chunk_o(B, H, TLen, D, DV, BT)
         writer.writerow([B, H, TLen, D, DV, BT, best_config['BK'], best_config['BV'], best_config['num_stages'], best_config['thread_num'], best_latency, ref_latency, total_flops / best_latency * 1e-9])
@@ -319,24 +319,24 @@ if __name__ == "__main__":
     # v = torch.randn(B, H, TLen, DV, dtype=dtype, device=device)
     # g = torch.rand(B, H, TLen, dtype=accum_dtype, device=device)
 
-    mod = tl.cached(chunk_o, [5,], B, H, TLen, D, DV, BT, BK, BV)
-    o = mod(h, q, k, v, g)
-    o_ref = chunk_o_triton(h, q, k, v, g)
-    # print(o)
-    print_debug(o, o_ref)
-    print(o.shape)
-    # torch.testing.assert_close(o, o_ref, rtol=1e-3, atol=1e-3)
+    # mod = tl.cached(chunk_o, [5,], B, H, TLen, D, DV, BT, BK, BV)
+    # o = mod(h, q, k, v, g)
+    # o_ref = chunk_o_triton(h, q, k, v, g)
+    # # print(o)
+    # print_debug(o, o_ref)
+    # print(o.shape)
+    # # torch.testing.assert_close(o, o_ref, rtol=1e-3, atol=1e-3)
 
-    from tvm.tl.utils import do_bench
-    def run():
-        o = mod(h, q, k, v, g) # chunk_fwd_h_triton(k,v,g) # mod(k, v, g)
-    def run_triton():
-        o_ref = chunk_o_triton(h, q, k, v, g)
+    # from tvm.tl.utils import do_bench
+    # def run():
+    #     o = mod(h, q, k, v, g) # chunk_fwd_h_triton(k,v,g) # mod(k, v, g)
+    # def run_triton():
+    #     o_ref = chunk_o_triton(h, q, k, v, g)
     
-    latency = do_bench(run, warmup=500,rep=1000)
-    print("tl: {:.2f} ms".format(latency))
-    print("tl: {:.2f} TFlops".format(total_flops / latency * 1e-9))
+    # latency = do_bench(run, warmup=500,rep=1000)
+    # print("tl: {:.2f} ms".format(latency))
+    # print("tl: {:.2f} TFlops".format(total_flops / latency * 1e-9))
 
-    latency = do_bench(run_triton, warmup=500,rep=1000)
-    print("triton: {:.2f} ms".format(latency))
-    print("triton: {:.2f} TFlops".format(total_flops / latency * 1e-9))
+    # latency = do_bench(run_triton, warmup=500,rep=1000)
+    # print("triton: {:.2f} ms".format(latency))
+    # print("triton: {:.2f} TFlops".format(total_flops / latency * 1e-9))

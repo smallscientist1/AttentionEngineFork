@@ -5,7 +5,7 @@ import triton
 import sys
 import os
 os.environ["PYTHONPATH"] = "/home/aiscuser/cfy/tvm/python:/home/aiscuser/cfy/flash-linear-attention"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 sys.path.append("/home/aiscuser/cfy/tvm/python")
 sys.path.append("/home/aiscuser/cfy/flash-linear-attention")
 
@@ -28,6 +28,7 @@ import torch
 # 0.71ms 48 TFlops tma load k
 # 0.64ms 54 TFLops swizzled layout
 # 0.64ms h swizzle
+# 0.47 ms 74 TFlops store h bf16
 
 LOG2E = 1.44269504
 
@@ -88,7 +89,7 @@ def chunk_fwd_h_ref(
         kg = k[:,:,i,:,:] * gg
         vg = v[:,:,i,:,:] * gg
         # h_tmp += torch.einsum("bhcd, bhcn -> bhdn", kg, v[:,:,i,:,:])
-        h_tmp += torch.einsum("bhcd, bhcn -> bhdn", k[:,:,i,:,:], vg)
+        h_tmp += torch.einsum("bhcd, bhcn -> bhdn", k[:,:,i,:,:].float(), vg).float()
         
     h = rearrange(h, "b h t d dv -> b h (t d) dv")
     return h.float()
@@ -99,7 +100,7 @@ def chunk_fwd_h_triton(
     BT=64
     from fla.ops.common.chunk_h import chunk_fwd_h_fn
     h,_ = chunk_fwd_h_fn(k, v, g, None, None, BT, None, output_final_state=False, states_in_fp32=False)
-    return h.float()
+    return h
 
 def chunk_fwd_h(
         batch, head, seqlen, dim, dimv,
@@ -120,12 +121,13 @@ def chunk_fwd_h(
         k: T.Buffer((batch, head, seqlen, dim), dtype), # type: ignore
         v: T.Buffer((batch, head, seqlen, dimv), dtype), # type: ignore
         g: T.Buffer((batch, head, seqlen), accum_dtype), # type: ignore
-        h: T.Buffer((batch, head, NT*dim, dimv), accum_dtype), # type: ignore
+        h: T.Buffer((batch, head, NT*dim, dimv), dtype), # type: ignore
     ):
         with T.Kernel(NK, NV, batch * head, threads=128) as (bx, by, bz):
 
             b_h = T.alloc_fragment((BK, BV), accum_dtype)
-            b_h_shared = T.alloc_shared((BK, BV), accum_dtype)
+            # b_h_cast = T.alloc_fragment((BK, BV), dtype)
+            b_h_shared = T.alloc_shared((BK, BV), dtype)
             b_k = T.alloc_fragment((BT, BK), dtype)
             b_k_shared = T.alloc_shared((BT, BK), dtype)
             b_kt = T.alloc_fragment((BK, BT), dtype)
@@ -157,7 +159,7 @@ def chunk_fwd_h(
                 # T.copy(g[bb,bhead,(i_t+1)*BT-1:(i_t+1)*BT], b_glast)
                 b_glast[0] = g[bb,bhead,(i_t+1)*BT-1]
 
-                T.copy(b_h, b_h_shared)
+                T.copy(b_h, b_h_shared) # implicit cast
                 T.copy(b_h_shared, h[bb,bhead,i_t*dim+bx*BK:(i_t)*dim+(bx+1)*BK,by*BV:(by+1)*BV])
                 # T.copy(b_h, h[bb,bhead,i_t*dim+bx*BK:(i_t)*dim+(bx+1)*BK,by*BV:(by+1)*BV])
 
@@ -175,6 +177,10 @@ def chunk_fwd_h(
                 for i0, i1 in T.Parallel(BK, BT):
                     b_kt[i0, i1] = b_k[i1, i0]*T.exp2((b_glast[0] - b_g[i1]) * LOG2E)
 
+                # # v_mod
+                # for i in T.Parallel():
+                #     b_v_shared *= t_local[i]
+                # 
                 T.gemm(b_kt, b_v_shared, b_h, transpose_B=False)
                 # T.copy(b_h, b_h_shared)
                 
@@ -184,7 +190,7 @@ def chunk_fwd_h(
     return main
 
 if __name__ == "__main__":
-    torch.manual_seed(0)
+    torch.cuda.manual_seed(0)
     B, H, D, DV = 4, 16, 128, 128
     TLen = 16384 # 512
     BT, BK, BV = 64, 64, 32
@@ -202,26 +208,26 @@ if __name__ == "__main__":
 
     mod = tl.cached(chunk_fwd_h, [3,], B, H, TLen, D, DV, BT, BK, BV)
     # h = torch.zeros(B, H, (TLen//BT)*D, DV, dtype=torch.float32)
-    h = mod(k,v,g) # mod(k, v, g)
-    h_ref = chunk_fwd_h_triton(k, v, g)# chunk_fwd_h_triton(k,v,g)# chunk_fwd_h_ref(k, v, g)
+    h = mod(k,v,g).float() # mod(k, v, g)
+    h_ref = chunk_fwd_h_ref(k, v, g)
 
     print(torch.allclose(h, h_ref, rtol=1e-3, atol=1e-3))
     print_debug(h, h_ref)
     
     # torch.testing.assert_close(h, h_ref, rtol=1e-3, atol=1e-3)
-    from tvm.tl.utils import do_bench
-    def run():
-        h = mod(k,v,g) # chunk_fwd_h_triton(k,v,g) # mod(k, v, g)
-    def run_triton():
-        h = chunk_fwd_h_triton(k, v, g)
+    # from tvm.tl.utils import do_bench
+    # def run():
+    #     h = mod(k,v,g) # chunk_fwd_h_triton(k,v,g) # mod(k, v, g)
+    # def run_triton():
+    #     h = chunk_fwd_h_triton(k, v, g)
     
-    latency = do_bench(run, warmup=500,rep=1000)
-    print("tl: {:.2f} ms".format(latency))
-    print("tl: {:.2f} TFlops".format(total_flops / latency * 1e-9))
+    # latency = do_bench(run, warmup=500,rep=1000)
+    # print("tl: {:.2f} ms".format(latency))
+    # print("tl: {:.2f} TFlops".format(total_flops / latency * 1e-9))
 
-    latency = do_bench(run_triton, warmup=500,rep=1000)
-    print("triton: {:.2f} ms".format(latency))
-    print("triton: {:.2f} TFlops".format(total_flops / latency * 1e-9))
+    # latency = do_bench(run_triton, warmup=500,rep=1000)
+    # print("triton: {:.2f} ms".format(latency))
+    # print("triton: {:.2f} TFlops".format(total_flops / latency * 1e-9))
 
 
 

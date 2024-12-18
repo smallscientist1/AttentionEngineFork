@@ -76,7 +76,7 @@ def chunk_o_triton(
         h,q,k,v,g,
 ):
     scale = 1.0
-    BT = 64
+    BT = 128
     from fla.ops.simple_gla.chunk import chunk_fwd_o_fn
     o = chunk_fwd_o_fn(
         h, q, k, v, g, BT, scale=scale
@@ -108,6 +108,7 @@ def chunk_o(
         v: T.Buffer((batch,head,seqlen,dimv), dtype), # type: ignore
         g: T.Buffer((batch,head,seqlen), accum_dtype), # type: ignore
         o: T.Buffer((batch,head,seqlen,dimv), dtype), # type: ignore
+        # custom fwd inputs
     ):
         with T.Kernel(NV, NT, batch * head, threads=128) as (bx, by, bz):
             bo = T.alloc_fragment((BT, BV), dtype=accum_dtype)
@@ -122,6 +123,8 @@ def chunk_o(
             # bg_shared = T.alloc_shared((BT,), dtype=accum_dtype)
             bg = T.alloc_fragment((BT,), dtype=accum_dtype)
             bg1 = T.alloc_fragment((BT,), dtype=accum_dtype)
+
+            # custom fwd inputs init
 
             bb = bz // head
             bh = bz % head
@@ -141,6 +144,8 @@ def chunk_o(
                 T.copy(h[bb, bh, by*dim+ik*BK:by*dim+(ik+1)*BK, bx*BV:(bx+1)*BV], b_state_shared)
                 
                 T.copy(bq_shared, bq)
+                # q_mod here (fused)
+
                 T.gemm(bq, bk_shared, bs, transpose_B=True)
                 T.gemm(bq, b_state_shared, bo, transpose_B=False)
             
@@ -174,9 +179,9 @@ def chunk_o(
 
 if __name__ == "__main__":
     torch.manual_seed(0)
-    B, H, D, DV = 4, 16, 128, 128
-    TLen = 16384
-    BT, BK, BV = 64, 64, 64
+    B, H, D, DV = 1, 8, 128, 128
+    TLen = 512 # 16384
+    BT, BK, BV = 128, 64, 64
     dtype = torch.bfloat16
     accum_dtype = torch.float32
     device = "cuda"
