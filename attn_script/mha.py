@@ -19,11 +19,11 @@ def causal_mask(b, h, q_idx, kv_idx):
     return q_idx >= kv_idx
 
 D = 192
-softmax_scale = D ** 0.5
+softmax_scale = 1/D ** 0.5
 # elementwise on attention scores
 def score_mod(score, custom_fwd_inputs, b, h, q_idx, kv_idx):
     # softmax_scale = custom_fwd_inputs.input_tensors["softmax_scale"]
-    return score / softmax_scale
+    return score * softmax_scale
 
 class OnlineSoftmax(OnlineFunc):
     def __init__(self):
@@ -86,23 +86,11 @@ class OnlineSoftmax(OnlineFunc):
 
 if __name__ == "__main__":
     B, H ,S, D, DV = 1,128,32768,D, 128
+    dtype = torch.float16 # performance regression for bfloat16
     qkv_meta = (
-        meta_tensor(B, H, S, D, dtype=torch.bfloat16),
-        meta_tensor(B, H, S, D, dtype=torch.bfloat16),
-        meta_tensor(B, H, S, DV, dtype=torch.bfloat16),
-    )
-    query = torch.randn(
-        B, H, S, D, device="cuda", dtype=torch.float16, requires_grad=True
-    )
-    key = torch.randn(
-        B, H, S, D, device="cuda", dtype=torch.float16, requires_grad=True
-    )
-    value = torch.randn(
-        B, H, S, DV, device="cuda", dtype=torch.float16, requires_grad=True
-    )
-
-    do = torch.randn(
-        B, H, S, DV, device="cuda", dtype=torch.float16, requires_grad=True
+        meta_tensor(B, H, S, D, dtype=dtype),
+        meta_tensor(B, H, S, D, dtype=dtype),
+        meta_tensor(B, H, S, DV, dtype=dtype),
     )
 
     custom_fwd_inputs = CustomIO({
@@ -116,7 +104,7 @@ if __name__ == "__main__":
         qkv_meta,
         custom_fwd_inputs, score_mod=score_mod, block_mask=block_mask,
         online_func=online,
-        tune=True
+        tune=False, tune_file="mha_tune.json"
     )
 
     # debug: lowered code
@@ -124,4 +112,4 @@ if __name__ == "__main__":
         f.write(mod.tl_code)
 
     from benchmark.bench_utils import do_bench_attention
-    do_bench_attention(mod, B, H, S, D, DV, dtype=torch.bfloat16)
+    do_bench_attention(mod, B, H, S, D, DV, dtype=dtype)

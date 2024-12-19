@@ -91,7 +91,7 @@ class OnlineFunc:
  
 class AttentionEngine:
     def __init__(self, qkv_meta, custom_fwd_inputs, score_mod, block_mask,
-    online_func, mask_value="-inf", device=H100(), backend="tl", tune=False):
+    online_func, mask_value="-inf", device=H100(), backend="tl", tune=False, tune_file="tuned_result.json"):
         # tunner
         need_engine_fuse, fuse_config  = decider(qkv_meta, device)
         
@@ -119,7 +119,10 @@ class AttentionEngine:
                 # program = tl_kernel(B, H, S, DK, DV, *configs[0].values())
                 # from tvm import tl
                 # mod, params = tl.lower(program)
-                tuned_config = st.tl_tune(tl_kernel, B, H, S, DK, DV, configs, output_idx_list, file_path="tuned_result.json")
+                problem_keys = {
+                    "B": B, "H": H, "N_CTX": S, "D_HEAD": DK, "D_HEADV": DV # , "causal":True
+                }
+                tuned_config = st.tl_tune(tl_kernel, problem_keys, configs, output_idx_list, file_path=tune_file)
                 self._compile_tl(qkv_meta, custom_fwd_inputs, score_mod, block_mask, online_func, mask_value, tuned_config)
 
         elif backend == "cute":

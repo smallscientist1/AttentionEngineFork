@@ -247,6 +247,6 @@ class CustomIO:
 
 
 def create_block_mask(causal_mask, B, H, QLen, KVLen, device):
-    pass
+    return True
         
 

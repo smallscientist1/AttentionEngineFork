@@ -7,7 +7,7 @@ def to_tl_op(type:str, *args:SymbolScalar):
     code = IndentedCode()
     if type == "ReduceSum":
         code.add_line(
-            f"T.reduce_sum({args[1].varname}, {args[0].varname},dim=1, clear=True)"
+            f"T.reduce_sum({args[1].varname}, {args[0].varname},dim=1)" # , clear=True)"
         )
     elif type == "ReduceMax":
         code.add_line(
