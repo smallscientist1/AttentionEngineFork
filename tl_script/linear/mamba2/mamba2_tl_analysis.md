@@ -36,4 +36,8 @@ BT 64 : 64, 64, 64, 2, 128
 1.78 ms --> 1.35 ms --vmod2kmod--> 0.81 ms
 
 
+# e2e mamba op
+tl 2.07 ms, tl no fuse 2.89 ms , mamba2 3.89 ms 
+tl-- tile_new--> 1.94 ms 
+
 

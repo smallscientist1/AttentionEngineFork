@@ -282,7 +282,7 @@ class LinearAttention(torch.autograd.Function):
         num_threads_h = 128
         BK_o = 64
         BV_o = 64
-        num_stages_o = 1
+        num_stages_o = 2
         num_threads_o = 128
 
         # decay_mod here
