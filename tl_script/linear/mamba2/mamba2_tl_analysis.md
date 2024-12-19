@@ -39,5 +39,6 @@ BT 64 : 64, 64, 64, 2, 128
 # e2e mamba op
 tl 2.07 ms, tl no fuse 2.89 ms , mamba2 3.89 ms 
 tl-- tile_new--> 1.94 ms 
+tl -- tuned --> 1.86 ms
 
 

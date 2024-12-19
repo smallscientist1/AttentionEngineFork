@@ -7,8 +7,26 @@ import os
 import hashlib
 
 class LinearAttentionEngine:
-    def __init__(self, q_mod=None, k_mod=None, v_mod=None, decay_mod=None, custom_io=None):
-        tl_code = lower_tl(q_mod, k_mod, v_mod, decay_mod, custom_io)
+    def __init__(self, qkv_meta, q_mod=None, k_mod=None, v_mod=None, decay_mod=None, custom_io=None,
+                 tune=False, tune_filename="tune_result"):
+        self._compile_tl(q_mod, k_mod, v_mod, decay_mod, custom_io)
+        if tune:
+            B,HQ,S,DK = qkv_meta[0].shape
+            DV = qkv_meta[2].shape[3]
+            HK = qkv_meta[1].shape[1]
+            H = qkv_meta[2].shape[1]
+            
+            best_config, best_latency = self.autotune(B,HQ,HK,H,S,DK,DV, file_path=tune_filename)
+            self._compile_tl(q_mod, k_mod, v_mod, decay_mod, custom_io, best_config)
+            
+
+    def __call__(self, *args, **kargs):
+        
+        o = self.attention(*args, **kargs)
+        return o
+    
+    def _compile_tl(self, q_mod, k_mod, v_mod, decay_mod, custom_io, tuned_config=None):
+        tl_code = lower_tl(q_mod, k_mod, v_mod, decay_mod, custom_io, tuned_config)
         self.tl_code = tl_code # for debug
         # local_vars = {}
         # exec(tl_code, globals(), local_vars)
@@ -28,9 +46,6 @@ class LinearAttentionEngine:
         tl_attn = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(tl_attn)
         self.attention = tl_attn.linear_attention
-
-    def __call__(self, *args, **kargs):
+        self.autotune = tl_attn.autotune
         
-        o = self.attention(*args, **kargs)
-        return o
         

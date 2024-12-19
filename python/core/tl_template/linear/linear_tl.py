@@ -5,6 +5,8 @@ import tvm.tl.language as T
 import triton.language as triton_lang
 import triton
 
+import itertools
+
 # ---------------------TL_KERNEL_CUMSUM
 @triton.jit
 def chunk_local_cumsum_scalar_kernel(
@@ -70,6 +72,7 @@ def chunk_fwd_h(
             b_v_shared = T.alloc_shared((BT, BV), dtype)
             b_v = T.alloc_fragment((BT, BV), dtype)
             b_g = T.alloc_fragment((BT), accum_dtype)
+            b_g_shared = T.alloc_shared((BT), accum_dtype, scope="shared")
             b_glast = T.alloc_fragment((1), accum_dtype)
 
             bhead = bz % head
@@ -91,9 +94,10 @@ def chunk_fwd_h(
                 # T.copy(k[bb,bhead,i_t*BT:(i_t+1)*BT,bx*BK:(bx+1)*BK], b_k)
                 T.copy(k[bb,bheadk,i_t*BT:(i_t+1)*BT,bx*BK:(bx+1)*BK], b_k_shared)
                 T.copy(v[bb,bhead,i_t*BT:(i_t+1)*BT,by*BV:(by+1)*BV], b_v_shared)
+                T.copy(g[bb,bhead,i_t*BT:(i_t+1)*BT], b_g_shared)
                 # T.copy(v[bb,bhead,i_t*BT:(i_t+1)*BT,by*BV:(by+1)*BV], b_v)
                 # T.copy(b_v, b_v_shared)
-                T.copy(g[bb,bhead,i_t*BT:(i_t+1)*BT], b_g)
+                # T.copy(g[bb,bhead,i_t*BT:(i_t+1)*BT], b_g)
                 # T.copy(g[bb,bhead,(i_t+1)*BT-1:(i_t+1)*BT], b_glast)
                 b_glast[0] = g[bb,bhead,(i_t+1)*BT-1]
 
@@ -112,6 +116,7 @@ def chunk_fwd_h(
                 #     b_v_shared[i0,i1] *= T.exp2((b_glast[0] - b_g[i0]) * 1.44269504)
 
                 T.copy(b_k_shared, b_k)
+                T.copy(b_g_shared, b_g)
                 for i0, i1 in T.Parallel(BK, BT):
                     b_kt[i0, i1] = b_k[i1, i0]*T.exp2((b_glast[0] - b_g[i1]) * LOG2E)
 
@@ -167,7 +172,7 @@ def chunk_o(
             bk_shared = T.alloc_shared((BT,BK), dtype=dtype)
             bv_shared = T.alloc_shared((BT,BV), dtype=dtype)
             b_state_shared = T.alloc_shared((BK, BV), dtype=dtype)
-            # bg_shared = T.alloc_shared((BT,), dtype=accum_dtype)
+            bg_shared = T.alloc_shared((BT,), dtype=accum_dtype, scope = "shared")
             bg = T.alloc_fragment((BT,), dtype=accum_dtype)
             bg1 = T.alloc_fragment((BT,), dtype=accum_dtype)
 
@@ -200,15 +205,17 @@ def chunk_o(
                 T.gemm(bq, bk_shared, bs, transpose_B=True)
                 T.gemm(bq, b_state_shared, bo, transpose_B=False)
             
-            T.copy(g[bb, bh, by*BT:(by+1)*BT], bg)
-            T.copy(g[bb, bh, by*BT:(by+1)*BT], bg1)
-            # TL BUG: deadlock here
-            # T.copy(g[bb, bh, by*BT:(by+1)*BT], bg_shared)
-            # T.copy(bg_shared, bg)
-            # T.copy(bg_shared, bg1)
+            # T.copy(g[bb, bh, by*BT:(by+1)*BT], bg)
+            # T.copy(g[bb, bh, by*BT:(by+1)*BT], bg1)
+            T.copy(g[bb, bh, by*BT:(by+1)*BT], bg_shared)
+            T.copy(bg_shared, bg)
+            T.copy(bg_shared, bg1)
             for i0,i1 in T.Parallel(BT,BV):
                 bo[i0,i1] *= T.exp2(bg[i0] * LOG2E)
             
+            for i0,i1 in T.Parallel(BT,BT):
+                bs[i0,i1] *= T.exp2((bg[i0]-bg1[i1]) * LOG2E)
+            # fix nan bug
             for i0,i1 in T.Parallel(BT,BT):
                 bs[i0,i1] = T.if_then_else(
                     i0 >= i1, bs[i0,i1], 0.0
@@ -217,8 +224,6 @@ def chunk_o(
             # T.copy(bg,bg1)
             # for i0,i1 in T.Parallel(BT,BT):
             #     bs[i0,i1] *= T.exp2((bg[i0]-bg1[i1]) * LOG2E)
-            for i0,i1 in T.Parallel(BT,BT):
-                bs[i0,i1] *= T.exp2((bg[i0]-bg1[i1]) * LOG2E)
             T.copy(v[bb, bh, by*BT:(by+1)*BT, bx*BV:(bx+1)*BV], bv_shared)
             T.copy(bs, bs_cast)
             T.gemm(bs_cast, bv_shared, bo)
@@ -239,15 +244,24 @@ class LinearAttention(torch.autograd.Function):
         H = v.shape[1]
 
         # autotuner here
-        BT = 64
-        BK_h = 64
-        BV_h = 64
-        num_stages_h = 2
-        num_threads_h = 128
-        BK_o = 64
-        BV_o = 64
-        num_stages_o = 1
-        num_threads_o = 128
+        # BT = 64
+        # BK_h = 64
+        # BV_h = 64
+        # num_stages_h = 2
+        # num_threads_h = 128
+        # BK_o = 64
+        # BV_o = 64
+        # num_stages_o = 2
+        # num_threads_o = 128
+        BT = {{BT}}
+        BK_h = {{BK_h}}
+        BV_h = {{BV_h}}
+        num_stages_h = {{num_stages_h}}
+        num_threads_h = {{num_threads_h}}
+        BK_o = {{BK_o}}
+        BV_o = {{BV_o}}
+        num_stages_o = {{num_stages_o}}
+        num_threads_o = {{num_threads_o}}
 
         # decay_mod here
         {{decay_mod_expr | indent(8)}}
@@ -281,3 +295,116 @@ class LinearAttention(torch.autograd.Function):
 
 linear_attention = LinearAttention.apply
 
+# --------------- TL_TUNNER
+# AUTOtune
+from autotuner.arch.H100 import H100
+
+def generate_config(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100()):
+    # BTs = [32,64,128,192,256]
+    BK_hs = [32,64,128,192,256]
+    BV_hs = [32,64,128,192,256]
+    num_stages_hs = [1,2,3,4]
+    num_threads_hs = [128,256]
+    BK_os = [32,64,128,256]
+    BV_os = [32,64,128,256]
+    num_stages_os = [1,2,3,4]
+    num_threads_os = [128,256]
+    
+    # H100
+    MMA_ATOM_M = device.mma_primitive[0]# 64
+    MMA_ATOM_TRHEADS = device.threads_per_mma # 128
+    smem_cap = device.smem_cap # 232448
+    reg_cap = device.reg_cap * 4 # 65536 * 4
+    reg_cap_per_thread = device.register_per_thread * 4 # 255 * 4
+    
+    # input shape
+    # BTs = [bt for bt in BTs if N_CTX % bt == 0]
+    BK_hs = [bk for bk in BK_hs if D_HEAD % bk == 0]
+    BV_hs = [bv for bv in BV_hs if D_HEADV % bv == 0]
+    BK_os = [bk for bk in BK_os if D_HEAD % bk == 0]
+    BV_os = [bv for bv in BV_os if D_HEADV % bv == 0]
+       
+    config_h = []
+    for BK_h, BV_h, num_stages_h, num_threads_h in itertools.product(BK_hs, BV_hs, num_stages_hs, num_threads_hs):
+        sharedmem_chunk_h = 2 * (
+            BK_h * BV_h + (BT * BK_h + BT * BV_h + BT ) 
+            * num_stages_h)
+        reg_chunk_h = 4 * (
+            BK_h * BV_h
+        )
+        conditions_h = [
+            num_stages_h > N_CTX // BT,
+            BK_h % (MMA_ATOM_M) != 0,
+            sharedmem_chunk_h > smem_cap,
+            reg_chunk_h > reg_cap and reg_chunk_h > reg_cap_per_thread * num_threads_h,
+        ]
+        if any(conditions_h):
+            continue
+        config_h.append( {
+        # "BT": BT,
+        "BK_h": BK_h,
+        "BV_h": BV_h,
+        "num_stages_h": num_stages_h,
+        "num_threads_h": num_threads_h,
+        })
+    
+    config_o = []
+    for BK_o, BV_o, num_stages_o, num_threads_o in itertools.product(BK_os, BV_os, num_stages_os, num_threads_os):
+        sharedmem_chunk_o = 2 * (
+            BT * BK_o * num_stages_o + BT * BK_o * num_stages_o + BK_o * BV_o* num_stages_o +
+            BT * BV_o 
+        )
+        reg_chunk_o = 4 * (
+            BT * BT + BT * BV_o
+        )
+        conditions_o = [
+            num_stages_o > D_HEAD // BK_o,
+            BT % (MMA_ATOM_M*(num_threads_o//MMA_ATOM_TRHEADS)) != 0,
+            sharedmem_chunk_o > smem_cap,
+            reg_chunk_o > reg_cap and reg_chunk_o > reg_cap_per_thread * num_threads_o,
+        ]
+        if any(conditions_o):
+            continue
+        config_o.append( {
+        # "BT": BT,
+        "BK_o": BK_o,
+        "BV_o": BV_o,
+        "num_stages_o": num_stages_o,
+        "num_threads_o": num_threads_o,
+        })
+        
+    return config_h, config_o
+
+from autotuner.attnfwd_tunner_engine2 import tl_tune
+
+def autotune(B, HQ, HK, H, Tlen, D, DV, file_path="mamba2",device=H100()):
+            
+    BTs = [32,64,128,192,256]
+ 
+    best_config = {}
+    best_latency = 1e6
+    for BT in BTs:
+        config_h,config_o = generate_config(B, HQ, HK, H, Tlen, D, DV, BT, device)
+        if len(config_h) == 0 or len(config_o) == 0:
+            continue
+        problem_keys = {
+            "B": B, "HQ": HQ, "HK": HK, "H": H, "Tlen": Tlen, "D": D, "DV": DV, "BT": BT
+        }
+        best_config_h, best_latency_h = tl_tune(chunk_fwd_h, problem_keys, config_h, [3,], file_path=f"{file_path}_h.json")
+        best_config_o, best_latency_o  = tl_tune(chunk_o, problem_keys, config_o, [5,], file_path=f"{file_path}_o.json")
+        if best_latency_h + best_latency_o < best_latency:
+            best_latency = best_latency_h + best_latency_o
+            best_config = {
+                "BT": BT,
+                "BK_h": best_config_h["BK_h"],
+                "BV_h": best_config_h["BV_h"],
+                "num_stages_h": best_config_h["num_stages_h"],
+                "num_threads_h": best_config_h["num_threads_h"],
+                "BK_o": best_config_o["BK_o"],
+                "BV_o": best_config_o["BV_o"],
+                "num_stages_o": best_config_o["num_stages_o"],
+                "num_threads_o": best_config_o["num_threads_o"],
+            }
+    
+    return best_config, best_latency
+   

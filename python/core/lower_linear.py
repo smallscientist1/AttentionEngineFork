@@ -14,22 +14,17 @@ class lowerOutput:
     q_mod_expr: str = ""
     custom_inputs_list: str = ""
 
-# @dataclass
-# class lowerKmodOutput:
-#     k_mod_expr: str = ""
-#     # custom_inputs_list: str = ""
-
-# @dataclass
-# class lowerVmodOutput:
-#     v_mod_expr: str = ""
-
-# @dataclass
-# class lowerDecaymodOutput:
-#     decay_mod_expr: str = ""
-
-# @dataclass
-# class lowerQmodOutput:
-#     q_mod_expr: str = ""
+@dataclass
+class TunnerOutput:
+    BT: str = "64"
+    BK_h: str = "64"
+    BV_h: str = "64"
+    num_stages_h: str = "2"
+    num_threads_h: str = "128"
+    BK_o: str = "64"
+    BV_o: str = "64"
+    num_stages_o: str = "2"
+    num_threads_o: str = "128"
 
 def lowerKmod(k_mod, custom_io, lower_output: lowerOutput):
     k = SymbolicArray("k", Var("k"), shape_idx=["B", "H", "T", "D"])
@@ -58,7 +53,10 @@ def lowerQmod(q_mod, custom_io, lower_output: lowerOutput):
     tl_code, input_vars = generate_tl_from_dag([new_q])
     lower_output.q_mod_expr = str(tl_code)
 
-def lower_tl(q_mod, k_mod, v_mod, decay_mod, custom_io):
+def lower_tl(q_mod, k_mod, v_mod, decay_mod, custom_io, tuned_config=None):
+    
+    tune_output = TunnerOutput() if tuned_config is None else TunnerOutput(**tuned_config)
+    
     lower_output = lowerOutput()
     if k_mod:
         lowerKmod(k_mod, custom_io, lower_output)
@@ -72,6 +70,7 @@ def lower_tl(q_mod, k_mod, v_mod, decay_mod, custom_io):
     lower_output.custom_inputs_list += "," if lower_output.custom_inputs_list else ""
     return TlLinearAttnTemplate(
         **(lower_output.__dict__),
+        **(tune_output.__dict__)
     )()
 
 

@@ -5,6 +5,10 @@ import tvm.tl.language as T
 import triton.language as triton_lang
 import triton
 
+import itertools
+import json
+import os
+
 # ---------------------TL_KERNEL_CUMSUM
 @triton.jit
 def chunk_local_cumsum_scalar_kernel(
@@ -278,11 +282,11 @@ class LinearAttention(torch.autograd.Function):
         BT = 64
         BK_h = 64
         BV_h = 64
-        num_stages_h = 2
+        num_stages_h = 2 # 4
         num_threads_h = 128
-        BK_o = 64
+        BK_o = 64 # 128
         BV_o = 64
-        num_stages_o = 2
+        num_stages_o = 2 # 1
         num_threads_o = 128
 
         # decay_mod here
@@ -321,19 +325,178 @@ class LinearAttention(torch.autograd.Function):
 
 linear_attention = LinearAttention.apply
 
+# AUTOtune
+def generate_config(BATCH, HQ, HK, HV, H, N_CTX, D_HEAD, D_HEADV, BT):
+    # BTs = [32,64,128,192,256]
+    BK_hs = [32,64,128,192,256]
+    BV_hs = [32,64,128,192,256]
+    num_stages_hs = [1,2,3,4]
+    num_threads_hs = [128,256]
+    BK_os = [32,64,128,256]
+    BV_os = [32,64,128,256]
+    num_stages_os = [1,2,3,4]
+    num_threads_os = [128,256]
+    
+    # H100
+    MMA_ATOM_M = 64
+    MMA_ATOM_TRHEADS = 128
+    smem_cap = 232448
+    reg_cap = 65536 * 4
+    reg_cap_per_thread = 255 * 4
+    
+    # input shape
+    # BTs = [bt for bt in BTs if N_CTX % bt == 0]
+    BK_hs = [bk for bk in BK_hs if D_HEAD % bk == 0]
+    BV_hs = [bv for bv in BV_hs if D_HEADV % bv == 0]
+    BK_os = [bk for bk in BK_os if D_HEAD % bk == 0]
+    BV_os = [bv for bv in BV_os if D_HEADV % bv == 0]
+    
+    # configs = []
+    # for BT, BK_h, BV_h, num_stages_h, num_threads_h, \
+    #     BK_o, BV_o, num_stages_o, num_threads_o in \
+    #         itertools.product(BTs, BK_hs, BV_hs, num_stages_hs, num_threads_hs, BK_os, BV_os, num_stages_os, num_threads_os):
+    #     # chunk_h implementation
+    #     sharedmem_chunk_h = 2 * (
+    #         BK_h * BV_h + (BT * BK_h + BT * BV_h + BT ) 
+    #         * num_stages_h)
+    #     conditions_h = [
+    #         num_stages_h > N_CTX // BT,
+    #         BK_h % (MMA_ATOM_M) != 0,
+    #         sharedmem_chunk_h > smem_cap,
+    #     ]
+    #     if any(conditions_h):
+    #         continue
+    #     # chunk_o implementation
+    #     sharedmem_chunk_o = 2 * (
+    #         BT * BK_o * num_stages_o + BT * BK_o * num_stages_o + BK_o * BV_o* num_stages_o +
+    #         BT * BV_o 
+    #     )
+    #     conditions_o = [
+    #         num_stages_o > D_HEAD // BK_o,
+    #         BT % (MMA_ATOM_M*(num_threads_o//MMA_ATOM_TRHEADS)) != 0,
+    #         sharedmem_chunk_o > smem_cap,
+    #     ]
+    #     if any(conditions_o):
+    #         continue
+    #     configs.append( {
+    #     "BT": BT,
+    #     "BK_h": BK_h,
+    #     "BV_h": BV_h,
+    #     "num_stages_h": num_stages_h,
+    #     "num_threads_h": num_threads_h,
+    #     "BK_o": BK_o,
+    #     "BV_o": BV_o,
+    #     "num_stages_o": num_stages_o,
+    #     "num_threads_o": num_threads_o,
+    #     })
+        
+    config_h = []
+    for BK_h, BV_h, num_stages_h, num_threads_h in itertools.product(BK_hs, BV_hs, num_stages_hs, num_threads_hs):
+        sharedmem_chunk_h = 2 * (
+            BK_h * BV_h + (BT * BK_h + BT * BV_h + BT ) 
+            * num_stages_h)
+        reg_chunk_h = 4 * (
+            BK_h * BV_h
+        )
+        conditions_h = [
+            num_stages_h > N_CTX // BT,
+            BK_h % (MMA_ATOM_M) != 0,
+            sharedmem_chunk_h > smem_cap,
+            reg_chunk_h > reg_cap and reg_chunk_h > reg_cap_per_thread * num_threads_h,
+        ]
+        if any(conditions_h):
+            continue
+        config_h.append( {
+        # "BT": BT,
+        "BK_h": BK_h,
+        "BV_h": BV_h,
+        "num_stages_h": num_stages_h,
+        "num_threads_h": num_threads_h,
+        })
+    
+    config_o = []
+    for BK_o, BV_o, num_stages_o, num_threads_o in itertools.product(BK_os, BV_os, num_stages_os, num_threads_os):
+        sharedmem_chunk_o = 2 * (
+            BT * BK_o * num_stages_o + BT * BK_o * num_stages_o + BK_o * BV_o* num_stages_o +
+            BT * BV_o 
+        )
+        reg_chunk_o = 4 * (
+            BT * BT + BT * BV_o
+        )
+        conditions_o = [
+            num_stages_o > D_HEAD // BK_o,
+            BT % (MMA_ATOM_M*(num_threads_o//MMA_ATOM_TRHEADS)) != 0,
+            sharedmem_chunk_o > smem_cap,
+            reg_chunk_o > reg_cap and reg_chunk_o > reg_cap_per_thread * num_threads_o,
+        ]
+        if any(conditions_o):
+            continue
+        config_o.append( {
+        # "BT": BT,
+        "BK_o": BK_o,
+        "BV_o": BV_o,
+        "num_stages_o": num_stages_o,
+        "num_threads_o": num_threads_o,
+        })
+        
+    return config_h, config_o
+   
+from autotuner.attnfwd_tunner_engine2 import tl_tune
+
+def autotune(B, HQ, HK, H, Tlen, D, DV, file_path="mamba2.json"):
+            
+    BTs = [32,64,128,192,256]
+ 
+    best_config = {}
+    best_latency = 1e6
+    for BT in BTs:
+        config_h,config_o = generate_config(B, HQ, HK, DV, H, Tlen, D, DV, BT)
+        if len(config_h) == 0 or len(config_o) == 0:
+            continue
+        problem_keys = {
+            "B": B, "HQ": HQ, "HK": HK, "H": H, "Tlen": Tlen, "D": D, "DV": DV, "BT": BT
+        }
+        best_config_h, best_latency_h = tl_tune(chunk_fwd_h, problem_keys, config_h, file_path="mamba2_h.json")
+        best_config_o, best_latency_o  = tl_tune(chunk_o, problem_keys, config_o, file_path="mamba2_o.json")
+        if best_latency_h + best_latency_o < best_latency:
+            best_latency = best_latency_h + best_latency_o
+            best_config = {
+                "BT": BT,
+                "BK_h": best_config_h["BK_h"],
+                "BV_h": best_config_h["BV_h"],
+                "num_stages_h": best_config_h["num_stages_h"],
+                "num_threads_h": best_config_h["num_threads_h"],
+                "BK_o": best_config_o["BK_o"],
+                "BV_o": best_config_o["BV_o"],
+                "num_stages_o": best_config_o["num_stages_o"],
+                "num_threads_o": best_config_o["num_threads_o"],
+            }
+    
+    return best_config, best_latency
+    
+
 if __name__ == "__main__":
     B, H, Tlen, D, DV = 8, 80, 8192, 128, 64 # bug 16384
     HQ, HK = 1, 1
-
+    
+    # config_h,config_o = generate_config(B, HQ, HK, DV, H, Tlen,D, DV,128)
+    # print(config_h)
+    # print(config_o)
+    # print(len(config_h))
+    # print(len(config_o))
+    # best_config, best_latency = autotune(B, HQ, HK, H, Tlen, D, DV)
+    # print(best_config)
+    # print(best_latency)
+    
     from benchmark.bench_utils import do_bench_mamba
     do_bench_mamba(linear_attention, B, HQ,HK,H, Tlen, D, DV, BT=256)
     
-    program = chunk_o(B, HQ, HK, H, Tlen, D, DV, 64, 64, 64, 2, 128)
-    mod, params = tl.lower(program)
-    mod = tl.Profiler(mod, params, [6], tl.TensorSupplyType.Normal)
-    # mod.assert_allclose(chunk_scan_ref, rtol=0.01, atol=0.01)
-    latency = mod.do_bench(mod, n_warmup=10, n_repeat=10, profiler="tvm")
-    print("{:.4f} ms".format(latency))
+    # program = chunk_o(B, HQ, HK, H, Tlen, D, DV, 128, 128, 64, 1, 256)
+    # mod, params = tl.lower(program)
+    # mod = tl.Profiler(mod, params, [6], tl.TensorSupplyType.Normal)
+    # # mod.assert_allclose(chunk_scan_ref, rtol=0.01, atol=0.01)
+    # latency = mod.do_bench(mod, n_warmup=10, n_repeat=10, profiler="tvm")
+    # print("{:.4f} ms".format(latency))
     
     # program = chunk_fwd_h(B, HQ, HK, H, Tlen, D, DV, 64, 64, 64, 2, 128)
     # mod, params = tl.lower(program)

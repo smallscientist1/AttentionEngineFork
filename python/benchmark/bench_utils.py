@@ -468,20 +468,26 @@ def do_bench_simple_gla(linear_attention, B, H, TLen, D, DV, BT):
 
     do = torch.randn(B, H, TLen, DV, device=device, dtype=dtype)
 
+    from fla.ops.simple_gla import chunk_simple_gla
+    g1 = g.clone().bfloat16().requires_grad_(require_grad)
+    
+    out_ref,_ = chunk_simple_gla(
+        q, k, v, g1, scale=None, output_final_state=False
+    )
+    out = linear_attention(
+        q, k, v, g
+    )
+    print_debug(out, out_ref, rtol=1e-2, atol=1e-2)
+    
     from tvm.tl.utils import do_bench
     def run():
         out = linear_attention(
             q, k, v, g
         )
-    from fla.ops.simple_gla import chunk_simple_gla
-    g1 = g.clone().bfloat16().requires_grad_(require_grad)
     def run_ref():
         out,_ = chunk_simple_gla(
             q, k, v, g1, scale=None, output_final_state=False
         )
-    
-    do_bench(run)
-    do_bench(run_ref)
 
     latency = do_bench(run, warmup=500,rep=1000)
     print("tl: {:.2f} ms".format(latency))
@@ -979,51 +985,51 @@ def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16):
     # print(key.grad)
     # print(value.grad)
 
-    from flash_attn_interface import flash_attn_func as flash_attn_func_hopper
-    # from flash_attn import flash_attn_func as flash_attn_func_hopper
+    # from flash_attn_interface import flash_attn_func as flash_attn_func_hopper
+    # # from flash_attn import flash_attn_func as flash_attn_func_hopper
     
-    DIM_HOPPER = [64,128,256]
-    dim_padded_fa3 = list(filter(lambda x: x >= max(D,DV), DIM_HOPPER))
-    assert(len(dim_padded_fa3) > 0)
-    dim_padded_fa3 = min(dim_padded_fa3)
-    def fa3(dim_padded):
-        if D < dim_padded:
-            query_padded = F.pad(query, (0, dim_padded-D), value=0.)
-            key_padded = F.pad(key, (0, dim_padded-D), value=0.)
-        else:
-            query_padded = query
-            key_padded = key
-        if DV < dim_padded:
-            value_padded = F.pad(value, (0,dim_padded-DV), value=0.)
-        else:
-            value_padded = value
-        o_ref = flash_attn_func_hopper(query_padded,key_padded,value_padded, softmax_scale=(1/D)**0.5,causal=True)[0]
-        if DV < dim_padded:
-            o_ref = o_ref[:,:,:,:DV]
-        return o_ref
+    # DIM_HOPPER = [64,128,256]
+    # dim_padded_fa3 = list(filter(lambda x: x >= max(D,DV), DIM_HOPPER))
+    # assert(len(dim_padded_fa3) > 0)
+    # dim_padded_fa3 = min(dim_padded_fa3)
+    # def fa3(dim_padded):
+    #     if D < dim_padded:
+    #         query_padded = F.pad(query, (0, dim_padded-D), value=0.)
+    #         key_padded = F.pad(key, (0, dim_padded-D), value=0.)
+    #     else:
+    #         query_padded = query
+    #         key_padded = key
+    #     if DV < dim_padded:
+    #         value_padded = F.pad(value, (0,dim_padded-DV), value=0.)
+    #     else:
+    #         value_padded = value
+    #     o_ref = flash_attn_func_hopper(query_padded,key_padded,value_padded, softmax_scale=(1/D)**0.5,causal=True)[0]
+    #     if DV < dim_padded:
+    #         o_ref = o_ref[:,:,:,:DV]
+    #     return o_ref
     
-    o_ref = fa3(dim_padded_fa3)
-    print_debug(o,o_ref)
+    # o_ref = fa3(dim_padded_fa3)
+    # print_debug(o,o_ref)
 
-    from flash_attn import flash_attn_func
-    dim_padded_fa2 = max(D,DV)
-    def fa2(dim_padded):
-        if D < dim_padded:
-            query_padded = F.pad(query, (0, dim_padded-D), value=0.)
-            key_padded = F.pad(key, (0, dim_padded-D), value=0.)
-        else:
-            query_padded = query
-            key_padded = key
-        if DV < dim_padded:
-            value_padded = F.pad(value, (0,dim_padded-DV), value=0.)
-        else:
-            value_padded = value
-        o_ref = flash_attn_func(query_padded,key_padded,value_padded, softmax_scale=(1/D)**0.5,causal=True)
-        if DV < dim_padded:
-            o_ref = o_ref[:,:,:,:DV]
-        return o_ref
-    o_ref = fa2(dim_padded_fa2)
-    print_debug(o,o_ref)
+    # from flash_attn import flash_attn_func
+    # dim_padded_fa2 = max(D,DV)
+    # def fa2(dim_padded):
+    #     if D < dim_padded:
+    #         query_padded = F.pad(query, (0, dim_padded-D), value=0.)
+    #         key_padded = F.pad(key, (0, dim_padded-D), value=0.)
+    #     else:
+    #         query_padded = query
+    #         key_padded = key
+    #     if DV < dim_padded:
+    #         value_padded = F.pad(value, (0,dim_padded-DV), value=0.)
+    #     else:
+    #         value_padded = value
+    #     o_ref = flash_attn_func(query_padded,key_padded,value_padded, softmax_scale=(1/D)**0.5,causal=True)
+    #     if DV < dim_padded:
+    #         o_ref = o_ref[:,:,:,:DV]
+    #     return o_ref
+    # o_ref = fa2(dim_padded_fa2)
+    # print_debug(o,o_ref)
 
     # from tvm.tl.utils import do_bench
     def run():
@@ -1050,12 +1056,12 @@ def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16):
     latency = do_bench(run, warmup=50,rep=100)
     print("tl: {:.2f} ms".format(latency))
     print("tflops: {:.2f}".format(tflops/latency*1e-9))
-    latency_ref = do_bench(run_ref, warmup=50,rep=100)
-    print("flash: {:.2f} ms".format(latency_ref))
-    print("tflops: {:.2f}".format(tflops/latency_ref*1e-9))
-    latency_reffa3 = do_bench(run_ref_fa3, warmup=50,rep=100)
-    print("flash fa3: {:.2f} ms".format(latency_reffa3))
-    print("tflops: {:.2f}".format(tflops/latency_reffa3*1e-9))
+    # latency_ref = do_bench(run_ref, warmup=50,rep=100)
+    # print("flash: {:.2f} ms".format(latency_ref))
+    # print("tflops: {:.2f}".format(tflops/latency_ref*1e-9))
+    # latency_reffa3 = do_bench(run_ref_fa3, warmup=50,rep=100)
+    # print("flash fa3: {:.2f} ms".format(latency_reffa3))
+    # print("tflops: {:.2f}".format(tflops/latency_reffa3*1e-9))
 
     # latency = do_bench(run_bacward, warmup=500,rep=1000)
     # print("tl bwd: {:.2f} ms".format(latency))
