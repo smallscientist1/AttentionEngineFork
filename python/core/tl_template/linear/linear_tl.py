@@ -50,6 +50,10 @@ def chunk_fwd_h(
     accum_dtype = "float"
     num_stages = num_stages
     LOG2E = 1.44269504
+    
+    seq_len = seqlen
+    heads = head
+    dimqk = dim
 
     assert(head % headk == 0)
     head_headk_ratio = head // headk
@@ -59,6 +63,7 @@ def chunk_fwd_h(
         k: T.Buffer((batch, headk, seqlen, dim), dtype), # type: ignore
         v: T.Buffer((batch, head, seqlen, dimv), dtype), # type: ignore
         g: T.Buffer((batch, head, seqlen), accum_dtype), # type: ignore
+        {{chunk_h_custom_inputs_list | indent(8)}}
         h: T.Buffer((batch, head, NT*dim, dimv), dtype), # type: ignore
     ):
         with T.Kernel(NK, NV, batch * head, threads=num_threads) as (bx, by, bz):
@@ -74,6 +79,7 @@ def chunk_fwd_h(
             b_g = T.alloc_fragment((BT), accum_dtype)
             b_g_shared = T.alloc_shared((BT), accum_dtype, scope="shared")
             b_glast = T.alloc_fragment((1), accum_dtype)
+            {{h_alloc_buffer_list | indent(12)}}
 
             bhead = bz % head
             bb = bz // head
@@ -116,6 +122,9 @@ def chunk_fwd_h(
                 #     b_v_shared[i0,i1] *= T.exp2((b_glast[0] - b_g[i0]) * 1.44269504)
 
                 T.copy(b_k_shared, b_k)
+                
+                {{k_mod_expr_fused_h | indent(16)}}
+                
                 T.copy(b_g_shared, b_g)
                 for i0, i1 in T.Parallel(BK, BT):
                     b_kt[i0, i1] = b_k[i1, i0]*T.exp2((b_glast[0] - b_g[i1]) * LOG2E)
@@ -146,6 +155,9 @@ def chunk_o(
     LOG2E = 1.44269504
 
     scale = 1.0
+    seq_len = seqlen
+    heads = head
+    dimqk = dim
 
     assert(head % headk == 0)
     head_headk_ratio = head // headk
@@ -159,6 +171,7 @@ def chunk_o(
         k: T.Buffer((batch,headk,seqlen,dim), dtype), # type: ignore
         v: T.Buffer((batch,head,seqlen,dimv), dtype), # type: ignore
         g: T.Buffer((batch,head,seqlen), accum_dtype), # type: ignore
+        {{chunk_o_custom_inputs_list | indent(8)}}
         o: T.Buffer((batch,head,seqlen,dimv), dtype), # type: ignore
         # custom fwd inputs
     ):
@@ -175,7 +188,7 @@ def chunk_o(
             bg_shared = T.alloc_shared((BT,), dtype=accum_dtype, scope = "shared")
             bg = T.alloc_fragment((BT,), dtype=accum_dtype)
             bg1 = T.alloc_fragment((BT,), dtype=accum_dtype)
-
+            {{o_alloc_buffer_list | indent(12)}}
             # custom fwd inputs init
 
             bb = bz // head
@@ -220,10 +233,10 @@ def chunk_o(
                 bs[i0,i1] = T.if_then_else(
                     i0 >= i1, bs[i0,i1], 0.0
                 )
-            # tl bug here: 因为每个线程间的bg会有相同的
-            # T.copy(bg,bg1)
-            # for i0,i1 in T.Parallel(BT,BT):
-            #     bs[i0,i1] *= T.exp2((bg[i0]-bg1[i1]) * LOG2E)
+
+            # v_mod here (fused)
+            {{v_mod_expr_fused_o | indent(12)}}
+            
             T.copy(v[bb, bh, by*BT:(by+1)*BT, bx*BV:(bx+1)*BV], bv_shared)
             T.copy(bs, bs_cast)
             T.gemm(bs_cast, bv_shared, bo)
@@ -237,7 +250,7 @@ def chunk_o(
 class LinearAttention(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, q, k, v, decay, {{custom_inputs_list}} *custom_fwd_inputs):
+    def forward(ctx, q, k, v, decay, {{custom_inputs_list}} ):
         BATCH, HQ, N_CTX, D_HEAD = q.shape
         D_HEADV = v.shape[-1]
         HK = k.shape[1]
@@ -275,21 +288,21 @@ class LinearAttention(torch.autograd.Function):
         decay_cumsum = chunk_local_cumsum_scalar(
             decay, BT
         )
-        chunk_fwd_h_mod = tl.cached(chunk_fwd_h, [3,], BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_h, BV_h, num_stages_h, num_threads_h)
-        output_idx_list = [5,]
+        chunk_fwd_h_mod = tl.cached(chunk_fwd_h, {{output_idx_list_h}}, BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_h, BV_h, num_stages_h, num_threads_h)
+        output_idx_list = {{output_idx_list_o}}# [5,]
         chunk_fwd_o_mod = tl.cached(chunk_o, output_idx_list, BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_o, BV_o, num_stages_o, num_threads_o)
 
-        h = chunk_fwd_h_mod(k, v, decay_cumsum)
-        o = chunk_fwd_o_mod(h, q, k, v, decay_cumsum,*custom_fwd_inputs)
+        h = chunk_fwd_h_mod(k, v, decay_cumsum, {{custom_inputs_list_h}})
+        o = chunk_fwd_o_mod(h, q, k, v, decay_cumsum, {{custom_inputs_list_o}})
 
-        ctx.save_for_backward(q, k, v, decay_cumsum, {{custom_inputs_list}} *custom_fwd_inputs)
+        ctx.save_for_backward(q, k, v, decay_cumsum, {{custom_inputs_list}} )
         ctx.BT = BT
         return o
 
     @staticmethod
     def backward(ctx, do):
         BT = ctx.BT
-        q, k, v, decay_cumsum, {{custom_inputs_list}} *custom_fwd_inputs = ctx.saved_tensors
+        q, k, v, decay_cumsum, {{custom_inputs_list}} = ctx.saved_tensors
         # h = chunk_fwd_h_mod(k, v, decay_cumsum)
         pass
 

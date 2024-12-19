@@ -1,6 +1,7 @@
 from attn_engine import LinearAttentionEngine
 from core.core import SymbolicTensor
 from core.core import CustomIO
+from core.utils import meta_tensor
 
 import torch
 import torch.nn.functional as F 
@@ -32,18 +33,26 @@ def v_mod(v, custom_io): # (B,H,seqlen, D)
     return v * dt
 
 if __name__ == "__main__":
-    B, H, T, D, DV = 1, 24, 2048, 128, 64 # bug 16384
+    B, H, T, D, DV = 8,80, 8192, 128, 64 # bug 16384
     HQ, HK = 1, 1
+    dtype = torch.bfloat16
+    qkv_meta = (
+        meta_tensor(B, HQ, T, D, dtype=dtype),
+        meta_tensor(B, HK, T, D, dtype=dtype),
+        meta_tensor(B, H, T, DV, dtype=dtype),
+    )
     custom_io = CustomIO(
         {
-            "A": (1, H),
-            "dt": (B, H, T)
+            "A": (1, "heads"),
+            "dt": ("batch", "heads", "seq_len")
         }
     )
-    mod = LinearAttentionEngine(decay_mod=decay_mod, v_mod=v_mod,
-                            custom_io = custom_io)
+    mod = LinearAttentionEngine(qkv_meta,
+        decay_mod=decay_mod, v_mod=v_mod,
+                            custom_io = custom_io,
+                            tune=True, tune_filename="mamba2")
     with open("mamba2_tl.py","w") as f:
         f.write(mod.tl_code)
 
     from benchmark.bench_utils import do_bench_mamba
-    do_bench_mamba(mod, B, HQ,HK,H, T, D, DV, BT=64)
+    do_bench_mamba(mod, B, HQ,HK,H, T, D, DV, BT=256)

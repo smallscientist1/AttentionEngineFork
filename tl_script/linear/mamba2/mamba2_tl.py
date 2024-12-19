@@ -194,8 +194,8 @@ def chunk_o(
             bg_shared = T.alloc_shared((BT,), dtype=accum_dtype, scope="shared")
             bg = T.alloc_fragment((BT,), dtype=accum_dtype)
             bg1 = T.alloc_fragment((BT,), dtype=accum_dtype)
-            dt_shared = T.alloc_shared((BT,), dtype=dtype, scope="shared")
-            dt_local = T.alloc_fragment((BT,), dtype=accum_dtype) # dtype)
+            dt_shared = T.alloc_shared((1,BT,), dtype=dtype, scope="shared")
+            dt_local = T.alloc_fragment((1,BT,), dtype=accum_dtype) # dtype)
 
             # custom fwd inputs init
 
@@ -248,7 +248,7 @@ def chunk_o(
             T.copy(dt[bb, bh, by*BT:(by+1)*BT], dt_shared)
             T.copy(dt_shared, dt_local)
             for i0,i1 in T.Parallel(BT,BT):
-                bs[i0,i1] *= dt_local[i1]
+                bs[i0,i1] *= dt_local[0,i1]
             
             T.copy(v[bb, bh, by*BT:(by+1)*BT, bx*BV:(bx+1)*BV], bv_shared)
             T.copy(bs, bs_cast)
