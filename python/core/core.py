@@ -128,6 +128,18 @@ class SymbolScalar:
                 if self.prev[0].grad:
                     grad0 = grad0 + self.prev[0].grad
                 self.prev[0].grad = grad0
+        elif self.code.type == "Max":
+            # TODO: max backward,implement is then else lower
+            if self.prev[0].require_grad:
+                grad0 = grad * (self.prev[0] == self)
+                if self.prev[0].grad:
+                    grad0 = grad0 + self.prev[0].grad
+                self.prev[0].grad = grad0
+            if self.prev[1].require_grad:
+                grad1 = grad * (self.prev[1] == self)
+                if self.prev[1].grad:
+                    grad1 = grad1 + self.prev[1].grad
+                self.prev[1].grad = grad1
         else:
             raise NotImplementedError(f"backward for {self.code.type} is not implemented")
 

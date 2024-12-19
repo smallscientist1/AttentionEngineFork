@@ -347,7 +347,7 @@ def lower_tl(score_mod, block_mask, online_func,
     lower_output = lowerOutput()
     lower_output.tl_dtype = tl_dtype
     # TODO: mask_value: 0 or -inf
-    lower_output.is_inf_mask = "True" if mask_value == "-inf" else "False"
+    lower_output.is_inf_mask = "True" if block_mask is not None and mask_value == "-inf" else "False"
 
     # tune
     if tuned_config is None:

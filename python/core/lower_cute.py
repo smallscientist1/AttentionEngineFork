@@ -189,9 +189,9 @@ def lower_score_mod(score_mod, custom_fwd_inputs, lower_cute_output: LowerCuteOu
             lower_cute_output.global_ptr_args_init += f"{k}, "
         lower_cute_output.mainloop_params_arg += f"args.{k}, "
         lower_cute_output.mainloop_params_arg_input += f"params.{k}, "
-        lower_cute_output.score_mod_code += str(tl_code_score_mod)
         lower_cute_output.global_ptr_params_init += f"params.{k} = {k};"
         lower_cute_output.custom_tensors += f"{k}, "
+    lower_cute_output.score_mod_code += str(tl_code_score_mod)
 
 
 def lower_cute(score_mod, block_mask, online_func,

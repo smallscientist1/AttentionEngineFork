@@ -135,7 +135,7 @@ class AttentionEngine:
             cute_attn = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(cute_attn)
             # TODO: causal
-            self.attention = partial(cute_attn.flash_attn_func, causal=True)
+            self.attention = partial(cute_attn.flash_attn_func, causal=True if block_mask is not None else False)
 
     def _compile_tl(self, qkv_meta, custom_fwd_inputs, score_mod, block_mask,
     online_func, mask_value="-inf", tuned_config=None):

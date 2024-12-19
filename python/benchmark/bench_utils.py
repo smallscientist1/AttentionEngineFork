@@ -738,6 +738,67 @@ def bench_sigmoidattn_fwd(attn, B, H, S, D, DV, causal=True):
     print("tflops: {:.2f}".format(tflops/latency_ref*1e-9))
     return latency, (tflops/latency*1e-9), latency_ref, (tflops/latency_ref*1e-9)
 
+def do_bench_reluattn(attn, B, H, S, D, DV, dtype=torch.float16, causal=False):
+    tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
+    tflops = tflops * 0.5 if causal else tflops
+    bwd_tflops = 4 * B * H * S * S * DV + 6 * B * H * S * S * D
+    bwd_tflops = bwd_tflops * 0.5 if causal else bwd_tflops
+    torch.cuda.manual_seed(0)
+    dtype = dtype
+    device = "cuda"
+    accum_dtype = torch.float32
+    query = torch.randn(
+        B, S, H, D, device=device, dtype=dtype, requires_grad=True
+    )
+    key = torch.randn(
+        B, S, H, D, device=device, dtype=dtype, requires_grad=True
+    )
+    value = torch.randn(
+        B, S, H, DV, device=device, dtype=dtype, requires_grad=True
+    )
+    do = torch.randn(
+        B, S, H, DV, device=device, dtype=dtype, requires_grad=True
+    )
+
+    o = attn(query, key, value)
+
+    def ref_program(query, key, value):
+        qk = torch.einsum('bqhd,bkhd->bhqk', query, key)
+        qk = qk / (D ** 0.5)
+        qk = F.relu(qk)
+        o = torch.einsum('bhqk,bkhd->bqhd', qk, value)
+        return o
+
+    o_ref = ref_program(query, key, value)
+    print_debug(o, o_ref)
+
+
+
+    from tvm.tl.utils import do_bench
+    def run():
+        o = attn(query, key, value)
+    def run_bacward():
+        o.backward(do, retain_graph=True)
+
+    def run_ref():
+        o_ref = ref_program(query, key, value)
+    # do_bench(run)
+    # do_bench(run_bacward)
+
+    latency = do_bench(run, warmup=500,rep=1000)
+    print("tl: {:.2f} ms".format(latency))
+    print("tflops: {:.2f}".format(tflops/latency*1e-9))
+
+    # latency = do_bench(run_bacward, warmup=500,rep=1000)
+    # print("tl bwd: {:.2f} ms".format(latency))
+    # print("tflops: {:.2f}".format(bwd_tflops/latency*1e-9))
+
+    # do_bench(run_ref)
+
+    latency = do_bench(run_ref, warmup=500,rep=1000)
+    print("flash: {:.2f} ms".format(latency))
+    print("tflops: {:.2f}".format(tflops/latency*1e-9))
+
 
 def do_bench_retention(attn, B, H, S, D, DV, dtype=torch.bfloat16):
     tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV

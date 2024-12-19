@@ -22,28 +22,35 @@ def kernel(batch, heads, seq_len, dim, dimv,
     shape_v = [batch, seq_len, heads, dimv]
     # TODO: seqlenkv
     seq_len_kv = seq_len
-    dtype = "{{tl_dtype}}" # "float16"
+    dtype = "float16" # "float16"
     accum_dtype = "float"
     
     # TODO: mask
-    is_casual = {{is_inf_mask}} # True
+    is_casual = False# True
     # shared_fuse = True
 
 # TL_MAIN = """
     @T.macro
     def score_mod(
         # scores: T.Buffer([block_M, block_N], accum_dtype),
-        {{score_mod_inputs | indent(8)}}
+        scores: T.Buffer([block_M, block_N], accum_dtype), 
+
         ):
-        {{score_mod_body | indent(8)}}
+        for i0,i1 in T.Parallel(block_M,block_N):
+            scores[i0,i1] = scores[i0,i1] * float(0.125)
+        for i0,i1 in T.Parallel(block_M,block_N):
+            scores[i0,i1] = T.max(scores[i0,i1], float(0))
+
         pass
     
     @T.macro
     def online_func(
         # scores: T.Buffer([block_M, block_N], accum_dtype),
-        {{online_func_inputs | indent(8)}}
+        scores: T.Buffer([block_M, block_N], accum_dtype), 
+        o_scale: T.Buffer([block_M], accum_dtype), 
+
     ):
-        {{online_func_body | indent(8)}}
+        pass
         pass
 
         
@@ -52,10 +59,10 @@ def kernel(batch, heads, seq_len, dim, dimv,
         Q: T.Buffer(shape, dtype), # type: ignore
         K: T.Buffer(shape, dtype), # type: ignore
         V: T.Buffer(shape_v, dtype), # type: ignore
-        {{custom_fwd_inputs | indent(8)}}
+        
 
         Output: T.Buffer(shape_v, dtype), # type: ignore
-        {{final_rowscales_output | indent(8)}}
+        
     ):
         with T.Kernel(T.ceildiv(seq_len, block_M), heads, batch, threads=thread_num) as (bx, by, bz):
             Q_shared = T.alloc_shared([block_M, dim], dtype)
@@ -69,21 +76,23 @@ def kernel(batch, heads, seq_len, dim, dimv,
             acc_s_cast_1 = T.alloc_fragment([block_M, block_N], dtype)
             # acc_o = T.alloc_fragment([block_M, dimv], accum_dtype)
 
-            {{custom_fwd_inputs_init | indent(12)}}
-            {{online_func_init | indent(12)}}
-            {{final_rowscales_init | indent(12)}}
+            
+            o_scale = T.alloc_fragment([block_M], accum_dtype)
+            acc_o = T.alloc_fragment([block_M, dimv], accum_dtype)
+
+            
 
             T.annotate_layout({
                 Q_shared: tl.layout.make_swizzled_layout(Q_shared),
                 scores_shared: tl.layout.make_swizzled_layout(scores_shared),
-                {{swizzle_shared | indent(16)}}
+                
             })
             T.copy(Q[bz, bx * block_M : (bx + 1) * block_M, by, :], Q_shared)
-            {{custom_fwd_inputs_load_prolog | indent(12)}}
+            
             T.fill(acc_o, 0)
-            T.fill({{o_scale_varname}}, 1.0)
+            T.fill(o_scale, 1.0)
 
-            {{online_rowscales_initvalue | indent(12)}}
+            
 
             # TODO: mask
             loop_range = (
@@ -94,10 +103,10 @@ def kernel(batch, heads, seq_len, dim, dimv,
                 T.copy(K[bz, k * block_N : (k + 1) * block_N, by, :], K_shared)
 
                 # TODO: copy custom_fwd_input_tensor in score_mod&online_func
-                {{custom_fwd_inputs_load_shared | indent(16)}}
+                
 
                 # TODO: naive solution: if reduce_max, -T.inf; if reduce_sum, 0
-                if is_casual and {{is_inf_mask}}:
+                if is_casual and False:
                     for i, j in T.Parallel(block_M, block_N):
                         scores[i, j] = T.if_then_else(
                             bx * block_M + i >= k * block_N + j, 0, -T.infinity(scores.dtype)
@@ -108,27 +117,29 @@ def kernel(batch, heads, seq_len, dim, dimv,
                 T.gemm(Q_shared, K_shared, scores, transpose_B=True, policy= (T.GemmWarpPolicy.FullRow if (not shared_fuse) else T.GemmWarpPolicy.FullCol))
                 T.copy(V[bz, k * block_N : (k + 1) * block_N, by, :], V_shared)
                     
-                {{custom_fwd_inputs_load_s2r | indent(16)}}
+                
                 # call score_mod
-                score_mod({{score_mod_inputs_list}}) # scores
+                score_mod(scores) # scores
                     
                 # call online_func
                 if shared_fuse:
                     T.copy(scores, scores_shared)
                     T.copy(scores_shared, scores_1)
-                    online_func({{online_func_inputs_list}})
+                    online_func(scores, o_scale)
                     T.copy(scores_1, acc_s_cast_1)
 
                 else:
-                    online_func({{online_func_inputs_list}}) # scores
+                    online_func(scores, o_scale) # scores
                     T.copy(scores, acc_s_cast)
 
                 # for i, j in T.Parallel(block_M, dimv):
                 #     acc_o[i, j] *= o_scale[i]
-                {{o_scale | indent(16)}}
+                for i, j in T.Parallel(block_M, dimv):
+                    acc_o[i, j] *= o_scale[i]
+
                 
                 # update online_rowscales
-                {{online_rowscales_update | indent(16)}}
+                
 
                 if shared_fuse:
                     T.gemm(acc_s_cast_1, V_shared, acc_o, policy=(T.GemmWarpPolicy.FullCol))
@@ -136,12 +147,12 @@ def kernel(batch, heads, seq_len, dim, dimv,
                     T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
             
             # online_fwd_epilogue
-            {{online_func_epilogue | indent(12)}}
+            
 
             T.copy(acc_o, Output[bz, bx * block_M : (bx + 1) * block_M, by, :])
 
             # save final_rowscale
-            {{final_rowscales_save | indent(12)}}
+            
         
     return main
 
@@ -191,17 +202,28 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual,
     @T.macro
     def score_mod(
         # scores: T.Buffer([block_M, block_N], accum_dtype),
-        {{score_mod_fwd_inputs | indent(8)}}
+        qkT: T.Buffer([block_M, block_N], accum_dtype), 
+
         ):
-        {{score_mod_fwd_body | indent(8)}}
+        for i0,i1 in T.Parallel(block_M,block_N):
+            qkT[i0,i1] = qkT[i0,i1] * float(0.125)
+        for i0,i1 in T.Parallel(block_M,block_N):
+            qkT[i0,i1] = T.max(qkT[i0,i1], float(0))
+
         pass
     
     @T.macro
     def score_mod_backward(
         # scores: T.Buffer([block_M, block_N], accum_dtype),
-        {{score_mod_bwd_inputs | indent(8)}}
+        dsT: T.Buffer([block_M, block_N], accum_dtype), 
+        qkT: T.Buffer([block_M, block_N], accum_dtype), 
+
     ):
-        {{score_mod_backward | indent(8)}}
+        for i0,i1 in T.Parallel(block_M,block_N):
+            dsT[i0,i1] = dsT[i0,i1] * float(False)
+        for i0,i1 in T.Parallel(block_M,block_N):
+            dsT[i0,i1] = dsT[i0,i1] * float(0.125)
+
         pass
 
     @T.prim_func
@@ -212,13 +234,13 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual,
         dO: T.Buffer(shape, dtype), # type: ignore
 
         # custom_fwd_inputs score_mod
-        {{custom_fwd_inputs | indent(8)}}
+        
 
         # final_rowscales
-        {{final_rowscales_output | indent(8)}}
+        
 
         # custom_bwd_inputs
-        {{custom_bwd_inputs | indent(8)}}
+        
 
         dQ: T.Buffer(shape, accum_dtype), # type: ignore
         dK: T.Buffer(shape, dtype), # type: ignore
@@ -239,15 +261,17 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual,
             dsT_cast = T.alloc_fragment([block_M, block_N], dtype)
 
             # final_rowscales_declare
-            {{final_rowscales_shared_init | indent(12)}}
+            
 
             # custom_bwd_declare
-            {{custom_bwd_inputs_init | indent(12)}}
+            
 
             # score_mod_declare
-            {{score_mod_bwd_inputs_declare | indent(12)}}
+            dsT = T.alloc_fragment([block_M, block_N], accum_dtype)
+            qkT = T.alloc_fragment([block_M, block_N], accum_dtype)
+
             # score_mod_declare_shared
-            {{score_mod_bwd_inputs_declare_shared | indent(12)}}
+            
             
             do = T.alloc_shared([block_N, dimv], dtype)
             dv = T.alloc_fragment([block_M, dimv], accum_dtype)
@@ -264,7 +288,7 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual,
             # T.copy(K_shared, K_local_T)
             T.copy(V[bz, by * block_M : (by + 1) * block_M, bx, :], V_local)
             # custom_fwd_inputs_load_prolog
-            {{custom_fwd_inputs_load_prolog | indent(12)}}
+            
             T.clear(dv)
             T.clear(dk)
 
@@ -274,41 +298,41 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual,
 
             for k in T.Pipelined(loop_st, loop_ed, num_stages=1):
                 T.copy(Q[bz, k * block_N : (k + 1) * block_N, bx, :], q)
-                {{custom_fwd_inputs_load_shared_bwd | indent(16)}}
+                
                 T.clear(qkT)
                 T.gemm(K_local, q, qkT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                 
                 # score_mod
-                score_mod({{score_mod_inputs_bwd_list}}) # qkT,
+                score_mod(qkT) # qkT,
 
                 # final_rowscales_load
-                {{final_rowscales_load | indent(16)}}
+                
 
                 # online_func_fwd
-                {{ online_func_fwd | indent(16) }}
+                
                 
                 # TODO: is causal
                 if is_casual:
                     for i, j in T.Parallel(block_M, block_N):
-                        {{score_mod_output_var}}[i, j] = T.if_then_else(
-                            by * block_M + i <= k * block_N + j, {{score_mod_output_var}}[i, j], 0
+                        qkT[i, j] = T.if_then_else(
+                            by * block_M + i <= k * block_N + j, qkT[i, j], 0
                         )
                 
                 T.copy(dO[bz, k * block_N : (k + 1) * block_N, bx, :], do)
-                T.copy({{score_mod_output_var}}, qkT_cast)
+                T.copy(qkT, qkT_cast)
                 T.gemm(qkT_cast, do, dv, policy=T.GemmWarpPolicy.FullRow)
 
                 # custom_bwd_inputs_load
-                {{custom_bwd_inputs_load | indent(16)}}
+                
 
                 T.clear(dsT)
                 T.gemm(V_local, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
                 # custom_bwd
-                {{custom_bwd_body | indent(16)}}
+                
                 
                 # score_mod_backward
-                score_mod_backward({{score_mod_bwd_inputs_list}}) #  qkT, 
+                score_mod_backward(dsT, qkT) #  qkT, 
                   
                                 
                 T.copy(dsT, dsT_cast)
@@ -354,12 +378,12 @@ class _attention(torch.autograd.Function):
     def forward(ctx, q, k, v, *custom_fwd_inputs):
         BATCH, N_CTX, H, D_HEAD = q.shape
         D_HEADV = v.shape[-1]
-        block_M = {{block_M}} # 128
-        block_N = {{block_N}} # 128 if D_HEAD <= 128 else 64
-        stages = {{stages}} # 2
-        thread_num = {{thread_num}} # 256
-        shared_fuse = {{shared_fuse}} # False
-        output_idx_list = {{output_idx_list}}
+        block_M = 128 # 128
+        block_N = 128 # 128 if D_HEAD <= 128 else 64
+        stages = 2 # 2
+        thread_num = 256 # 256
+        shared_fuse = False # False
+        output_idx_list = [3]
         mod = tl.cached(kernel, output_idx_list, BATCH, H, N_CTX, D_HEAD, D_HEADV, block_M, block_N, stages, thread_num, shared_fuse)
         if len(output_idx_list) == 1:
             o = mod(q, k, v, *custom_fwd_inputs)
@@ -374,23 +398,23 @@ class _attention(torch.autograd.Function):
         q, k, v, o, *tmp = ctx.saved_tensors
         BATCH, N_CTX, H, D_HEAD = q.shape
         D_HEAD_V = v.shape[-1]
-        custom_fwd_inputs = tmp[:-{{final_rowscales_length}}]
-        final_rowscales = tmp[-{{final_rowscales_length}}:]
+        custom_fwd_inputs = tmp[:-0]
+        final_rowscales = tmp[-0:]
         maybe_contiguous = lambda x: x.contiguous() if x.stride(-1) != 1 else x
         do, q, k, v, o = [maybe_contiguous(x) for x in (do, q, k, v, o)]
         block_M = 64
         block_N = 64 if D_HEAD <= 64 else 32
         mod_prep = tl.cached(flashattn_bwd_preprocess, [2], BATCH, H, N_CTX, D_HEAD, D_HEAD_V)
         mod_post = tl.cached(flashattn_bwd_postprocess, [1], BATCH, H, N_CTX, D_HEAD, D_HEAD_V)
-        if {{isused_doosum}}:
+        if False:
             delta = mod_prep(o, do)
         # TODO: causal
         is_casual = True
-        output_idx_list = {{bwd_output_idx_list}}
+        output_idx_list = [4, 5, 6]
         mod = tl.cached(
             flashattn_bwd, output_idx_list, BATCH, H, N_CTX, D_HEAD, D_HEAD_V, is_casual, block_M, block_N
         )
-        if {{isused_doosum}}:
+        if False:
             dq, dk, dv = mod(q, k, v, do, *tmp, delta)
         else:
             dq, dk, dv = mod(q, k, v, do, *tmp)
@@ -399,5 +423,4 @@ class _attention(torch.autograd.Function):
         return dq, dk, dv, *none_list
 
 attention = _attention.apply
-
 
