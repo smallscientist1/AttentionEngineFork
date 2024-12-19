@@ -1,0 +1,3 @@
+[submodule "3rd_parties/cutlass"]
+	path = 3rd_parties/cutlass
+	url = https://github.com/smallscientist1/cutlass.git

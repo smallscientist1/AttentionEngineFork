@@ -98,8 +98,8 @@ if not SKIP_CUDA_BUILD:
     # https://github.com/pytorch/pytorch/blob/8472c24e3b5b60150096486616d98b7bea01500b/torch/utils/cpp_extension.py#L920
     if FORCE_CXX11_ABI:
         torch._C._GLIBCXX_USE_CXX11_ABI = True
-    repo_dir = Path("/home/aiscuser/cfy/customized-flash-attention") # Path(this_dir).parent
-    cutlass_dir = repo_dir / "csrc" / "cutlass"
+    repo_dir = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../"))
+    cutlass_dir = repo_dir / "3rd_parties" / "cutlass"
     sources = [
         os.path.join(os.path.dirname(__file__), "flash_api.cpp"),
         os.path.join(os.path.dirname(__file__), "flash_fwd.cu"),
