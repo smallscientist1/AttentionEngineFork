@@ -4,6 +4,8 @@ AttentionEngine is a frontend for customized attention mechanism. It generates h
 
 ## supported customized attention mechanism 
 
+**Attention(sigmoid attn, relu attn) and Linear attention(mamba2, simple gla, retention_linear)**
+
 Any function on attention scores that can be represented as elementwise & row_reduce, such as softmax, retention, sigmoid, etc.
 
 ## Detailed usage

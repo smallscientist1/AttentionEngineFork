@@ -29,7 +29,7 @@ def kernel(batch, heads, seq_len, dim, dimv,
     
     # TODO: mask
     is_casual = True
-    scale = (1/dim)**0.5
+    scale = (1.0/dim)**0.5
 
 
     @T.macro
@@ -62,10 +62,10 @@ def kernel(batch, heads, seq_len, dim, dimv,
         for i0 in T.Parallel(block_M):
             r[i0] = r[i0] * m[i0]
         for i0,i1 in T.Parallel(block_M,block_N):
-            # scores[i0,i1] = scores[i0,i1] - scores_max_0[i0]
-        # for i0,i1 in T.Parallel(block_M,block_N):
-            scores[i0,i1] = T.exp2(scores[i0,i1]*1.442695 - scores_max_0[i0]*1.442695)
-        T.reduce_sum(scores, scores_1_0_sum_0,dim=1, clear=True)
+            scores[i0,i1] = scores[i0,i1] - scores_max_0[i0]
+        for i0,i1 in T.Parallel(block_M,block_N):
+            scores[i0,i1] = T.exp2(scores[i0,i1]*1.442695) #  - scores_max_0[i0]*1.442695)
+        T.reduce_sum(scores, scores_1_0_sum_0,dim=1)
         for i0 in T.Parallel(block_M):
             r[i0] = r[i0] + scores_1_0_sum_0[i0]
 
@@ -488,7 +488,7 @@ def eval():
 if __name__=="__main__":
     D = 192# 128 # 192
     DV = 128# 256 # 128
-    B, H ,S, D,DV = 1,16,16384,D,DV
+    B, H ,S, D,DV = 1,128,32768,D,DV
     from benchmark.bench_utils import do_bench_attention, bench_attention_fwd
     do_bench_attention(attention, B, H, S, D, DV)
     # bench_attention_fwd(attention, B, H, S, D, DV)
