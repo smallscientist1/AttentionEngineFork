@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import math
 
 """
-Example of simple gla/gated retnet
+Example of retention
 
 fwd:
 input:
@@ -22,6 +22,9 @@ output:
 O: [B, H, T, DV]
 """
 
+def decay_mod(decay, custom_io): # (B,H,seqlen)
+    return decay.log()
+
 D = 256
 scale = 1 / D**0.5
 def q_mod(q, custom_io):
@@ -30,26 +33,12 @@ def q_mod(q, custom_io):
 def eval():
     import itertools
     BHSDDVs = itertools.product(
-        # [1, 16, 64],
-        # [8,16],
-        # [1024,2048,4096],
-        # [64,],
-        # [64,]
-        
-        # [64],
-        # [24],
-        # [1024,2048,4096],
-        # [128,],
-        # [128,]
-        
-        [8], # 64
-        [40],
+        [1,8], # 64
+        [16,20,32],
         [1024,2048,4096],
         [256,],
-        [256,]
-        
+        [512,]
     )
-    
     for B,H,S,D,DV in BHSDDVs:
         dtype = torch.bfloat16
         qkv_meta = (
@@ -61,36 +50,36 @@ def eval():
             {
             }
         )
-        mod = LinearAttentionEngine(qkv_meta, q_mod=q_mod,
+        mod = LinearAttentionEngine(qkv_meta, q_mod=q_mod, decay_mod=decay_mod,
                                 custom_io = custom_io,
-                                tune=True, tune_filename="simple_gla")
+                                tune=True, tune_filename="retention_linear")
 
-        from benchmark.bench_utils import do_bench_simple_gla
+        from benchmark.bench_utils import do_bench_retention_linear
         print(f"eval B={B}, H={H}, S={S}, D={D}, DV={DV}")
         try:
-            do_bench_simple_gla(mod, B, H, S, D, DV, BT=64)
+            do_bench_retention_linear(mod, B, H, S, D, DV)
         except Exception as e:
-            print("bench failed")
-            continue
-        
+            print("bench failed", e)
+            
 if __name__ == "__main__":
-    # B, H, S, D, DV = 16, 8, 2048, D, 64 # bug 16384
-    # dtype = torch.bfloat16
+    # B, H, T, D, DV = 64, 20, 1024, D, 512 # bug 16384
     # qkv_meta = (
-    #     meta_tensor(B, H, S, D, dtype=dtype),
-    #     meta_tensor(B, H, S, D, dtype=dtype),
-    #     meta_tensor(B, H, S, DV, dtype=dtype),
+    #     meta_tensor(B, H, T, D, dtype=torch.bfloat16),
+    #     meta_tensor(B, H, T, D, dtype=torch.bfloat16),
+    #     meta_tensor(B, H, T, DV, dtype=torch.bfloat16),
     # )
     # custom_io = CustomIO(
     #     {
     #     }
     # )
-    # mod = LinearAttentionEngine(qkv_meta, q_mod=q_mod,
+    # mod = LinearAttentionEngine(
+    #     qkv_meta,
+    #     q_mod=q_mod, decay_mod=decay_mod,
     #                         custom_io = custom_io,
-    #                         tune=True, tune_filename="simple_gla")
-    # with open("simple_gla_tlcode.py", "w") as f:
+    #                         tune=True, tune_filename="retention_linear")
+    # with open("retention_linear_tlcode.py", "w") as f:
     #     f.write(mod.tl_code)
 
-    # from benchmark.bench_utils import do_bench_simple_gla
-    # do_bench_simple_gla(mod, B, H, S, D, DV, BT=64)
+    # from benchmark.bench_utils import do_bench_retention_linear
+    # do_bench_retention_linear(mod, B, H, T, D, DV)
     eval()

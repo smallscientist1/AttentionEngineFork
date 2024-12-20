@@ -32,27 +32,58 @@ def v_mod(v, custom_io): # (B,H,seqlen, D)
     dt = custom_io.input_tensors["dt"]
     return v * dt
 
-if __name__ == "__main__":
-    B, H, T, D, DV = 8,80, 8192, 128, 64 # bug 16384
+def eval():
+    import itertools
+    BHTDDVs = itertools.product(
+        [1,8],
+        [24, 48, 80],
+        [2048,4096,8192],
+        [128,],
+        [64,]
+    )
     HQ, HK = 1, 1
-    dtype = torch.bfloat16
-    qkv_meta = (
-        meta_tensor(B, HQ, T, D, dtype=dtype),
-        meta_tensor(B, HK, T, D, dtype=dtype),
-        meta_tensor(B, H, T, DV, dtype=dtype),
-    )
-    custom_io = CustomIO(
-        {
-            "A": (1, "heads"),
-            "dt": ("batch", "heads", "seq_len")
-        }
-    )
-    mod = LinearAttentionEngine(qkv_meta,
-        decay_mod=decay_mod, v_mod=v_mod,
-                            custom_io = custom_io,
-                            tune=True, tune_filename="mamba2")
-    with open("mamba2_tl.py","w") as f:
-        f.write(mod.tl_code)
+    for B,H,T,D,DV in BHTDDVs:
+        qkv_meta = (
+            meta_tensor(B, HQ, T, D, dtype=torch.bfloat16),
+            meta_tensor(B, HK, T, D, dtype=torch.bfloat16),
+            meta_tensor(B, H, T, DV, dtype=torch.bfloat16),
+        )
+        custom_io = CustomIO(
+            {
+                "A": (1, "heads"),
+                "dt": ("batch", "heads", "seq_len")
+            }
+        )
+        mod = LinearAttentionEngine(qkv_meta,
+            decay_mod=decay_mod, v_mod=v_mod,
+                                    custom_io = custom_io,
+                                    tune=True, tune_filename="mamba2")
+        from benchmark.bench_utils import do_bench_mamba
+        print(f"B={B}, H={H}, T={T}, D={D}, DV={DV}")
+        do_bench_mamba(mod, B, HQ,HK,H, T, D, DV, BT=256)
 
-    from benchmark.bench_utils import do_bench_mamba
-    do_bench_mamba(mod, B, HQ,HK,H, T, D, DV, BT=256)
+if __name__ == "__main__":
+    # B, H, T, D, DV = 8,80, 8192, 128, 64 # bug 16384
+    # HQ, HK = 1, 1
+    # dtype = torch.bfloat16
+    # qkv_meta = (
+    #     meta_tensor(B, HQ, T, D, dtype=dtype),
+    #     meta_tensor(B, HK, T, D, dtype=dtype),
+    #     meta_tensor(B, H, T, DV, dtype=dtype),
+    # )
+    # custom_io = CustomIO(
+    #     {
+    #         "A": (1, "heads"),
+    #         "dt": ("batch", "heads", "seq_len")
+    #     }
+    # )
+    # mod = LinearAttentionEngine(qkv_meta,
+    #     decay_mod=decay_mod, v_mod=v_mod,
+    #                         custom_io = custom_io,
+    #                         tune=True, tune_filename="mamba2")
+    # with open("mamba2_tl.py","w") as f:
+    #     f.write(mod.tl_code)
+
+    # from benchmark.bench_utils import do_bench_mamba
+    # do_bench_mamba(mod, B, HQ,HK,H, T, D, DV, BT=256)
+    eval()

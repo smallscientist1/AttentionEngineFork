@@ -489,9 +489,9 @@ def do_bench_simple_gla(linear_attention, B, H, TLen, D, DV, BT):
             q, k, v, g1, scale=None, output_final_state=False
         )
 
-    latency = do_bench(run, warmup=500,rep=1000)
+    latency = do_bench(run, warmup=100,rep=100)
     print("tl: {:.2f} ms".format(latency))
-    latency = do_bench(run_ref, warmup=500,rep=1000)
+    latency = do_bench(run_ref, warmup=100,rep=100)
     print("simple gla: {:.2f} ms".format(latency))
 
 def do_bench_retention_linear(linear_attention, B, H, TLen, D, DV):
@@ -507,22 +507,32 @@ def do_bench_retention_linear(linear_attention, B, H, TLen, D, DV):
 
     q = torch.randn(B, H, TLen, D, device=device, requires_grad=require_grad, dtype=dtype)
     k = torch.randn(B, H, TLen, D, device=device, requires_grad=require_grad, dtype=dtype)
-    g = (1 - torch.exp(torch.linspace(math.log(1/32), math.log(1/512), H, dtype=accum_dtype))).detach()
-    g = g[None, :, None].expand(B, H, TLen).cuda()
+    # g = (1 - torch.exp(torch.linspace(math.log(1/32), math.log(1/512), H, dtype=accum_dtype))).detach()
+    g = torch.tensor(range(0, H), dtype=accum_dtype)
+    g = 1 - torch.exp2(-5 - g)
+    g = g[None, :, None].expand(B, H, TLen).cuda().detach().contiguous()
     v = torch.randn(B, H, TLen, DV, device=device, requires_grad=require_grad, dtype=dtype)
 
     do = torch.randn(B, H, TLen, DV, device=device, dtype=dtype)
+    from fla.ops.retention import chunk_retention
+    out_ref,_ = chunk_retention(
+        q, k, v, scale=None, output_final_state=False
+    )
+    out = linear_attention(
+        q, k, v, g
+    )
+    print_debug(out, out_ref, rtol=1e-2, atol=1e-2)
 
     from tvm.tl.utils import do_bench
     def run():
         out = linear_attention(
             q, k, v, g
         )
-    from fla.ops.retention import chunk_retention
     def run_ref():
         out,_ = chunk_retention(
             q, k, v, scale=None, output_final_state=False
         )
+        
     
     do_bench(run)
     do_bench(run_ref)
