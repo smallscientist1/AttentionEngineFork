@@ -106,12 +106,14 @@ def chunk_bwd_kernel_dh(
     ):
         with T.Kernel(NK, NV, batch*head, threads=thread_num) as (bx, by, bz):
             b_dh = T.alloc_fragment((BK, BV), accum_dtype)
+            dh_shared = T.alloc_shared((BK, BV), dtype)
             q_shared = T.alloc_shared((BT, BK), dtype)
             q_local = T.alloc_fragment((BT, BK), dtype)
             q_local_T = T.alloc_fragment((BK, BT), dtype)
             do_shared = T.alloc_shared((BT, BV), dtype)
 
             bg_local = T.alloc_fragment((BT), accum_dtype)
+            bg_shared = T.alloc_shared((BT), accum_dtype, scope="shared")
             bg_last = T.alloc_fragment((1), accum_dtype)
 
             bhead = bz % head
@@ -123,20 +125,23 @@ def chunk_bwd_kernel_dh(
             for i_t0 in T.Pipelined(NT, num_stages=num_stages):
                 i_t = loop_ed - 1 - i_t0
 
-                T.copy(b_dh, dh[bb, bhead, (i_t*dim + bx*BK):(i_t*dim + (bx+1)*BK), by*BV:(by+1)*BV]) # implicit cast
+                # T.copy(b_dh, dh[bb, bhead, (i_t*dim + bx*BK):(i_t*dim + (bx+1)*BK), by*BV:(by+1)*BV]) # implicit cast
+                T.copy(b_dh, dh_shared)
+                T.copy(dh_shared,  dh[bb, bhead, (i_t*dim + bx*BK):(i_t*dim + (bx+1)*BK), by*BV:(by+1)*BV])
 
                 T.copy(q[bb, bhead, i_t*BT:(i_t+1)*BT, bx*BK:(bx+1)*BK], q_shared)
                 T.copy(do[bb, bhead, i_t*BT:(i_t+1)*BT, by*BV:(by+1)*BV], do_shared)
                 
                 T.copy(q_shared, q_local)
 
-                T.copy(g[bb, bhead, i_t*BT:(i_t+1)*BT], bg_local)
-                bg_last[0] = g[bb, bhead, (i_t+1)*BT-1]
+                T.copy(g[bb, bhead, i_t*BT:(i_t+1)*BT], bg_shared)
 
                 # q_mod 
                 for i,j in T.Parallel(BT, BK):
                     q_local[i,j] *= scale
 
+                T.copy(bg_shared, bg_local)
+                bg_last[0] = bg_shared[BT-1]
                 for i,j in T.Parallel(BK, BT):
                     q_local_T[i,j] = q_local[j,i] * T.exp(bg_local[j])
 
@@ -151,9 +156,11 @@ if __name__ == "__main__":
     torch.cuda.manual_seed(0)
     B, H, D, DV = 4, 20, 128, 64
     HQ, HK = 20,20
-    TLen = 16384 # 512
+    TLen = 4096 # 512
 
-    BT, BK, BV = 64, 64, 32
+    BT, BK, BV = 64, 64, 64
+    num_stages = 2
+    num_threads = 128
     dtype = torch.bfloat16
     accum_dtype = torch.float32
     device = "cuda"
@@ -171,13 +178,25 @@ if __name__ == "__main__":
     dh_ref, _ = chunk_bwd_dh(q, k, v, g, None, None, do, None, None, scale=1.0, chunk_size=BT)
     dh_ref = rearrange(dh_ref, "b h n k v -> b h (n k) v")
 
-    mod = tl.cached(chunk_bwd_kernel_dh, [5,], B, HQ, HK, H,TLen, D, DV, BT, BK, BV)
+    mod = tl.cached(chunk_bwd_kernel_dh, [5,], B, HQ, HK, H,TLen, D, DV, BT, BK, BV, num_stages, num_threads)
     dh = mod(q, k, v, g, do)
 
     from benchmark.bench_utils import print_debug
 
     print_debug(dh, dh_ref)
 
+    program = chunk_bwd_kernel_dh( B, HQ, HK, H,TLen, D, DV, BT, BK, BV, num_stages, num_threads)
+    mod, params = tl.lower(program)
+    mod = tl.Profiler(mod, params, [5,], tl.TensorSupplyType.Normal)
+    
+    latency = mod.do_bench(mod.func, n_warmup=10, n_repeat=10, profiler="torch")
+    print("{:.2f} ms".format(latency))
+    
+    from tvm.tl.utils import do_bench
+    def run_ref():
+        chunk_bwd_dh(q, k, v, g, None, None, do, None, None, scale=1.0, chunk_size=BT)
+    latency = do_bench(run_ref, warmup=10, rep=10)
+    print("ref: {:.2f} ms".format(latency))
 
 
 

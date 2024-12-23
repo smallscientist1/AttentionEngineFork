@@ -92,6 +92,7 @@ def chunk_bwd_dqkg(
             b_g1 = T.alloc_fragment((BT), accum_dtype)
             b_g_last = T.alloc_fragment((1), accum_dtype)
             b_g_T = T.alloc_fragment((BT), accum_dtype)
+            b_g_shared = T.alloc_shared((BT), accum_dtype, scope="shared")
             b_v_shared = T.alloc_shared((BT, BV), dtype)
             b_do_shared = T.alloc_shared((BT, BV), dtype)
             b_dh_shared = T.alloc_shared((BK, BV),dtype)
@@ -99,9 +100,6 @@ def chunk_bwd_dqkg(
             b_h_shared = T.alloc_shared((BK, BV),dtype)
             b_h_local = T.alloc_fragment((BK, BV),dtype)
             b_hdh = T.alloc_fragment((1,BK*BV),accum_dtype)
-            b_hdhsum_local = T.alloc_fragment((BK),dtype)
-            b_hdhsum_local_T = T.alloc_fragment((1,BK),dtype)
-            b_hdhsum_shared = T.alloc_shared((BK),dtype, scope="shared")
             k_shared = T.alloc_shared((BT,BK), dtype)
             q_shared = T.alloc_shared((BT,BK),dtype)
             q_local = T.alloc_fragment((BT,BK),dtype)
@@ -134,8 +132,9 @@ def chunk_bwd_dqkg(
             bhead = bz % head
             bb = bz // head
 
-            T.copy(g[bb, bhead, by*BT:(by+1)*BT], b_g)
-            b_g_last[0] = g[bb, bhead, (by+1)*BT-1]
+            T.copy(g[bb, bhead, by*BT:(by+1)*BT], b_g_shared)
+            T.copy(b_g_shared, b_g)
+            b_g_last[0] = b_g_shared[BT-1]
 
             T.clear(b_dg_last)
             T.clear(b_dg)
@@ -148,19 +147,6 @@ def chunk_bwd_dqkg(
 
                 T.copy(dh[bb,bhead,by*dim+bx*BK:by*dim+(bx+1)*BK, i_v*BV:(i_v+1)*BV], b_dh_shared)
                 T.copy(h[bb,bhead,by*dim+bx*BK:by*dim+(bx+1)*BK, i_v*BV:(i_v+1)*BV], b_h_shared)
-                # T.copy(dh[bb,bhead,by*dim+bx*BK:by*dim+(bx+1)*BK, i_v*BV:(i_v+1)*BV], b_dh_local)
-                # T.copy(h[bb,bhead,by*dim+bx*BK:by*dim+(bx+1)*BK, i_v*BV:(i_v+1)*BV], b_h_local)
-                # for i,j in T.Parallel(BK,BV):
-                #     b_hdh[i,j] = b_h_local[i,j]* b_dh_local[i,j]
-                # T.reduce_sum(b_hdh, b_hdhsum_local,dim=1, clear=True)
-                # T.copy(b_hdhsum_local, b_hdhsum_shared)
-                # T.copy(b_hdhsum_shared, b_hdhsum_local_T)
-                # T.reduce_sum(b_hdhsum_local_T, b_dg_last,dim=1, clear=False) # implicit cast
-                
-                # tl bug: deadlock
-                # for i,j in T.Parallel(BK,BV):
-                #     b_hdh[0,i*BV+j] = b_h_local[i,j]* b_dh_local[i,j]
-                # T.reduce_sum(b_hdh, b_dg_last,dim=1, clear=False)
 
                 T.gemm(b_do_shared, b_v_shared, b_ds, transpose_A=False, transpose_B=True)
                 
@@ -193,23 +179,13 @@ def chunk_bwd_dqkg(
 
             for i,j in T.Parallel(BT,BK):
                 b_dk[i,j] *= T.exp(-b_g[i]+b_g_last[0])
-
-            # for i,j in T.Parallel(BT,BK):
-            #     b_dkk[i,j] = b_dk[i,j]*k_shared[i,j]
-            # T.reduce_sum(b_dkk, b_dkksum, dim=1, clear=True)
-            # T.copy(b_dkksum, b_dkksum_shared)
-            # T.copy(b_dkksum_shared,b_dkksum_T)  
-            # T.reduce_sum(b_dkksum_T, b_dg_last, dim=1, clear=False)
-            
-            # if tx < 1:# T.likely(tx < 1):
-            #     for i in T.vectorized(0,BT):
-            #         b_dg_last_local[0] += b_dkksum_shared[i]
-            #     b_dg_last_shared[0] = b_dg_last_local[0]
-            # b_dg_last[0] = b_dg_last_shared[0]
             
             
-            T.copy(g[bb, bhead, by*BT:(by+1)*BT], b_g1)
-            T.copy(g[bb, bhead, by*BT:(by+1)*BT], b_g_T)
+            # T.copy(g[bb, bhead, by*BT:(by+1)*BT], b_g1)
+            # T.copy(g[bb, bhead, by*BT:(by+1)*BT], b_g_T) 
+            # faster
+            T.copy(b_g_shared, b_g1)
+            T.copy(b_g_shared, b_g_T)
             for i,j in T.Parallel(BT,BT):
                 b_ds[i,j] = T.if_then_else(
                     i >= j, b_ds[i,j]*scale*T.exp(b_g1[i]-b_g_T[j]), 0
@@ -228,20 +204,17 @@ def chunk_bwd_dqkg(
             T.copy(b_ds_cast, b_ds_shared)
             T.gemm(b_ds_shared, q_shared, b_dk, transpose_A=True,transpose_B=False)
             # implicit cast
-            # T.copy(q[bb, bhead, by*BT:(by+1)*BT, bx*BK:(bx+1)*BK], q_local)
-            T.copy(b_dq, dq_shared)
-            T.copy(dq_shared, b_dq1)
+            # T.copy(b_dq, dq_shared)
+            # T.copy(dq_shared, b_dq1)
             for i,j in T.Parallel(BT,BK):
-                b_dg_qk[i,j] = b_dq1[i,j]
+                b_dg_qk[i,j] = b_dq[i,j]
             T.copy(q_shared, q_local)
-            for i,j in T.Parallel(BT,BK):
-                b_dg_qk[i,j] *= q_local[i,j]
-                
+            T.copy(k_shared, k_local)
             T.copy(b_dk, dk_shared)
             T.copy(dk_shared, b_dk1)
-            T.copy(k[bb, bhead, by*BT:(by+1)*BT, bx*BK:(bx+1)*BK], k_local)
             for i,j in T.Parallel(BT,BK):
-                b_dg_qk[i,j] -= b_dk1[i,j]*k_local[i,j]
+                b_dg_qk[i,j] = b_dg_qk[i,j] * q_local[i,j] - b_dk1[i,j]*k_local[i,j]
+
             T.reduce_sum(b_dg_qk,b_dg,dim=1,clear=True)
             
             for i in T.Parallel(BT):
@@ -255,14 +228,19 @@ def chunk_bwd_dqkg(
     return main
 
 if __name__ == "__main__":
+    # tl slower than triton: 
+    # tl faster: B, H, D, DV = 8, 16, 128, 128, 2048
+    # modify tvm.tl reduce_sum 
     from fla.ops.simple_gla.chunk import chunk_simple_gla_bwd_dqkg
     from fla.ops.common.chunk_h import chunk_fwd_h, chunk_bwd_dh
 
     torch.cuda.manual_seed(0)
-    B, H, D, DV = 1, 1, 128, 128# 64 # H100 fail on 128,64
-    TLen = 2048 # 512
+    B, H, D, DV = 8, 16, 128, 128 # 64 # H100 fail on 128,64
+    TLen = 4096 # 512
 
-    BT, BK, BV = 64, 64, 64
+    BT, BK, BV = 128, 128, 128
+    num_stages = 1
+    num_threads = 256
     NT = TLen // BT
     dtype = torch.bfloat16
     accum_dtype = torch.float32
@@ -313,7 +291,7 @@ if __name__ == "__main__":
     print(h.shape)
     print(dh.shape)
 
-    mod = tl.cached(chunk_bwd_dqkg, [7,8,9], B, H, H, H,TLen, D, DV, BT, BK, BV)
+    mod = tl.cached(chunk_bwd_dqkg, [7,8,9], B, H, H, H,TLen, D, DV, BT, BK, BV, num_stages, num_threads)
     dq, dk, dg = mod(
         q,k,v,h.bfloat16(),g,do,dh.bfloat16()
     )
@@ -329,6 +307,22 @@ if __name__ == "__main__":
     print_debug(dq,dq_ref)
     print_debug(dk,dk_ref)
     print_debug(dg,dg_ref)
+    
+    program = chunk_bwd_dqkg( B, H, H, H,TLen, D, DV, BT, BK, BV, num_stages, num_threads)
+    mod, params = tl.lower(program)
+    mod = tl.Profiler(mod, params, [7,8,9], tl.TensorSupplyType.Normal)
+    
+    latency = mod.do_bench(mod.func, n_warmup=10, n_repeat=10, profiler="torch")
+    print("{:.2f} ms".format(latency))
+    
+    from tvm.tl.utils import do_bench
+    def run_ref():
+        dq_ref, dk_ref, dg_ref = chunk_simple_gla_bwd_dqkg(
+            do,q,k,v,g,h_ref,dh_ref, scale=1.0, chunk_size=BT
+        )
+    latency = do_bench(run_ref, warmup=10, rep=10)
+    print("ref: {:.2f} ms".format(latency))
+    
 
 
 
