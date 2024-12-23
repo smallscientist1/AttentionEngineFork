@@ -198,8 +198,18 @@ def to_pytorch_op(type:str, *args:SymbolScalar):
         output_idx = args[0].shape_idx
         argnames = [arg.varname for arg in args]
 
+        # for bwd grad
+        max_len = max(len(arg.shape_idx) for arg in args)
+        if len(output_idx) < max_len:
+            suffix_code = f"{argnames[0]} = {argnames[0]}.sum(dim=({','.join([str(-i) for i in range(1,1+max_len-len(output_idx))])}))"
+            output_idx += [f"_{i}" for i in range(max_len-len(output_idx))]
+        else:
+            suffix_code = ""
+            
         for i, arg in enumerate(args):
-            assert len(arg.shape_idx) <= len(output_idx)
+            assert(len(arg.shape_idx) <= len(output_idx))
+            if len(arg.shape_idx) == 0:
+                continue
             if len(arg.shape_idx) < len(output_idx):
                 # a -> a[...,None]
                 argnames[i] = f"{arg.varname}[..." + ",None"*(len(output_idx)-len(arg.shape_idx)) + "]"
@@ -234,13 +244,16 @@ def to_pytorch_op(type:str, *args:SymbolScalar):
             )
         else: # TODO
             raise NotImplementedError(str(type))
+        
+        code.add_line(suffix_code)
     else:
         raise NotImplementedError
     return code
 
-def generate_tl_from_dag(x_list:list[SymbolScalar], to_tl:bool=True, to_cute:bool=False) -> Tuple[IndentedCode, dict]:
+def generate_tl_from_dag(x_list:list[SymbolScalar], to_tl:bool=True, to_cute:bool=False, output_var_name_list=None, return_inputs=False) -> Tuple[IndentedCode, dict]:
     # global var
     input_vars = {}
+    inputs = {}
     def generate_tl(x:SymbolScalar, varname:str=None):
         tl_code = IndentedCode()
         if x.lowered:
@@ -249,6 +262,7 @@ def generate_tl_from_dag(x_list:list[SymbolScalar], to_tl:bool=True, to_cute:boo
             # tl_code.add_line(f"{x.varname} = {x.code.name}")
             # add input_var
             input_vars[x.varname] = x
+            inputs[x.varname] = x
             return tl_code
         if isinstance(x.code, Const):
             return tl_code
@@ -263,9 +277,7 @@ def generate_tl_from_dag(x_list:list[SymbolScalar], to_tl:bool=True, to_cute:boo
         # all previous node be generated before visit_count+1
         for i, input_item in enumerate(x.prev):
             input_item.visit_count += 1
-
-        if varname is not None: # overwrite varname
-            x.varname = varname
+            
         # optimize tl performance by inplace operation
         # print(x.varname)
         # print([x.varname for x in x.prev])
@@ -277,6 +289,8 @@ def generate_tl_from_dag(x_list:list[SymbolScalar], to_tl:bool=True, to_cute:boo
                 if input_item.count == 1 or input_item.visit_count == input_item.count:
                     x.varname = input_item.varname
                     break
+        if varname is not None: # overwrite varname
+            x.varname = varname
         # add input_var
         if x.varname not in input_vars.keys():
             input_vars[x.varname] = x
@@ -291,7 +305,10 @@ def generate_tl_from_dag(x_list:list[SymbolScalar], to_tl:bool=True, to_cute:boo
         return tl_code
     
     tl_code = IndentedCode()
-    for x in x_list:
-        tl_code += generate_tl(x)
-    return tl_code, input_vars
+    for idx, x in enumerate(x_list):
+        tl_code += generate_tl(x, varname=output_var_name_list[idx] if output_var_name_list is not None else None)
+    if not return_inputs:
+        return tl_code, input_vars
+    else:
+        return tl_code, input_vars, inputs
 

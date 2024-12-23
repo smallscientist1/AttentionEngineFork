@@ -1,6 +1,7 @@
 from attn_engine import LinearAttentionEngine
 from core.core import SymbolicTensor
 from core.core import CustomIO
+from core.utils import meta_tensor
 
 import torch
 import torch.nn.functional as F 
@@ -33,13 +34,21 @@ def k_mod(k, custom_io): # (B,H,seqlen, D)
 
 if __name__ == "__main__":
     B, H, T, D, DV = 1, 80, 2048, 128, 64 # bug 16384
+    dtype = torch.bfloat16
+    qkv_meta = (
+        meta_tensor(B, H, T, D, dtype=dtype),
+        meta_tensor(B, H, T, D, dtype=dtype),
+        meta_tensor(B, H, T, DV, dtype=dtype),
+    )
     custom_io = CustomIO(
         {
             "A": (1, H),
             "dt": (B, H, T)
         }
     )
-    mod = LinearAttentionEngine(decay_mod=decay_mod, k_mod=k_mod,
+    mod = LinearAttentionEngine(
+        qkv_meta,
+        decay_mod=decay_mod, k_mod=k_mod,
                             custom_io = custom_io)
     with open("mamba2_tl.py","w") as f:
         f.write(mod.tl_code)

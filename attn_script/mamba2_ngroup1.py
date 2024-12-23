@@ -63,27 +63,27 @@ def eval():
         do_bench_mamba(mod, B, HQ,HK,H, T, D, DV, BT=256)
 
 if __name__ == "__main__":
-    # B, H, T, D, DV = 8,80, 8192, 128, 64 # bug 16384
-    # HQ, HK = 1, 1
-    # dtype = torch.bfloat16
-    # qkv_meta = (
-    #     meta_tensor(B, HQ, T, D, dtype=dtype),
-    #     meta_tensor(B, HK, T, D, dtype=dtype),
-    #     meta_tensor(B, H, T, DV, dtype=dtype),
-    # )
-    # custom_io = CustomIO(
-    #     {
-    #         "A": (1, "heads"),
-    #         "dt": ("batch", "heads", "seq_len")
-    #     }
-    # )
-    # mod = LinearAttentionEngine(qkv_meta,
-    #     decay_mod=decay_mod, v_mod=v_mod,
-    #                         custom_io = custom_io,
-    #                         tune=True, tune_filename="mamba2")
-    # with open("mamba2_tl.py","w") as f:
-    #     f.write(mod.tl_code)
+    B, H, T, D, DV = 1,80, 2048, 128, 64 # bug 16384
+    HQ, HK = 1, 1
+    dtype = torch.bfloat16
+    qkv_meta = (
+        meta_tensor(B, HQ, T, D, dtype=dtype),
+        meta_tensor(B, HK, T, D, dtype=dtype),
+        meta_tensor(B, H, T, DV, dtype=dtype),
+    )
+    custom_io = CustomIO(
+        {
+            "A": (1, "heads"),
+            "dt": ("batch", "heads", "seq_len")
+        }
+    )
+    mod = LinearAttentionEngine(qkv_meta,
+        decay_mod=decay_mod, v_mod=v_mod,
+                            custom_io = custom_io,
+                            tune=False, tune_filename="mamba2")
+    with open("mamba2_tl.py","w") as f:
+        f.write(mod.tl_code)
 
-    # from benchmark.bench_utils import do_bench_mamba
-    # do_bench_mamba(mod, B, HQ,HK,H, T, D, DV, BT=256)
-    eval()
+    from benchmark.bench_utils import do_bench_mamba
+    do_bench_mamba(mod, B, HQ,HK,H, T, D, DV, BT=256, requires_grad=True)
+    # eval()

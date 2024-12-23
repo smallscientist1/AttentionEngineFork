@@ -7,7 +7,9 @@ import triton
 
 import itertools
 
-# ---------------------TL_KERNEL_CUMSUM
+import einops
+
+# ---------------------TRITON_KERNEL_CUMSUM
 @triton.jit
 def chunk_local_cumsum_scalar_kernel(
     s,
@@ -33,6 +35,22 @@ def chunk_local_cumsum_scalar(g, BT):
         T=T, BT=BT
     )
     return g
+
+# ---------------------TRITON_KERNEL_REV_CUMSUM
+@triton.jit
+def compute_final_dg(
+    dg,
+    o,
+    T: triton_lang.constexpr,
+    BT: triton_lang.constexpr,
+):
+    i_t, i_bh = triton_lang.program_id(0), triton_lang.program_id(1)
+
+    p_o = triton_lang.make_block_ptr(dg + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
+    b_o = triton_lang.load(p_o, boundary_check=(0,))
+    b_o = b_o - triton_lang.cumsum(b_o, axis=0) + triton_lang.sum(b_o, axis=0)
+    p_o = triton_lang.make_block_ptr(o + i_bh * T, (T,), (1,), (i_t * BT,), (BT,), (0,))
+    triton_lang.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0,))
 
 
 # --------------- TL_KERNEL_H
@@ -246,6 +264,354 @@ def chunk_o(
     
     return main
 
+# --------------- TL_KERNEL_BWD_dh
+def chunk_bwd_kernel_dh(
+    batch, headq, headk, head, seqlen, dim, dimv,
+    BT, BK, BV, num_stages = 1, thread_num = 128
+):
+    NT = seqlen // BT
+    NK = dim // BK
+    NV = dimv // BV
+    dtype = "bfloat16"
+    accum_dtype = "float"
+    num_stages = num_stages
+    thread_num = thread_num
+
+    scale = 1.0
+    assert(head % headk == 0)
+    head_headk_ratio = head // headk
+    assert(head % headq == 0)
+    head_headq_ratio = head // headq
+
+    @T.prim_func
+    def main(
+        q: T.Buffer((batch, headq, seqlen, dim), dtype), # type: ignore
+        k: T.Buffer((batch, headk, seqlen, dim), dtype), # type: ignore
+        v: T.Buffer((batch, head, seqlen, dimv), dtype), # type: ignore
+        g: T.Buffer((batch, head, seqlen), accum_dtype), # type: ignore
+        do: T.Buffer((batch, head, seqlen, dimv), dtype), # type: ignore
+        
+        dh: T.Buffer((batch, head, NT*dim, dimv), dtype), # type: ignore
+    ):
+        with T.Kernel(NK, NV, batch*head, threads=thread_num) as (bx, by, bz):
+            b_dh = T.alloc_fragment((BK, BV), accum_dtype)
+            dh_shared = T.alloc_shared((BK, BV), dtype)
+            q_shared = T.alloc_shared((BT, BK), dtype)
+            q_local = T.alloc_fragment((BT, BK), dtype)
+            q_local_T = T.alloc_fragment((BK, BT), dtype)
+            do_shared = T.alloc_shared((BT, BV), dtype)
+
+            bg_local = T.alloc_fragment((BT), accum_dtype)
+            bg_shared = T.alloc_shared((BT), accum_dtype, scope="shared")
+            bg_last = T.alloc_fragment((1), accum_dtype)
+
+            bhead = bz % head
+            bb = bz // head
+            bheadk = bhead // head_headk_ratio
+            bheadq = bhead // head_headq_ratio
+
+            T.clear(b_dh)
+            loop_st = 0
+            loop_ed = NT
+            for i_t0 in T.Pipelined(NT, num_stages=num_stages):
+                i_t = loop_ed - 1 - i_t0
+
+                # T.copy(b_dh, dh[bb, bhead, (i_t*dim + bx*BK):(i_t*dim + (bx+1)*BK), by*BV:(by+1)*BV]) # implicit cast
+                T.copy(b_dh, dh_shared)
+                T.copy(dh_shared,  dh[bb, bhead, (i_t*dim + bx*BK):(i_t*dim + (bx+1)*BK), by*BV:(by+1)*BV])
+
+                T.copy(q[bb, bheadq, i_t*BT:(i_t+1)*BT, bx*BK:(bx+1)*BK], q_shared)
+                T.copy(do[bb, bhead, i_t*BT:(i_t+1)*BT, by*BV:(by+1)*BV], do_shared)
+                
+                T.copy(q_shared, q_local)
+
+                T.copy(g[bb, bhead, i_t*BT:(i_t+1)*BT], bg_shared)
+
+                # q_mod 
+                for i,j in T.Parallel(BT, BK):
+                    q_local[i,j] *= scale
+
+                T.copy(bg_shared, bg_local)
+                bg_last[0] = bg_shared[BT-1]
+                for i,j in T.Parallel(BK, BT):
+                    q_local_T[i,j] = q_local[j,i] * T.exp(bg_local[j])
+
+                for i,j in T.Parallel(BK, BV):
+                    b_dh[i,j] *= T.exp(bg_last[0])
+                
+                T.gemm(q_local_T, do_shared, b_dh, transpose_B=False)
+        
+    return main
+
+# --------------- TL_KERNEL_BWD_dqkg
+def chunk_bwd_dqkg(
+    batch, headq, headk, head, seqlen, dim, dimv,
+    BT, BK, BV, num_stages = 1, thread_num = 128
+):
+    NT = seqlen // BT
+    NK = dim // BK
+    NV = dimv // BV
+    dtype = "bfloat16"
+    accum_dtype = "float"
+    num_stages = num_stages
+    thread_num = thread_num
+
+    scale = 1.0
+    assert(head % headk == 0)
+    head_headk_ratio = head // headk
+    assert(head % headq == 0)
+    head_headq_ratio = head // headq
+
+    @T.prim_func
+    def main(
+        q: T.Buffer((batch, headq, seqlen, dim), dtype), # type: ignore
+        k: T.Buffer((batch, headk, seqlen, dim), dtype), # type: ignore
+        v: T.Buffer((batch, head, seqlen, dimv), dtype), # type: ignore
+        h: T.Buffer((batch, head, NT*dim, dimv), dtype), # type: ignore
+        g: T.Buffer((batch, head, seqlen), accum_dtype), # type: ignore
+        do: T.Buffer((batch, head, seqlen, dimv), dtype), # type: ignore
+        dh:  T.Buffer((batch, head, NT*dim, dimv), dtype), # type: ignore
+
+        dq: T.Buffer((batch, head, seqlen, dim), dtype), # type: ignore
+        dk: T.Buffer((batch, head, seqlen, dim), dtype), # type: ignore
+        dg: T.Buffer((NK, batch, head, seqlen), accum_dtype), # type: ignore
+    ):
+        with T.Kernel(NK, NT, batch*head, threads=thread_num) as (bx, by, bz):
+            b_g = T.alloc_fragment((BT), accum_dtype)
+            b_g1 = T.alloc_fragment((BT), accum_dtype)
+            b_g_last = T.alloc_fragment((1), accum_dtype)
+            b_g_T = T.alloc_fragment((BT), accum_dtype)
+            b_g_shared = T.alloc_shared((BT), accum_dtype, scope="shared")
+            b_v_shared = T.alloc_shared((BT, BV), dtype)
+            b_do_shared = T.alloc_shared((BT, BV), dtype)
+            b_dh_shared = T.alloc_shared((BK, BV),dtype)
+            b_dh_local = T.alloc_fragment((BK, BV),dtype)
+            b_h_shared = T.alloc_shared((BK, BV),dtype)
+            b_h_local = T.alloc_fragment((BK, BV),dtype)
+            b_hdh = T.alloc_fragment((1,BK*BV),accum_dtype)
+            k_shared = T.alloc_shared((BT,BK), dtype)
+            q_shared = T.alloc_shared((BT,BK),dtype)
+            q_local = T.alloc_fragment((BT,BK),dtype)
+            k_local = T.alloc_fragment((BT,BK),dtype)
+            k_local1 = T.alloc_fragment((BT,BK),dtype)
+
+            b_dq = T.alloc_fragment((BT, BK), accum_dtype)
+            b_dq_shared = T.alloc_shared((BT,BK), dtype)
+            dq_shared = T.alloc_shared((BT,BK), accum_dtype)
+            b_dq1 = T.alloc_fragment((BT, BK), accum_dtype)
+            b_dk = T.alloc_fragment((BT, BK), accum_dtype)
+            b_dk_shared = T.alloc_shared((BT,BK), dtype)
+            dk_shared = T.alloc_shared((BT,BK), accum_dtype)
+            b_dk1 = T.alloc_fragment((BT, BK), accum_dtype)
+            b_ds = T.alloc_fragment((BT, BT), accum_dtype)
+            b_ds_cast = T.alloc_fragment((BT, BT), dtype)
+            b_ds_shared = T.alloc_shared((BT, BT), dtype)
+            b_dg_last = T.alloc_fragment((1),accum_dtype)
+            b_dg_last_tmp = T.alloc_fragment((1),accum_dtype)
+            # b_dg_last_local = T.alloc_local((1),accum_dtype)
+            # b_dg_last_shared = T.alloc_shared((1),accum_dtype, scope="shared")
+            b_dg_qk = T.alloc_fragment((BT,BK),accum_dtype)
+            b_dg = T.alloc_fragment((BT),accum_dtype)
+
+            b_dkk = T.alloc_fragment((1,BT*BK), accum_dtype)
+            # b_dkksum = T.alloc_fragment((BT), accum_dtype)
+            # b_dkksum_shared = T.alloc_shared((BT), accum_dtype, scope="shared")
+            # b_dkksum_T = T.alloc_fragment((1,BT), accum_dtype)
+
+            tx = T.thread_binding(0, thread_num, thread="threadIdx.x")
+
+            bhead = bz % head
+            bb = bz // head
+            bheadk = bhead // head_headk_ratio
+            bheadq = bhead // head_headq_ratio
+
+            T.copy(g[bb, bhead, by*BT:(by+1)*BT], b_g_shared)
+            T.copy(b_g_shared, b_g)
+            b_g_last[0] = b_g_shared[BT-1]
+
+            T.clear(b_dg_last)
+            T.clear(b_dg)
+            T.clear(b_ds)
+            T.clear(b_dq)
+            T.clear(b_dk)
+            for i_v in T.Pipelined(NV, num_stages=num_stages):
+                T.copy(v[bb,bhead, by*BT:(by+1)*BT, i_v*BV:(i_v+1)*BV], b_v_shared)
+                T.copy(do[bb,bhead, by*BT:(by+1)*BT, i_v*BV:(i_v+1)*BV], b_do_shared)
+
+                T.copy(dh[bb,bhead,by*dim+bx*BK:by*dim+(bx+1)*BK, i_v*BV:(i_v+1)*BV], b_dh_shared)
+                T.copy(h[bb,bhead,by*dim+bx*BK:by*dim+(bx+1)*BK, i_v*BV:(i_v+1)*BV], b_h_shared)
+
+                T.gemm(b_do_shared, b_v_shared, b_ds, transpose_A=False, transpose_B=True)
+                
+                T.copy(b_h_shared, b_h_local)
+                T.copy(b_dh_shared, b_dh_local)
+                for i,j in T.Parallel(BK,BV):
+                    b_hdh[0,i*BV+j] = b_h_local[i,j]* b_dh_local[i,j]
+                # tl only support clear=True for sharedmemory reduce
+                T.reduce_sum(b_hdh, b_dg_last_tmp,dim=1, clear=True)
+                b_dg_last[0] += b_dg_last_tmp[0]
+                T.gemm(b_do_shared, b_h_shared, b_dq, transpose_A=False, transpose_B=True)
+                T.gemm(b_v_shared, b_dh_shared, b_dk, transpose_A=False, transpose_B=True)
+
+            # T.clear(b_dg_last)
+            # for ii in T.serial(NV):
+            #     T.copy(dh[bb,bhead,by*dim+bx*BK:by*dim+(bx+1)*BK, ii*BV:(ii+1)*BV], b_dh_local)
+            #     T.copy(h[bb,bhead,by*dim+bx*BK:by*dim+(bx+1)*BK, ii*BV:(ii+1)*BV], b_h_local)
+            #     for i,j in T.Parallel(BK,BV):
+            #         b_hdh[0,i*BV+j] = b_h_local[i,j]* b_dh_local[i,j]
+            #     T.reduce_sum(b_hdh, b_dg_last,dim=1, clear=False)
+                
+            T.copy(k[bb, bheadk, by*BT:(by+1)*BT, bx*BK:(bx+1)*BK], k_shared)
+            T.copy(q[bb, bheadq, by*BT:(by+1)*BT, bx*BK:(bx+1)*BK], q_shared)
+            
+            b_dg_last[0] *= T.exp(b_g_last[0])
+
+            for i,j in T.Parallel(BT,BK):
+                b_dq[i,j] *= T.exp(b_g[i])
+                # qmod_bwd many place
+                b_dq[i,j] *= scale
+
+            for i,j in T.Parallel(BT,BK):
+                b_dk[i,j] *= T.exp(-b_g[i]+b_g_last[0])
+            
+            
+            # T.copy(g[bb, bhead, by*BT:(by+1)*BT], b_g1)
+            # T.copy(g[bb, bhead, by*BT:(by+1)*BT], b_g_T) 
+            # faster
+            T.copy(b_g_shared, b_g1)
+            T.copy(b_g_shared, b_g_T)
+            for i,j in T.Parallel(BT,BT):
+                b_ds[i,j] = T.if_then_else(
+                    i >= j, b_ds[i,j]*scale*T.exp(b_g1[i]-b_g_T[j]), 0
+                )
+            T.copy(b_ds,b_ds_cast)
+            
+            for i,j in T.Parallel(BT,BK):
+                b_dkk[0,i*BK+j] = b_dk[i,j]
+            T.copy(k_shared, k_local1)
+            for i,j in T.Parallel(BT,BK):
+                b_dkk[0,i*BK+j] *= k_local1[i,j]
+            T.reduce_sum(b_dkk, b_dg_last_tmp, dim=1, clear=True)
+            b_dg_last[0] += b_dg_last_tmp[0]
+            
+            T.gemm(b_ds_cast,k_shared,b_dq,transpose_A=False, transpose_B=False)
+            T.copy(b_ds_cast, b_ds_shared)
+            T.gemm(b_ds_shared, q_shared, b_dk, transpose_A=True,transpose_B=False)
+            # implicit cast
+            # T.copy(b_dq, dq_shared)
+            # T.copy(dq_shared, b_dq1)
+            for i,j in T.Parallel(BT,BK):
+                b_dg_qk[i,j] = b_dq[i,j]
+            T.copy(q_shared, q_local)
+            T.copy(k_shared, k_local)
+            T.copy(b_dk, dk_shared)
+            T.copy(dk_shared, b_dk1)
+            for i,j in T.Parallel(BT,BK):
+                b_dg_qk[i,j] = b_dg_qk[i,j] * q_local[i,j] - b_dk1[i,j]*k_local[i,j]
+
+            T.reduce_sum(b_dg_qk,b_dg,dim=1,clear=True)
+            
+            for i in T.Parallel(BT):
+                b_dg[i] = T.if_then_else(
+                    i < BT-1, b_dg[i], b_dg[i]+b_dg_last[0]
+                )
+            T.copy(b_dq, b_dq_shared)
+            T.copy(b_dq_shared, dq[bb, bhead, by*BT:(by+1)*BT, bx*BK:(bx+1)*BK])
+            # T.copy(b_dq, dq[bb, bhead, by*BT:(by+1)*BT, bx*BK:(bx+1)*BK])
+            T.copy(b_dk, b_dk_shared)
+            T.copy(b_dk_shared, dk[bb, bhead, by*BT:(by+1)*BT, bx*BK:(bx+1)*BK])
+            # T.copy(b_dk, dk[bb, bhead, by*BT:(by+1)*BT, bx*BK:(bx+1)*BK])
+            T.copy(b_dg, b_g_shared)
+            T.copy(b_g_shared, dg[bx, bb, bhead, by*BT:(by+1)*BT])
+            # T.copy(b_dg, dg[bx, bb, bhead, by*BT:(by+1)*BT])
+
+    return main
+
+# --------------- TL_KERNEL_BWD_dv
+def chunk_bwd_kernel_dv(
+    batch, headq, headk, head, seqlen, dim, dimv,
+    BT, BK, BV, num_stages = 1, thread_num = 128
+):
+    NT = seqlen // BT
+    NK = dim // BK
+    NV = dimv // BV
+    dtype = "bfloat16"
+    accum_dtype = "float"
+    num_stages = num_stages
+    thread_num = thread_num
+
+    scale = 1.0
+    assert(head % headk == 0)
+    head_headk_ratio = head // headk
+    assert(head % headq == 0)
+    head_headq_ratio = head // headq
+
+    @T.prim_func
+    def main(
+        q: T.Buffer((batch, headq, seqlen, dim), dtype), # type: ignore
+        k: T.Buffer((batch, headk, seqlen, dim), dtype), # type: ignore
+        g: T.Buffer((batch, head, seqlen), accum_dtype), # type: ignore
+        do: T.Buffer((batch, head, seqlen, dimv), dtype), # type: ignore
+        dh: T.Buffer((batch, head, NT*dim, dimv), dtype), # type: ignore
+        
+        dv: T.Buffer((batch, head, seqlen, dimv), dtype), # type: ignore
+    ):
+        with T.Kernel(NV, NT, batch*head, threads=thread_num) as (bx, by, bz):
+            b_dv = T.alloc_fragment((BT, BV), accum_dtype)
+            b_dv_shared = T.alloc_shared((BT, BV), dtype)
+            b_g = T.alloc_fragment((BT), accum_dtype)
+            b_g1 = T.alloc_fragment((BT), accum_dtype)
+            b_g2 = T.alloc_fragment((BT), accum_dtype)
+            b_g_shared = T.alloc_shared((BT), accum_dtype, scope="shared")
+            b_g_last = T.alloc_fragment((1), accum_dtype)
+            b_A = T.alloc_fragment((BT, BT), accum_dtype)
+            b_A_cast = T.alloc_fragment((BT, BT), dtype)
+            b_q_shared = T.alloc_shared((BT, BK), dtype)
+            b_q_local = T.alloc_fragment((BT, BK), dtype)
+            b_k_shared = T.alloc_shared((BT, BK), dtype)
+            b_k_local = T.alloc_fragment((BT, BK), dtype)
+            b_dh_shared = T.alloc_shared((BK, BV), dtype)
+            b_dh_local = T.alloc_fragment((BK, BV), dtype)
+            b_do_shared = T.alloc_shared((BT, BV), dtype)
+            
+            bhead = bz % head
+            bb = bz // head
+            bheadk = bhead // head_headk_ratio
+            bheadq = bhead // head_headq_ratio
+            
+            T.copy(g[bb, bhead, by*BT:(by+1)*BT], b_g_shared)
+            T.copy(b_g_shared, b_g)
+            b_g_last[0] = b_g_shared[BT-1]
+            
+            T.clear(b_dv)
+            T.clear(b_A)
+            for i_k in T.Pipelined(NK, num_stages=num_stages):
+                T.copy(k[bb, bheadk, by*BT:(by+1)*BT, i_k*BK:(i_k+1)*BK], b_k_shared)
+                T.copy(dh[bb, bhead, by*dim+i_k*BK:by*dim+(i_k+1)*BK, bx*BV:(bx+1)*BV], b_dh_shared)
+                T.copy(q[bb, bheadq, by*BT:(by+1)*BT, i_k*BK:(i_k+1)*BK], b_q_shared)
+                
+                T.gemm(b_k_shared, b_dh_shared, b_dv)
+                T.gemm(b_k_shared, b_q_shared, b_A, transpose_B=True)
+            for i,j in T.Parallel(BT, BV):
+                b_dv[i,j] *= T.exp(-b_g[i] + b_g_last[0])
+            T.copy(b_g_shared, b_g1)
+            T.copy(b_g_shared, b_g2)
+            for i,j in T.Parallel(BT, BT):
+                b_A[i,j] *= T.exp(-b_g1[i] + b_g2[j]) * scale
+            for i,j in T.Parallel(BT,BT):
+                b_A[i,j] = T.if_then_else(
+                    i <= j, b_A[i,j], 0
+                )
+            
+            T.copy(do[bb, bhead, by*BT:(by+1)*BT, bx*BV:(bx+1)*BV], b_do_shared)
+            T.copy(b_A,b_A_cast)
+            T.gemm(b_A_cast, b_do_shared, b_dv)
+            T.copy(b_dv, b_dv_shared)
+            T.copy(b_dv_shared, dv[bb, bhead, by*BT:(by+1)*BT, bx*BV:(bx+1)*BV])
+   
+    return main
+ 
+
 # --------------- TL_INTERFACE
 class LinearAttention(torch.autograd.Function):
 
@@ -286,25 +652,95 @@ class LinearAttention(torch.autograd.Function):
         {{v_mod_expr | indent(8)}}
 
         decay_cumsum = chunk_local_cumsum_scalar(
-            decay, BT
+            {{decay_name}}, BT
         )
         chunk_fwd_h_mod = tl.cached(chunk_fwd_h, {{output_idx_list_h}}, BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_h, BV_h, num_stages_h, num_threads_h)
         output_idx_list = {{output_idx_list_o}}# [5,]
         chunk_fwd_o_mod = tl.cached(chunk_o, output_idx_list, BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_o, BV_o, num_stages_o, num_threads_o)
 
-        h = chunk_fwd_h_mod(k, v, decay_cumsum, {{custom_inputs_list_h}})
-        o = chunk_fwd_o_mod(h, q, k, v, decay_cumsum, {{custom_inputs_list_o}})
+        h = chunk_fwd_h_mod({{k_name}}, {{v_name}}, decay_cumsum, {{custom_inputs_list_h}})
+        o = chunk_fwd_o_mod(h, {{q_name}}, {{k_name}}, {{v_name}}, decay_cumsum, {{custom_inputs_list_o}})
 
-        ctx.save_for_backward(q, k, v, decay_cumsum, {{custom_inputs_list}} )
+        ctx.save_for_backward(q, k, v, decay, decay_cumsum, {{custom_inputs_list}} )
         ctx.BT = BT
         return o
 
     @staticmethod
     def backward(ctx, do):
         BT = ctx.BT
-        q, k, v, decay_cumsum, {{custom_inputs_list}} = ctx.saved_tensors
-        # h = chunk_fwd_h_mod(k, v, decay_cumsum)
-        pass
+        q, k, v, decay, decay_cumsum, {{custom_inputs_list}} = ctx.saved_tensors
+
+        BATCH, HQ, N_CTX, D_HEAD = q.shape
+        D_HEADV = v.shape[-1]
+        HK = k.shape[1]
+        H = v.shape[1]
+        NT = N_CTX // BT
+        
+        BK_h = {{BK_h}}
+        BV_h = {{BV_h}}
+        num_stages_h = {{num_stages_h}}
+        num_threads_h = {{num_threads_h}}
+        BK_dh = {{BK_h}}
+        BV_dh = {{BV_h}}
+        num_stages_dh = {{num_stages_h}}
+        num_threads_dh = {{num_threads_h}}
+        BK_dqkg = 64
+        BV_dqkg = 64
+        num_stages_dqkg = 1
+        num_threads_dqkg = 128
+        BK_dv = 64
+        BV_dv = 64
+        num_stages_dv = 1
+        num_threads_dv = 128
+        
+        # decay_mod here
+        {{decay_mod_expr1 | indent(8)}}
+
+        # k_mod here
+        {{k_mod_expr1 | indent(8)}}
+
+        # v_mod here
+        {{v_mod_expr1 | indent(8)}}
+        
+        # q_mod here
+        {{q_mod_expr1 | indent(8)}}
+        
+        
+        chunk_fwd_h_mod = tl.cached(chunk_fwd_h, {{output_idx_list_h}}, BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_h, BV_h, num_stages_h, num_threads_h)
+        chunk_bwd_dh_mod = tl.cached(chunk_bwd_kernel_dh, [5,], BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_dh, BV_dh, num_stages_dh, num_threads_dh)
+        chunk_bwd_dqkg_mod = tl.cached(chunk_bwd_dqkg, [7,8,9,], BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_dqkg, BV_dqkg, num_stages_dqkg, num_threads_dqkg)
+        chunk_bwd_dv_mod = tl.cached(chunk_bwd_kernel_dv, [5,], BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_dv, BV_dv, num_stages_dv, num_threads_dv)
+        
+        h = chunk_fwd_h_mod({{k_name2}}, {{v_name2}}, decay_cumsum, {{custom_inputs_list_h}})
+        
+        # k_mod 2 (2 not the same time as 1)
+        {{k_mod_expr_2 | indent(8)}}
+        # v_mod 2
+        {{v_mod_expr_2 | indent(8)}}
+        
+        dh = chunk_bwd_dh_mod({{q_name1}}, {{k_name1}}, {{v_name1}}, decay_cumsum, do)
+        dq, dk, ddecay = chunk_bwd_dqkg_mod({{q_name1}}, {{k_name1}}, {{v_name1}}, h, decay_cumsum, do, dh)
+        if HQ < H:
+            dq =  dq.view(BATCH, HQ, H//HQ, N_CTX, D_HEAD).sum(2)
+        if HK < H:
+            dk = dk.view(BATCH, HK, H//HK, N_CTX, D_HEAD).sum(2)
+        ddecay = ddecay.sum(0)
+        dg2 = torch.empty(ddecay.shape, dtype=torch.float32, device=ddecay.device)
+        compute_final_dg[(NT, BATCH*H)](ddecay, dg2, T=N_CTX, BT=BT)
+        dv = chunk_bwd_dv_mod({{q_name1}}, {{k_name1}}, decay_cumsum, do, dh)
+        
+        # v_bwd
+        {{v_mod_bwd_expr | indent(8)}}
+        # decay_mod_bwd
+        {{decay_mod_bwd_expr | indent(8)}}
+        # k_bwd
+        {{k_mod_bwd_expr | indent(8)}}
+        # q_bwd
+        {{q_mod_bwd_expr | indent(8)}}
+        
+        return {{dq_name}}, {{dk_name}}, {{dv_name}}, {{ddecay_name}}, {{custom_inputs_grad_list}}
+        
+        
 
 linear_attention = LinearAttention.apply
 

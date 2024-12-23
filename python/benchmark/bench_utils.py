@@ -245,7 +245,7 @@ def print_debug(o, O_ref, rtol=1e-3, atol=1e-3):
 #     return latency, (tflops/latency*1e-9), latency_ref, (tflops/latency_ref*1e-9)
 
 
-def do_bench_mamba(linear_attention, B, HQ,HK,H, TLen, D, DV, BT):
+def do_bench_mamba(linear_attention, B, HQ,HK,H, TLen, D, DV, BT, requires_grad=False):
     from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
     torch.cuda.manual_seed(0)
     # torch.cuda.set_device(1)
@@ -261,10 +261,8 @@ def do_bench_mamba(linear_attention, B, HQ,HK,H, TLen, D, DV, BT):
     A_mamba =  1.5*torch.randn(H, dtype=dtype, device=device) - 4
     B_mamba =  0.8 * torch.randn(B, TLen, HK, D, dtype=dtype, device=device)
     C_mamba = torch.randn(B, TLen, HQ, D, dtype=dtype, device=device)
-    # q = torch.randn(B, H, TLen, D, dtype=dtype, device=device)
-    # k = torch.randn(B, H, TLen, D, dtype=dtype, device=device)
-    # v = torch.randn(B, H, TLen, DV, dtype=dtype, device=device)
-    # g = 0.1*torch.rand(B, H, TLen, dtype=accum_dtype, device=device)
+    if requires_grad:
+        do_mamba = 0.1*torch.randn(B, TLen, H, DV, dtype=dtype, device=device)
 
     # initialize dt_bias
     factory_kwargs = {"device": device, "dtype": dtype}
@@ -283,6 +281,12 @@ def do_bench_mamba(linear_attention, B, HQ,HK,H, TLen, D, DV, BT):
     # print(dt_bias_mamba.max().item(), dt_bias_mamba.min().item())
     # print(dt_mamba.max().item(), dt_mamba.min().item())
     # print(A_mamba.max().item(), A_mamba.min().item())
+    
+    X_mamba.detach_().requires_grad_(requires_grad)
+    dt_mamba.detach_().requires_grad_(requires_grad)
+    A_mamba.detach_().requires_grad_(requires_grad)
+    B_mamba.detach_().requires_grad_(requires_grad)
+    C_mamba.detach_().requires_grad_(requires_grad)
 
     out_ref = mamba_chunk_scan_combined(
         X_mamba, dt_mamba, A_mamba, B_mamba, C_mamba,
@@ -291,28 +295,43 @@ def do_bench_mamba(linear_attention, B, HQ,HK,H, TLen, D, DV, BT):
     )
     # print(out_ref)
 
-    q = C_mamba.transpose(1, 2).contiguous()
-    k = B_mamba.transpose(1, 2).contiguous() # (B_mamba * dt_mamba[...,None]).transpose(1, 2).bfloat16().contiguous()
-    v = X_mamba.transpose(1, 2).contiguous()
-    # g = (A_mamba * dt_mamba).transpose(1, 2).contiguous()
+    q = C_mamba.clone().transpose(1, 2).contiguous()
+    k = B_mamba.clone().transpose(1, 2).contiguous() 
+    v = X_mamba.clone().transpose(1, 2).contiguous()
     A_mamba1 = A_mamba[None,:].clone().contiguous()
-    dt_bias_mamba1 = dt_bias_mamba[:, None].contiguous()
     dt_mamba1 = dt_mamba.clone().transpose(1, 2).contiguous()
-    dt_mamba1_k = dt_mamba1.clone().bfloat16()# .contiguous()
-    print(dt_mamba1.shape, A_mamba1.shape)
-    out = linear_attention(
-        q, k, v, dt_mamba1, A_mamba1 , dt_mamba1_k
-    )
-    out = out.transpose(1, 2).contiguous()
+    if requires_grad:
+        do_mamba1 = do_mamba.clone().transpose(1, 2).contiguous()
 
-    print_debug(out, out_ref, rtol=1e-2, atol=1e-2)
+    q = q.detach().requires_grad_(requires_grad)
+    k = k.detach().requires_grad_(requires_grad)
+    v = v.detach().requires_grad_(requires_grad)
+    A_mamba1 = A_mamba1.detach().requires_grad_(requires_grad)
+    dt_mamba1 = dt_mamba1.detach().requires_grad_(requires_grad)
+
+    out = linear_attention(
+        q, k, v, dt_mamba1, A_mamba1 , dt_mamba1.bfloat16()
+    )
+    if requires_grad:
+        out.backward(do_mamba1, retain_graph=True)
+        out_ref.backward(do_mamba, retain_graph=True)
+    
+    out2 = out.transpose(1, 2)
+    print_debug(out2, out_ref, rtol=1e-2, atol=1e-2)
     # torch.testing.assert_close(out, out_ref, rtol=1e-2, atol=4e-2)
     # assert check_close(out, out_ref, rtol=5e-2, atol=4e-2)
+    
+    if requires_grad:
+        print_debug(q.grad.transpose(1,2), C_mamba.grad, rtol=1e-2, atol=1e-2)
+        print_debug(k.grad.transpose(1,2), B_mamba.grad, rtol=1e-2, atol=1e-2)
+        print_debug(v.grad.transpose(1,2), X_mamba.grad, rtol=1e-2, atol=1e-2)
+        print_debug(A_mamba1.grad, A_mamba.grad[None,:], rtol=1e-2, atol=1e-2)
+        print_debug(dt_mamba1.grad.transpose(1,2), dt_mamba.grad, rtol=1e-2, atol=1e-2)
 
     from tvm.tl.utils import do_bench
     def run():
         out = linear_attention(
-            q, k, v, dt_mamba1, A_mamba1 , dt_mamba1_k
+            q, k, v, dt_mamba1, A_mamba1 , dt_mamba1.bfloat16()
         )
     def run_ref():
         out_ref = mamba_chunk_scan_combined(
@@ -320,6 +339,10 @@ def do_bench_mamba(linear_attention, B, HQ,HK,H, TLen, D, DV, BT):
             chunk_size=BT, D=None, return_final_states=False,
             dt_bias=None# dt_bias_mamba
         )
+    def run_backward():
+        out.backward(do_mamba1, retain_graph=True)
+    def run_ref_backward():
+        out_ref.backward(do_mamba, retain_graph=True)
     
     do_bench(run)
     do_bench(run_ref)
@@ -329,6 +352,14 @@ def do_bench_mamba(linear_attention, B, HQ,HK,H, TLen, D, DV, BT):
 
     latency = do_bench(run_ref, warmup=100, rep=100)
     print("MAMBA2: {:.5f} ms".format(latency))
+    
+    if requires_grad:
+
+        latency = do_bench(run_backward, warmup=100,rep=100)
+        print("tl: {:.5f} ms".format(latency))
+
+        latency = do_bench(run_ref_backward, warmup=100, rep=100)
+        print("MAMBA2: {:.5f} ms".format(latency))
 
 def test_mamba_simple_gla():
     B, H, TLen, D, DV, BT = 16, 8, 512, 128, 128, 64
@@ -450,7 +481,7 @@ def test_mamba_simple_gla():
     print("MAMBA2: {:.5f} ms".format(latency))
 
 
-def do_bench_simple_gla(linear_attention, B, H, TLen, D, DV, BT):
+def do_bench_simple_gla(linear_attention, B, H, TLen, D, DV, BT, requires_grad=False):
     torch.cuda.manual_seed(0)
     # torch.cuda.set_device(1)
     # B, H, D, DV = 16, 8, 128, 128
@@ -459,25 +490,45 @@ def do_bench_simple_gla(linear_attention, B, H, TLen, D, DV, BT):
     dtype = torch.bfloat16
     accum_dtype = torch.float32
     device = "cuda"
-    require_grad = True
 
-    q = torch.randn(B, H, TLen, D, device=device, requires_grad=require_grad, dtype=dtype)
-    k = torch.randn(B, H, TLen, D, device=device, requires_grad=require_grad, dtype=dtype)
-    g = F.logsigmoid(torch.randn(B, H, TLen, device=device, dtype=accum_dtype)).clamp_min(-5).requires_grad_(require_grad)
-    v = torch.randn(B, H, TLen, DV, device=device, requires_grad=require_grad, dtype=dtype)
-
+    q = torch.randn(B, H, TLen, D, device=device, dtype=dtype)
+    k = torch.randn(B, H, TLen, D, device=device, dtype=dtype)
+    g = F.logsigmoid(torch.randn(B, H, TLen, device=device, dtype=accum_dtype)).clamp_min(-5)
+    v = torch.randn(B, H, TLen, DV, device=device, dtype=dtype)
     do = torch.randn(B, H, TLen, DV, device=device, dtype=dtype)
+    
+    q.detach_().requires_grad_(requires_grad)
+    k.detach_().requires_grad_(requires_grad)
+    g.detach_().requires_grad_(requires_grad)
+    v.detach_().requires_grad_(requires_grad)
 
     from fla.ops.simple_gla import chunk_simple_gla
-    g1 = g.clone().bfloat16().requires_grad_(require_grad)
+    q1 = q.clone()
+    k1 = k.clone()
+    v1 = v.clone()
+    g1 = g.clone().bfloat16()
+    
+    q1.detach_().requires_grad_(requires_grad)
+    k1.detach_().requires_grad_(requires_grad)
+    g1.detach_().requires_grad_(requires_grad)
+    v1.detach_().requires_grad_(requires_grad)
     
     out_ref,_ = chunk_simple_gla(
-        q, k, v, g1, scale=None, output_final_state=False
+        q1, k1, v1, g1, scale=None, output_final_state=False
     )
     out = linear_attention(
         q, k, v, g
     )
     print_debug(out, out_ref, rtol=1e-2, atol=1e-2)
+    
+    if requires_grad:
+        out.backward(do, retain_graph=True)
+        out_ref.backward(do, retain_graph=True)
+        print_debug(q.grad, q1.grad, rtol=1e-2, atol=1e-2)
+        print_debug(k.grad, k1.grad, rtol=1e-2, atol=1e-2)
+        print_debug(v.grad, v1.grad, rtol=1e-2, atol=1e-2)
+        print_debug(g.grad, g1.grad.float(), rtol=1e-2, atol=1e-2)
+        
     
     from tvm.tl.utils import do_bench
     def run():
@@ -488,11 +539,21 @@ def do_bench_simple_gla(linear_attention, B, H, TLen, D, DV, BT):
         out,_ = chunk_simple_gla(
             q, k, v, g1, scale=None, output_final_state=False
         )
+    def run_bacward():
+        out.backward(do, retain_graph=True)
+    def run_bacward_ref():
+        out_ref.backward(do, retain_graph=True)
 
     latency = do_bench(run, warmup=100,rep=100)
     print("tl: {:.2f} ms".format(latency))
     latency = do_bench(run_ref, warmup=100,rep=100)
     print("simple gla: {:.2f} ms".format(latency))
+    
+    if requires_grad:
+        latency = do_bench(run_bacward, warmup=100,rep=100)
+        print("tl backward: {:.2f} ms".format(latency))
+        latency = do_bench(run_bacward_ref, warmup=100,rep=100)
+        print("simple gla backward: {:.2f} ms".format(latency))
 
 def do_bench_retention_linear(linear_attention, B, H, TLen, D, DV):
     torch.cuda.manual_seed(0)
