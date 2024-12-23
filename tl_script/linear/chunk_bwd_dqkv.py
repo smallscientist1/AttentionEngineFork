@@ -72,6 +72,10 @@ def chunk_bwd_dqkg(
     thread_num = thread_num
 
     scale = 1.0
+    assert(head % headk == 0)
+    head_headk_ratio = head // headk
+    assert(head % headq == 0)
+    head_headq_ratio = head // headq
 
     @T.prim_func
     def main(
@@ -83,8 +87,8 @@ def chunk_bwd_dqkg(
         do: T.Buffer((batch, head, seqlen, dimv), dtype), # type: ignore
         dh:  T.Buffer((batch, head, NT*dim, dimv), dtype), # type: ignore
 
-        dq: T.Buffer((batch, headq, seqlen, dim), dtype), # type: ignore
-        dk: T.Buffer((batch, headk, seqlen, dim), dtype), # type: ignore
+        dq: T.Buffer((batch, head, seqlen, dim), dtype), # type: ignore
+        dk: T.Buffer((batch, head, seqlen, dim), dtype), # type: ignore
         dg: T.Buffer((NK, batch, head, seqlen), accum_dtype), # type: ignore
     ):
         with T.Kernel(NK, NT, batch*head, threads=thread_num) as (bx, by, bz):
@@ -107,9 +111,11 @@ def chunk_bwd_dqkg(
             k_local1 = T.alloc_fragment((BT,BK),dtype)
 
             b_dq = T.alloc_fragment((BT, BK), accum_dtype)
+            b_dq_shared = T.alloc_shared((BT,BK), dtype)
             dq_shared = T.alloc_shared((BT,BK), accum_dtype)
             b_dq1 = T.alloc_fragment((BT, BK), accum_dtype)
             b_dk = T.alloc_fragment((BT, BK), accum_dtype)
+            b_dk_shared = T.alloc_shared((BT,BK), dtype)
             dk_shared = T.alloc_shared((BT,BK), accum_dtype)
             b_dk1 = T.alloc_fragment((BT, BK), accum_dtype)
             b_ds = T.alloc_fragment((BT, BT), accum_dtype)
@@ -131,6 +137,8 @@ def chunk_bwd_dqkg(
 
             bhead = bz % head
             bb = bz // head
+            bheadk = bhead // head_headk_ratio
+            bheadq = bhead // head_headq_ratio
 
             T.copy(g[bb, bhead, by*BT:(by+1)*BT], b_g_shared)
             T.copy(b_g_shared, b_g)
@@ -221,9 +229,15 @@ def chunk_bwd_dqkg(
                 b_dg[i] = T.if_then_else(
                     i < BT-1, b_dg[i], b_dg[i]+b_dg_last[0]
                 )
-            T.copy(b_dq, dq[bb, bhead, by*BT:(by+1)*BT, bx*BK:(bx+1)*BK])
-            T.copy(b_dk, dk[bb, bhead, by*BT:(by+1)*BT, bx*BK:(bx+1)*BK])
-            T.copy(b_dg, dg[bx, bb, bhead, by*BT:(by+1)*BT])
+            T.copy(b_dq, b_dq_shared)
+            T.copy(b_dq_shared, dq[bb, bhead, by*BT:(by+1)*BT, bx*BK:(bx+1)*BK])
+            # T.copy(b_dq, dq[bb, bhead, by*BT:(by+1)*BT, bx*BK:(bx+1)*BK])
+            T.copy(b_dk, b_dk_shared)
+            T.copy(b_dk_shared, dk[bb, bhead, by*BT:(by+1)*BT, bx*BK:(bx+1)*BK])
+            # T.copy(b_dk, dk[bb, bhead, by*BT:(by+1)*BT, bx*BK:(bx+1)*BK])
+            T.copy(b_dg, b_g_shared)
+            T.copy(b_g_shared, dg[bx, bb, bhead, by*BT:(by+1)*BT])
+            # T.copy(b_dg, dg[bx, bb, bhead, by*BT:(by+1)*BT])
 
     return main
 
@@ -236,11 +250,11 @@ if __name__ == "__main__":
 
     torch.cuda.manual_seed(0)
     B, H, D, DV = 8, 16, 128, 128 # 64 # H100 fail on 128,64
-    TLen = 4096 # 512
+    TLen = 2048 # 512
 
-    BT, BK, BV = 128, 128, 128
+    BT, BK, BV = 64, 128, 128
     num_stages = 1
-    num_threads = 256
+    num_threads = 128
     NT = TLen // BT
     dtype = torch.bfloat16
     accum_dtype = torch.float32

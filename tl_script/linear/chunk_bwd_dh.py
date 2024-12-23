@@ -93,6 +93,10 @@ def chunk_bwd_kernel_dh(
     thread_num = thread_num
 
     scale = 1.0
+    assert(head % headk == 0)
+    head_headk_ratio = head // headk
+    assert(head % headq == 0)
+    head_headq_ratio = head // headq
 
     @T.prim_func
     def main(
@@ -118,6 +122,8 @@ def chunk_bwd_kernel_dh(
 
             bhead = bz % head
             bb = bz // head
+            bheadk = bhead // head_headk_ratio
+            bheadq = bhead // head_headq_ratio
 
             T.clear(b_dh)
             loop_st = 0
@@ -129,7 +135,7 @@ def chunk_bwd_kernel_dh(
                 T.copy(b_dh, dh_shared)
                 T.copy(dh_shared,  dh[bb, bhead, (i_t*dim + bx*BK):(i_t*dim + (bx+1)*BK), by*BV:(by+1)*BV])
 
-                T.copy(q[bb, bhead, i_t*BT:(i_t+1)*BT, bx*BK:(bx+1)*BK], q_shared)
+                T.copy(q[bb, bheadq, i_t*BT:(i_t+1)*BT, bx*BK:(bx+1)*BK], q_shared)
                 T.copy(do[bb, bhead, i_t*BT:(i_t+1)*BT, by*BV:(by+1)*BV], do_shared)
                 
                 T.copy(q_shared, q_local)
