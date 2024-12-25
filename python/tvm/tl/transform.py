@@ -129,6 +129,16 @@ def WarpSpecialized():
     """
     return _ffi_api.WarpSpecialized()  # type: ignore
 
+def RewriteWgmmaSync():
+    """RewriteWgmmaSync
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.RewriteWgmmaSync()  # type: ignore
+
 
 def InjectFenceProxy():
     """InjectFenceProxy

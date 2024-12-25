@@ -222,6 +222,7 @@ def lower(
         mod = tl.transform.WarpSpecialized()(mod)
         mod = tl.transform.InjectSoftwarePipeline()(mod)
         mod = tir.transform.LowerOpaqueBlock()(mod)
+        mod = tl.transform.RewriteWgmmaSync()(mod)
         # mod = tl.transform.WarpSpecializedPipeline()(mod)
         # TODO(yu): Some fence.proxy.async.shared::cta is
         # unnecessary, and can be removed for better performance.
