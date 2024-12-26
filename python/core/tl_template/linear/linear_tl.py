@@ -426,7 +426,6 @@ def chunk_bwd_dqkg(
             bheadq = bhead // head_headq_ratio
 
             T.copy(g[bb, bhead, by*BT:(by+1)*BT], b_g_shared)
-            T.copy(b_g_shared, b_g)
             b_g_last[0] = b_g_shared[BT-1]
 
             T.clear(b_dg_last)
@@ -441,17 +440,17 @@ def chunk_bwd_dqkg(
                 T.copy(dh[bb,bhead,by*dim+bx*BK:by*dim+(bx+1)*BK, i_v*BV:(i_v+1)*BV], b_dh_shared)
                 T.copy(h[bb,bhead,by*dim+bx*BK:by*dim+(bx+1)*BK, i_v*BV:(i_v+1)*BV], b_h_shared)
 
-                T.gemm(b_do_shared, b_v_shared, b_ds, transpose_A=False, transpose_B=True)
+                T.gemm(b_do_shared, b_v_shared, b_ds, transpose_A=False, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                 
                 T.copy(b_h_shared, b_h_local)
                 T.copy(b_dh_shared, b_dh_local)
                 for i,j in T.Parallel(BK,BV):
                     b_hdh[0,i*BV+j] = b_h_local[i,j]* b_dh_local[i,j]
                 # tl only support clear=True for sharedmemory reduce
-                T.reduce_sum(b_hdh, b_dg_last_tmp,dim=1, clear=True)
+                T.reduce_sum(b_hdh, b_dg_last_tmp,dim=1) # , clear=True)
                 b_dg_last[0] += b_dg_last_tmp[0]
-                T.gemm(b_do_shared, b_h_shared, b_dq, transpose_A=False, transpose_B=True)
-                T.gemm(b_v_shared, b_dh_shared, b_dk, transpose_A=False, transpose_B=True)
+                T.gemm(b_do_shared, b_h_shared, b_dq, transpose_A=False, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                T.gemm(b_v_shared, b_dh_shared, b_dk, transpose_A=False, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
             # T.clear(b_dg_last)
             # for ii in T.serial(NV):
@@ -466,18 +465,18 @@ def chunk_bwd_dqkg(
             
             b_dg_last[0] *= T.exp(b_g_last[0])
 
+            T.copy(b_g_shared, b_g)
             for i,j in T.Parallel(BT,BK):
                 b_dq[i,j] *= T.exp(b_g[i])
                 # qmod_bwd many place
                 b_dq[i,j] *= scale
 
+            # reg fuse
             for i,j in T.Parallel(BT,BK):
                 b_dk[i,j] *= T.exp(-b_g[i]+b_g_last[0])
             
             
-            # T.copy(g[bb, bhead, by*BT:(by+1)*BT], b_g1)
-            # T.copy(g[bb, bhead, by*BT:(by+1)*BT], b_g_T) 
-            # faster
+            # possible accuracy loss
             T.copy(b_g_shared, b_g1)
             T.copy(b_g_shared, b_g_T)
             for i,j in T.Parallel(BT,BT):
@@ -491,12 +490,12 @@ def chunk_bwd_dqkg(
             T.copy(k_shared, k_local1)
             for i,j in T.Parallel(BT,BK):
                 b_dkk[0,i*BK+j] *= k_local1[i,j]
-            T.reduce_sum(b_dkk, b_dg_last_tmp, dim=1, clear=True)
+            T.reduce_sum(b_dkk, b_dg_last_tmp, dim=1)# , clear=True)
             b_dg_last[0] += b_dg_last_tmp[0]
             
-            T.gemm(b_ds_cast,k_shared,b_dq,transpose_A=False, transpose_B=False)
+            T.gemm(b_ds_cast,k_shared,b_dq,transpose_A=False, transpose_B=False,policy=T.GemmWarpPolicy.FullRow)
             T.copy(b_ds_cast, b_ds_shared)
-            T.gemm(b_ds_shared, q_shared, b_dk, transpose_A=True,transpose_B=False)
+            T.gemm(b_ds_shared, q_shared, b_dk, transpose_A=True,transpose_B=False,policy=T.GemmWarpPolicy.FullRow)
             # implicit cast
             # T.copy(b_dq, dq_shared)
             # T.copy(dq_shared, b_dq1)
@@ -504,12 +503,12 @@ def chunk_bwd_dqkg(
                 b_dg_qk[i,j] = b_dq[i,j]
             T.copy(q_shared, q_local)
             T.copy(k_shared, k_local)
-            T.copy(b_dk, dk_shared)
-            T.copy(dk_shared, b_dk1)
+            # T.copy(b_dk, dk_shared)
+            # T.copy(dk_shared, b_dk1)
             for i,j in T.Parallel(BT,BK):
-                b_dg_qk[i,j] = b_dg_qk[i,j] * q_local[i,j] - b_dk1[i,j]*k_local[i,j]
+                b_dg_qk[i,j] = b_dg_qk[i,j] * q_local[i,j] - b_dk[i,j]*k_local[i,j]
 
-            T.reduce_sum(b_dg_qk,b_dg,dim=1,clear=True)
+            T.reduce_sum(b_dg_qk,b_dg,dim=1)# ,clear=True)
             
             for i in T.Parallel(BT):
                 b_dg[i] = T.if_then_else(
@@ -661,14 +660,14 @@ class LinearAttention(torch.autograd.Function):
         h = chunk_fwd_h_mod({{k_name}}, {{v_name}}, decay_cumsum, {{custom_inputs_list_h}})
         o = chunk_fwd_o_mod(h, {{q_name}}, {{k_name}}, {{v_name}}, decay_cumsum, {{custom_inputs_list_o}})
 
-        ctx.save_for_backward(q, k, v, decay, decay_cumsum, {{custom_inputs_list}} )
+        ctx.save_for_backward(q, k, v, decay, {{custom_inputs_list}} ) # , decay_cumsum
         ctx.BT = BT
         return o
 
     @staticmethod
     def backward(ctx, do):
-        BT = ctx.BT
-        q, k, v, decay, decay_cumsum, {{custom_inputs_list}} = ctx.saved_tensors
+        BT = {{BT_BWD}}# ctx.BT
+        q, k, v, decay, {{custom_inputs_list}} = ctx.saved_tensors #  decay_cumsum
 
         BATCH, HQ, N_CTX, D_HEAD = q.shape
         D_HEADV = v.shape[-1]
@@ -680,18 +679,18 @@ class LinearAttention(torch.autograd.Function):
         BV_h = {{BV_h}}
         num_stages_h = {{num_stages_h}}
         num_threads_h = {{num_threads_h}}
-        BK_dh = {{BK_h}}
-        BV_dh = {{BV_h}}
-        num_stages_dh = {{num_stages_h}}
-        num_threads_dh = {{num_threads_h}}
-        BK_dqkg = 64
-        BV_dqkg = 64
-        num_stages_dqkg = 1
-        num_threads_dqkg = 128
-        BK_dv = 64
-        BV_dv = 64
-        num_stages_dv = 1
-        num_threads_dv = 128
+        BK_dh = {{BK_dh}}
+        BV_dh = {{BV_dh}}
+        num_stages_dh = {{num_stages_dh}}
+        num_threads_dh = {{num_threads_dh}}
+        BK_dqkg = {{BK_dqkg}}
+        BV_dqkg = {{BV_dqkg}}
+        num_stages_dqkg = {{num_stages_dqkg}}
+        num_threads_dqkg = {{num_threads_dqkg}}
+        BK_dv = {{BK_dv}}
+        BV_dv = {{BV_dv}}
+        num_stages_dv = {{num_stages_dv}}
+        num_threads_dv = {{num_threads_dv}}
         
         # decay_mod here
         {{decay_mod_expr1 | indent(8)}}
@@ -705,6 +704,9 @@ class LinearAttention(torch.autograd.Function):
         # q_mod here
         {{q_mod_expr1 | indent(8)}}
         
+        decay_cumsum = chunk_local_cumsum_scalar(
+            {{decay_name2}}, BT
+        )
         
         chunk_fwd_h_mod = tl.cached(chunk_fwd_h, {{output_idx_list_h}}, BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_h, BV_h, num_stages_h, num_threads_h)
         chunk_bwd_dh_mod = tl.cached(chunk_bwd_kernel_dh, [5,], BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_dh, BV_dh, num_stages_dh, num_threads_dh)
@@ -824,6 +826,140 @@ def generate_config(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100()):
         
     return config_h, config_o
 
+def generate_config_bwd(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100()):
+    # BTs = [32,64,128,192,256]
+    BK_hs = [32,64,128,192,256]
+    BV_hs = [32,64,128,192,256]
+    num_stages_hs = [1,2,3,4]
+    num_threads_hs = [128,256]
+    BK_dhs = [32,64,128,192,256]
+    BV_dhs = [32,64,128,192,256]
+    num_stages_dhs = [1,2,3,4]
+    num_threads_dhs = [128,256]
+    BK_dqkgs = [32,64,128,256]
+    BV_dqkgs = [32,64,128,256]
+    num_stages_dqkgs = [1,2,3,4]
+    num_threads_dqkgs = [128,256]
+    BK_dvs = [32,64,128,256]
+    BV_dvs = [32,64,128,256]
+    num_stages_dvs = [1,2,3,4]
+    num_threads_dvs = [128,256]
+    
+    # H100
+    MMA_ATOM_M = device.mma_primitive[0]# 64
+    MMA_ATOM_TRHEADS = device.threads_per_mma # 128
+    smem_cap = device.smem_cap # 232448
+    reg_cap = device.reg_cap * 4 # 65536 * 4
+    reg_cap_per_thread = device.register_per_thread * 4 # 255 * 4
+    
+    # input shape
+    # BTs = [bt for bt in BTs if N_CTX % bt == 0]
+    BK_hs = [bk for bk in BK_hs if D_HEAD % bk == 0]
+    BV_hs = [bv for bv in BV_hs if D_HEADV % bv == 0]
+    BK_dhs = [bk for bk in BK_dhs if D_HEAD % bk == 0]
+    BV_dhs = [bv for bv in BV_dhs if D_HEADV % bv == 0]
+    BK_dqkgs = [bk for bk in BK_dqkgs if D_HEAD % bk == 0]
+    BV_dqkgs = [bv for bv in BV_dqkgs if D_HEADV % bv == 0]
+    BK_dvs = [bk for bk in BK_dvs if D_HEAD % bk == 0]
+    BV_dvs = [bv for bv in BV_dvs if D_HEADV % bv == 0]
+    
+    config_h = []
+    for BK_h, BV_h, num_stages_h, num_threads_h in itertools.product(BK_hs, BV_hs, num_stages_hs, num_threads_hs):
+        sharedmem_chunk_h = 2 * (
+            BK_h * BV_h + (BT * BK_h + BT * BV_h + BT ) 
+            * num_stages_h)
+        reg_chunk_h = 4 * (
+            BK_h * BV_h
+        )
+        conditions_h = [
+            num_stages_h > N_CTX // BT,
+            BK_h % (MMA_ATOM_M) != 0,
+            sharedmem_chunk_h > smem_cap,
+            reg_chunk_h > reg_cap and reg_chunk_h > reg_cap_per_thread * num_threads_h,
+        ]
+        if any(conditions_h):
+            continue
+        config_h.append( {
+        # "BT": BT,
+        "BK_h": BK_h,
+        "BV_h": BV_h,
+        "num_stages_h": num_stages_h,
+        "num_threads_h": num_threads_h,
+        })
+    
+    config_dh = []
+    for BK_dh, BV_dh, num_stages_dh, num_threads_dh in itertools.product(BK_dhs, BV_dhs, num_stages_dhs, num_threads_dhs):
+        # sharedmem_chunk_dh = 2 * (
+        #     BK_dh * BV_dh + (BT * BK_dh + BT * BV_dh + BT ) 
+        #     * num_stages_dh)
+        # reg_chunk_dh = 4 * (
+        #     BK_dh * BV_dh
+        # )
+        conditions_dh = [
+            num_stages_dh > N_CTX // BT,
+            BK_dh % (MMA_ATOM_M) != 0,
+            # sharedmem_chunk_dh > smem_cap,
+            # reg_chunk_dh > reg_cap and reg_chunk_dh > reg_cap_per_thread * num_threads_dh,
+        ]
+        if any(conditions_dh):
+            continue
+        config_dh.append( {
+        # "BT": BT,
+        "BK_dh": BK_dh,
+        "BV_dh": BV_dh,
+        "num_stages_dh": num_stages_dh,
+        "num_threads_dh": num_threads_dh,
+        })
+        
+    config_dqkg = []
+    for BK_dqkg, BV_dqkg, num_stages_dqkg, num_threads_dqkg in itertools.product(BK_dqkgs, BV_dqkgs, num_stages_dqkgs, num_threads_dqkgs):
+        # sharedmem_chunk_dqkg = 2 * (
+        #     BT * BK_dqkg * num_stages_dqkg + BT * BK_dqkg * num_stages_dqkg + BK_dqkg * BV_dqkg* num_stages_dqkg +
+        #     BT * BV_dqkg 
+        # )
+        # reg_chunk_dqkg = 4 * (
+        #     BT * BT + BT * BV_dqkg
+        # )
+        conditions_dqkg = [
+            num_stages_dqkg > D_HEADV // BV_dqkg,
+            BT % (MMA_ATOM_M*(num_threads_dqkg//MMA_ATOM_TRHEADS)) != 0,
+        ]
+        if any(conditions_dqkg):
+            continue
+        config_dqkg.append( {
+        # "BT": BT,
+        "BK_dqkg": BK_dqkg,
+        "BV_dqkg": BV_dqkg,
+        "num_stages_dqkg": num_stages_dqkg,
+        "num_threads_dqkg": num_threads_dqkg,
+        })
+    
+    config_dv = []
+    for BK_dv, BV_dv, num_stages_dv, num_threads_dv in itertools.product(BK_dvs, BV_dvs, num_stages_dvs, num_threads_dvs):
+        # sharedmem_chunk_dv = 2 * (
+        #     BT * BK_dv * num_stages_dv + BT * BK_dv * num_stages_dv + BK_dv * BV_dv* num_stages_dv +
+        #     BT * BV_dv 
+        # )
+        # reg_chunk_dv = 4 * (
+        #     BT * BT + BT * BV_dv
+        # )
+        conditions_dv = [
+            num_stages_dv > D_HEAD // BK_dv,
+            BT % (MMA_ATOM_M*(num_threads_dv//MMA_ATOM_TRHEADS)) != 0,
+            # sharedmem_chunk_dv > smem_cap,
+            # reg_chunk_dv > reg_cap and reg_chunk_dv > reg_cap_per_thread * num_threads_dv,
+        ]
+        if any(conditions_dv):
+            continue
+        config_dv.append( {
+        # "BT": BT,
+        "BK_dv": BK_dv,
+        "BV_dv": BV_dv,
+        "num_stages_dv": num_stages_dv,
+        "num_threads_dv": num_threads_dv,
+        })
+    return config_h, config_dh, config_dqkg, config_dv
+
 from autotuner.attnfwd_tunner_engine2 import tl_tune
 
 def autotune(B, HQ, HK, H, Tlen, D, DV, file_path="mamba2",device=H100()):
@@ -857,3 +993,44 @@ def autotune(B, HQ, HK, H, Tlen, D, DV, file_path="mamba2",device=H100()):
     
     return best_config, best_latency
    
+def autotune_bwd(B, HQ, HK, H, Tlen, D, DV, file_path="mamba2",device=H100()):
+            
+    BTs = [32,64,128,192,256]
+ 
+    best_config = {}
+    best_latency = 1e6
+    for BT in BTs:
+        config_h, config_dh,config_dqkg, config_dv = generate_config_bwd(B, HQ, HK, H, Tlen, D, DV, BT, device)
+        if len(config_h) == 0 or len(config_dh) == 0 or len(config_dqkg) == 0 or len(config_dv) == 0:
+            continue
+        problem_keys = {
+            "B": B, "HQ": HQ, "HK": HK, "H": H, "Tlen": Tlen, "D": D, "DV": DV, "BT": BT
+        }
+        best_config_h, best_latency_h = tl_tune(chunk_fwd_h, problem_keys, config_h, [4,], file_path=f"{file_path}_h.json")
+        best_config_dh, best_latency_dh = tl_tune(chunk_bwd_kernel_dh, problem_keys, config_dh, [5,], file_path=f"{file_path}_dh.json")
+        best_config_dqkg, best_latency_dqkg = tl_tune(chunk_bwd_dqkg, problem_keys, config_dqkg, [7,8,9,], file_path=f"{file_path}_dqkg.json")
+        best_config_dv, best_latency_dv = tl_tune(chunk_bwd_kernel_dv, problem_keys, config_dv, [5,], file_path=f"{file_path}_dv.json")
+        if best_latency_h + best_latency_dh + best_latency_dqkg + best_latency_dv < best_latency:
+            best_latency = best_latency_h + best_latency_dh + best_latency_dqkg + best_latency_dv
+            best_config = {
+                "BT_BWD": BT,
+                "BK_h": best_config_h["BK_h"],
+                "BV_h": best_config_h["BV_h"],
+                "num_stages_h": best_config_h["num_stages_h"],
+                "num_threads_h": best_config_h["num_threads_h"],
+                "BK_dh": best_config_dh["BK_dh"],
+                "BV_dh": best_config_dh["BV_dh"],
+                "num_stages_dh": best_config_dh["num_stages_dh"],
+                "num_threads_dh": best_config_dh["num_threads_dh"],
+                "BK_dqkg": best_config_dqkg["BK_dqkg"],
+                "BV_dqkg": best_config_dqkg["BV_dqkg"],
+                "num_stages_dqkg": best_config_dqkg["num_stages_dqkg"],
+                "num_threads_dqkg": best_config_dqkg["num_threads_dqkg"],
+                "BK_dv": best_config_dv["BK_dv"],
+                "BV_dv": best_config_dv["BV_dv"],
+                "num_stages_dv": best_config_dv["num_stages_dv"],
+                "num_threads_dv": best_config_dv["num_threads_dv"],
+            }
+    
+    return best_config, best_latency
+

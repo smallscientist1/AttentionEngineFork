@@ -8,7 +8,7 @@ import hashlib
 
 class LinearAttentionEngine:
     def __init__(self, qkv_meta, q_mod=None, k_mod=None, v_mod=None, decay_mod=None, custom_io=None,
-                 tune=False, tune_filename="tune_result"):
+                 tune=False, tune_filename="tune_result", tune_bwd=False):
         self._compile_tl(q_mod, k_mod, v_mod, decay_mod, custom_io)
         if tune:
             B,HQ,S,DK = qkv_meta[0].shape
@@ -17,6 +17,9 @@ class LinearAttentionEngine:
             H = qkv_meta[2].shape[1]
             
             best_config, best_latency = self.autotune(B,HQ,HK,H,S,DK,DV, file_path=tune_filename)
+            if tune_bwd:
+                best_config_bwd, best_latency_bwd = self.autotune_bwd(B,HQ,HK,H,S,DK,DV, file_path=tune_filename)
+                best_config.update(best_config_bwd)
             self._compile_tl(q_mod, k_mod, v_mod, decay_mod, custom_io, best_config)
             
 
@@ -47,5 +50,7 @@ class LinearAttentionEngine:
         spec.loader.exec_module(tl_attn)
         self.attention = tl_attn.linear_attention
         self.autotune = tl_attn.autotune
+        if hasattr(tl_attn, "autotune_bwd"):
+            self.autotune_bwd = tl_attn.autotune_bwd
         
         

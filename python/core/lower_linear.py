@@ -86,6 +86,7 @@ class lowerOutput:
     q_mod_expr1: str = ""
     k_name2: str = "k"
     v_name2: str = "v"
+    decay_name2: str = "decay"
 
 @dataclass
 class TunnerOutput:
@@ -98,6 +99,20 @@ class TunnerOutput:
     BV_o: str = "64"
     num_stages_o: str = "2"
     num_threads_o: str = "128"
+    
+    BT_BWD: str = "64"
+    BK_dh: str = "64"
+    BV_dh: str = "64"
+    num_stages_dh: str = "2"
+    num_threads_dh: str = "128"
+    BK_dqkg: str = "64"
+    BV_dqkg: str = "64"
+    num_stages_dqkg: str = "1"
+    num_threads_dqkg: str = "128"
+    BK_dv: str = "64"
+    BV_dv: str = "64"
+    num_stages_dv: str = "1"
+    num_threads_dv: str = "128"
     
 bwd_custom_output_dict = {}
 
@@ -270,6 +285,7 @@ def lowerDecaymod(decay_mod, custom_io, lower_output: lowerOutput):
     pytorch_code, input_vars, inputs = generate_tl_from_dag([new_decay], to_tl=False, return_inputs=True)
     lower_output.decay_mod_expr1 = str(pytorch_code)
     lower_output.decay_name1 = new_decay.varname
+    lower_output.decay_name2 = new_decay.varname
     input_vars_with_grad = {k: v for k, v in inputs.items() if v.require_grad }
     pytorch_code, input_vars_grad = generate_tl_from_dag([ii.grad for ii in input_vars_with_grad.values()], to_tl=False)
     lower_output.decay_mod_bwd_expr = str(pytorch_code)

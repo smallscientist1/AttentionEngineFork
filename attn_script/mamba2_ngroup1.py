@@ -63,7 +63,7 @@ def eval():
         do_bench_mamba(mod, B, HQ,HK,H, T, D, DV, BT=256)
 
 if __name__ == "__main__":
-    B, H, T, D, DV = 1,80, 2048, 128, 64 # bug 16384
+    B, H, T, D, DV = 8,80, 2048, 128, 64 # bug 16384
     HQ, HK = 1, 1
     dtype = torch.bfloat16
     qkv_meta = (
@@ -80,7 +80,8 @@ if __name__ == "__main__":
     mod = LinearAttentionEngine(qkv_meta,
         decay_mod=decay_mod, v_mod=v_mod,
                             custom_io = custom_io,
-                            tune=False, tune_filename="mamba2")
+                            tune=True, tune_filename="mamba2",
+                            tune_bwd=True)
     with open("mamba2_tl.py","w") as f:
         f.write(mod.tl_code)
 
