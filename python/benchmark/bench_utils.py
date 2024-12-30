@@ -5,6 +5,8 @@ import torch.nn.functional as F
 import torch
 import matplotlib.pyplot as plt
 
+from functools import lru_cache, partial
+
 def do_bench(
     fn,
     warmup=25,
@@ -149,7 +151,7 @@ def check_close(o, O_ref, rtol=1e-3, atol=1e-3):
 
     return result
 
-def print_debug(o, O_ref, rtol=1e-3, atol=1e-3):
+def print_debug(o, O_ref, rtol=1e-3, atol=1e-3, save_file=True):
     close_mask = torch.isclose(o, O_ref, rtol=rtol, atol=atol)
     total_elements = o.numel()
     num_not_close = (~close_mask).sum().item()
@@ -172,14 +174,15 @@ def print_debug(o, O_ref, rtol=1e-3, atol=1e-3):
     print(f"Reference: {O_ref[max_rel_diff_idx]}")
     print(f"Library: {o[max_rel_diff_idx]}")
 
-    with open("o_ref.txt", "w") as f:
-        O_ref_1 = O_ref.cpu()
-        for idx, element in enumerate(O_ref_1):# .flatten()):
-            f.write(f"{idx}: {element}\n")
-    with open("o.txt", "w") as f:
-        o_1 = o.cpu()
-        for idx, element in enumerate(o_1):# .flatten()):
-            f.write(f"{idx}: {element}\n")
+    if save_file:
+        with open("o_ref.txt", "w") as f:
+            O_ref_1 = O_ref.cpu()
+            for idx, element in enumerate(O_ref_1):# .flatten()):
+                f.write(f"{idx}: {element}\n")
+        with open("o.txt", "w") as f:
+            o_1 = o.cpu()
+            for idx, element in enumerate(o_1):# .flatten()):
+                f.write(f"{idx}: {element}\n")
 
 
 # def bench_func_fwd(attn, B, H, S, D, DV, custom_fwd_input={}, causal=True, dtype=torch.float16):
@@ -555,7 +558,7 @@ def do_bench_simple_gla(linear_attention, B, H, TLen, D, DV, BT, requires_grad=F
         latency = do_bench(run_bacward_ref, warmup=100,rep=100)
         print("simple gla backward: {:.2f} ms".format(latency))
 
-def do_bench_retention_linear(linear_attention, B, H, TLen, D, DV):
+def do_bench_retention_linear(linear_attention, B, H, TLen, D, DV, requires_grad=False):
     torch.cuda.manual_seed(0)
     # torch.cuda.set_device(1)
     # B, H, D, DV = 16, 8, 128, 128
@@ -564,26 +567,46 @@ def do_bench_retention_linear(linear_attention, B, H, TLen, D, DV):
     dtype = torch.bfloat16
     accum_dtype = torch.float32
     device = "cuda"
-    require_grad = True
 
-    q = torch.randn(B, H, TLen, D, device=device, requires_grad=require_grad, dtype=dtype)
-    k = torch.randn(B, H, TLen, D, device=device, requires_grad=require_grad, dtype=dtype)
+    q = torch.randn(B, H, TLen, D, device=device, dtype=dtype)
+    k = torch.randn(B, H, TLen, D, device=device, dtype=dtype)
     # g = (1 - torch.exp(torch.linspace(math.log(1/32), math.log(1/512), H, dtype=accum_dtype))).detach()
     g = torch.tensor(range(0, H), dtype=accum_dtype)
     g = 1 - torch.exp2(-5 - g)
     g = g[None, :, None].expand(B, H, TLen).cuda().detach().contiguous()
-    v = torch.randn(B, H, TLen, DV, device=device, requires_grad=require_grad, dtype=dtype)
+    v = torch.randn(B, H, TLen, DV, device=device, dtype=dtype)
+    
+    q.detach_().requires_grad_(requires_grad)
+    k.detach_().requires_grad_(requires_grad)
+    g.detach_().requires_grad_(False)
+    v.detach_().requires_grad_(requires_grad)
 
     do = torch.randn(B, H, TLen, DV, device=device, dtype=dtype)
     from fla.ops.retention import chunk_retention
     out_ref,_ = chunk_retention(
         q, k, v, scale=None, output_final_state=False
     )
+    
+    q1 = q.clone()
+    k1 = k.clone()
+    v1 = v.clone()
+    g1 = g.clone()
+    
+    q1.detach_().requires_grad_(requires_grad)
+    k1.detach_().requires_grad_(requires_grad)
+    g1.detach_().requires_grad_(False)
+    v1.detach_().requires_grad_(requires_grad)
     out = linear_attention(
-        q, k, v, g
+        q1, k1, v1, g1
     )
     print_debug(out, out_ref, rtol=1e-2, atol=1e-2)
-
+    if requires_grad:
+        out.backward(do, retain_graph=True)
+        out_ref.backward(do, retain_graph=True)
+        print_debug(q.grad, q1.grad, rtol=1e-2, atol=1e-2)
+        print_debug(k.grad, k1.grad, rtol=1e-2, atol=1e-2)
+        print_debug(v.grad, v1.grad, rtol=1e-2, atol=1e-2)
+        
     from tvm.tl.utils import do_bench
     def run():
         out = linear_attention(
@@ -593,15 +616,22 @@ def do_bench_retention_linear(linear_attention, B, H, TLen, D, DV):
         out,_ = chunk_retention(
             q, k, v, scale=None, output_final_state=False
         )
+    def run_bacward():
+        out.backward(do, retain_graph=True)
+    def run_bacward_ref():
+        out_ref.backward(do, retain_graph=True)
         
-    
-    do_bench(run)
-    do_bench(run_ref)
 
-    latency = do_bench(run, warmup=500,rep=1000)
+    latency = do_bench(run, warmup=100,rep=100)
     print("tl: {:.2f} ms".format(latency))
-    latency = do_bench(run_ref, warmup=500,rep=1000)
+    latency = do_bench(run_ref, warmup=100,rep=100)
     print("retention: {:.2f} ms".format(latency))
+    
+    if requires_grad:
+        latency = do_bench(run_bacward, warmup=100,rep=100)
+        print("tl backward: {:.2f} ms".format(latency))
+        latency = do_bench(run_bacward_ref, warmup=100,rep=100)
+        print("retention backward: {:.2f} ms".format(latency))
 
 
 def do_bench_sigmoidattn(attn, B, H, S, D, DV, dtype=torch.float16):
@@ -1026,18 +1056,19 @@ def bench_retention_fwd(attn, B, H, S, D, DV, dtype=torch.bfloat16):
     }
     return output_dict
 
-def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16):
-    tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
-    tflops = tflops * 0.5
+def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16, seqlenq=None, require_grad=False, causal=True):
+    if seqlenq is None:
+        seqlenq = S
+    tflops = 2 * B * H * seqlenq * S * D + 2 * B * H * seqlenq * S * DV
+    tflops = tflops * 0.5 if causal else tflops
     bwd_tflops = 4 * B * H * S * S * DV + 6 * B * H * S * S * D
-    bwd_tflops = bwd_tflops * 0.5
+    bwd_tflops = bwd_tflops * 0.5 if causal else bwd_tflops
     torch.cuda.manual_seed(0)
     dtype = dtype
     device = "cuda"
     accum_dtype = torch.float32
-    require_grad = True
     query = torch.randn(
-        B, S, H, D, device=device, dtype=dtype, requires_grad=require_grad
+        B, seqlenq, H, D, device=device, dtype=dtype, requires_grad=require_grad
     )
     key = torch.randn(
         B, S, H, D, device=device, dtype=dtype, requires_grad=require_grad
@@ -1046,7 +1077,7 @@ def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16):
         B, S, H, DV, device=device, dtype=dtype, requires_grad=require_grad
     )
     do = torch.randn(
-        B, S, H, DV, device=device, dtype=dtype, requires_grad=False
+        B, seqlenq, H, DV, device=device, dtype=dtype, requires_grad=False
     )
 
     o = attn(query, key, value)
@@ -1056,53 +1087,53 @@ def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16):
     # print(key.grad)
     # print(value.grad)
 
-    # from flash_attn_interface import flash_attn_func as flash_attn_func_hopper
-    # # from flash_attn import flash_attn_func as flash_attn_func_hopper
+    from flash_attn_interface import flash_attn_func as flash_attn_func_hopper
+    # from flash_attn import flash_attn_func as flash_attn_func_hopper
     
-    # DIM_HOPPER = [64,128,256]
-    # dim_padded_fa3 = list(filter(lambda x: x >= max(D,DV), DIM_HOPPER))
-    # assert(len(dim_padded_fa3) > 0)
-    # dim_padded_fa3 = min(dim_padded_fa3)
-    # def fa3(dim_padded):
-    #     if D < dim_padded:
-    #         query_padded = F.pad(query, (0, dim_padded-D), value=0.)
-    #         key_padded = F.pad(key, (0, dim_padded-D), value=0.)
-    #     else:
-    #         query_padded = query
-    #         key_padded = key
-    #     if DV < dim_padded:
-    #         value_padded = F.pad(value, (0,dim_padded-DV), value=0.)
-    #     else:
-    #         value_padded = value
-    #     o_ref = flash_attn_func_hopper(query_padded,key_padded,value_padded, softmax_scale=(1/D)**0.5,causal=True)[0]
-    #     if DV < dim_padded:
-    #         o_ref = o_ref[:,:,:,:DV]
-    #     return o_ref
+    DIM_HOPPER = [64,128,256]
+    dim_padded_fa3 = list(filter(lambda x: x >= max(D,DV), DIM_HOPPER))
+    assert(len(dim_padded_fa3) > 0)
+    dim_padded_fa3 = min(dim_padded_fa3)
+    def fa3(dim_padded):
+        if D < dim_padded:
+            query_padded = F.pad(query, (0, dim_padded-D), value=0.)
+            key_padded = F.pad(key, (0, dim_padded-D), value=0.)
+        else:
+            query_padded = query
+            key_padded = key
+        if DV < dim_padded:
+            value_padded = F.pad(value, (0,dim_padded-DV), value=0.)
+        else:
+            value_padded = value
+        o_ref = flash_attn_func_hopper(query_padded,key_padded,value_padded, softmax_scale=(1/D)**0.5,causal=causal)[0]
+        if DV < dim_padded:
+            o_ref = o_ref[:,:,:,:DV]
+        return o_ref
     
-    # o_ref = fa3(dim_padded_fa3)
-    # print_debug(o,o_ref)
+    o_ref = fa3(dim_padded_fa3)
+    print_debug(o,o_ref)
 
-    # from flash_attn import flash_attn_func
-    # dim_padded_fa2 = max(D,DV)
-    # def fa2(dim_padded):
-    #     if D < dim_padded:
-    #         query_padded = F.pad(query, (0, dim_padded-D), value=0.)
-    #         key_padded = F.pad(key, (0, dim_padded-D), value=0.)
-    #     else:
-    #         query_padded = query
-    #         key_padded = key
-    #     if DV < dim_padded:
-    #         value_padded = F.pad(value, (0,dim_padded-DV), value=0.)
-    #     else:
-    #         value_padded = value
-    #     o_ref = flash_attn_func(query_padded,key_padded,value_padded, softmax_scale=(1/D)**0.5,causal=True)
-    #     if DV < dim_padded:
-    #         o_ref = o_ref[:,:,:,:DV]
-    #     return o_ref
-    # o_ref = fa2(dim_padded_fa2)
-    # print_debug(o,o_ref)
+    from flash_attn import flash_attn_func
+    dim_padded_fa2 = max(D,DV)
+    def fa2(dim_padded):
+        if D < dim_padded:
+            query_padded = F.pad(query, (0, dim_padded-D), value=0.)
+            key_padded = F.pad(key, (0, dim_padded-D), value=0.)
+        else:
+            query_padded = query
+            key_padded = key
+        if DV < dim_padded:
+            value_padded = F.pad(value, (0,dim_padded-DV), value=0.)
+        else:
+            value_padded = value
+        o_ref = flash_attn_func(query_padded,key_padded,value_padded, softmax_scale=(1/D)**0.5,causal=causal)
+        if DV < dim_padded:
+            o_ref = o_ref[:,:,:,:DV]
+        return o_ref
+    o_ref = fa2(dim_padded_fa2)
+    print_debug(o,o_ref)
 
-    # from tvm.tl.utils import do_bench
+    from tvm.tl.utils import do_bench
     def run():
         o = attn(query, key, value)
     def run_ref():
@@ -1127,12 +1158,12 @@ def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16):
     latency = do_bench(run, warmup=50,rep=100)
     print("tl: {:.2f} ms".format(latency))
     print("tflops: {:.2f}".format(tflops/latency*1e-9))
-    # latency_ref = do_bench(run_ref, warmup=50,rep=100)
-    # print("flash: {:.2f} ms".format(latency_ref))
-    # print("tflops: {:.2f}".format(tflops/latency_ref*1e-9))
-    # latency_reffa3 = do_bench(run_ref_fa3, warmup=50,rep=100)
-    # print("flash fa3: {:.2f} ms".format(latency_reffa3))
-    # print("tflops: {:.2f}".format(tflops/latency_reffa3*1e-9))
+    latency_ref = do_bench(run_ref, warmup=50,rep=100)
+    print("flash: {:.2f} ms".format(latency_ref))
+    print("tflops: {:.2f}".format(tflops/latency_ref*1e-9))
+    latency_reffa3 = do_bench(run_ref_fa3, warmup=50,rep=100)
+    print("flash fa3: {:.2f} ms".format(latency_reffa3))
+    print("tflops: {:.2f}".format(tflops/latency_reffa3*1e-9))
 
     # latency = do_bench(run_bacward, warmup=500,rep=1000)
     # print("tl bwd: {:.2f} ms".format(latency))
@@ -1325,4 +1356,346 @@ def do_bench_attention_128256(B, H, S, D, DV, dtype=torch.float16):
     # latency = do_bench(run_bacward, warmup=500,rep=1000)
     # print("tl bwd: {:.2f} ms".format(latency))
     # print("tflops: {:.2f}".format(bwd_tflops/latency*1e-9))
+
+def do_bench_flex_attention(attn, B, H, S, D, DV, dtype=torch.float16):
+    tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
+    tflops = tflops * 0.5
+    bwd_tflops = 4 * B * H * S * S * DV + 6 * B * H * S * S * D
+    bwd_tflops = bwd_tflops * 0.5
+    torch.cuda.manual_seed(0)
+    dtype = dtype
+    device = "cuda"
+    accum_dtype = torch.float32
+    require_grad = False
+    query = torch.randn(
+        B, H, S, D, device=device, dtype=dtype, requires_grad=require_grad
+    )
+    key = torch.randn(
+        B, H, S, D, device=device, dtype=dtype, requires_grad=require_grad
+    )
+    value = torch.randn(
+        B, H, S, DV, device=device, dtype=dtype, requires_grad=require_grad
+    )
+    do = torch.randn(
+        B, H, S, DV, device=device, dtype=dtype, requires_grad=False
+    )
+
+    from torch.nn.attention.flex_attention import (
+        _DEFAULT_SPARSE_BLOCK_SIZE,
+        create_block_mask,
+        create_mask,
+        flex_attention,
+    )
+    
+    def causal_mask(b, h, q_idx, kv_idx):
+        return q_idx >= kv_idx
+    
+    @lru_cache
+    def create_block_mask_cached(score_mod, B, H, M, N, device="cuda"):
+        block_mask = create_block_mask(score_mod, B, H, M, N, device=device)
+        return block_mask
+    
+    block_mask = create_block_mask_cached(causal_mask, 1, 1, S, S, device=query.device)
+    flex_attention = torch.compile(flex_attention, dynamic=False)
+    # run = lambda: flex_attention(
+    #     query, key, value, block_mask=block_mask
+    # )
+    DIM_HOPPER = [64,128,256]
+    dim_padded_fa3 = list(filter(lambda x: x >= max(D,DV), DIM_HOPPER))
+    assert(len(dim_padded_fa3) > 0)
+    dim_padded_fa3 = min(dim_padded_fa3)
+    def fa3(dim_padded):
+        if D < dim_padded:
+            query_padded = F.pad(query, (0, dim_padded-D), value=0.)
+            key_padded = F.pad(key, (0, dim_padded-D), value=0.)
+        else:
+            query_padded = query
+            key_padded = key
+        if DV < dim_padded:
+            value_padded = F.pad(value, (0,dim_padded-DV), value=0.)
+        else:
+            value_padded = value
+        o_ref = flex_attention(query_padded,key_padded,value_padded, block_mask=block_mask)
+        if DV < dim_padded:
+            o_ref = o_ref[:,:,:,:DV]
+        return o_ref
+    
+    run = lambda: fa3(dim_padded_fa3)
+
+    # from flash_attn import flash_attn_func
+    # dim_padded_fa2 = max(D,DV)
+    # def fa2(dim_padded):
+    #     if D < dim_padded:
+    #         query_padded = F.pad(query, (0, dim_padded-D), value=0.)
+    #         key_padded = F.pad(key, (0, dim_padded-D), value=0.)
+    #     else:
+    #         query_padded = query
+    #         key_padded = key
+    #     if DV < dim_padded:
+    #         value_padded = F.pad(value, (0,dim_padded-DV), value=0.)
+    #     else:
+    #         value_padded = value
+    #     o_ref = flash_attn_func(query_padded,key_padded,value_padded, softmax_scale=(1/D)**0.5,causal=True)
+    #     if DV < dim_padded:
+    #         o_ref = o_ref[:,:,:,:DV]
+    #     return o_ref
+    # o_ref = fa2(dim_padded_fa2)
+    # print_debug(o,o_ref)
+
+    # from tvm.tl.utils import do_bench
+    
+
+    # tl slow down when rep too large
+    latency = do_bench(run, warmup=50,rep=100)
+    print("tl: {:.2f} ms".format(latency))
+    print("tflops: {:.2f}".format(tflops/latency*1e-9))
+    # latency_ref = do_bench(run_ref, warmup=50,rep=100)
+    # print("flash: {:.2f} ms".format(latency_ref))
+    # print("tflops: {:.2f}".format(tflops/latency_ref*1e-9))
+    # latency_reffa3 = do_bench(run_ref_fa3, warmup=50,rep=100)
+    # print("flash fa3: {:.2f} ms".format(latency_reffa3))
+    # print("tflops: {:.2f}".format(tflops/latency_reffa3*1e-9))
+
+    # latency = do_bench(run_bacward, warmup=500,rep=1000)
+    # print("tl bwd: {:.2f} ms".format(latency))
+    # print("tflops: {:.2f}".format(bwd_tflops/latency*1e-9))
+
+
+def do_bench_flashinfer(attn, B, H, S, D, DV, dtype=torch.float16):
+    assert(B==1)
+    tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
+    tflops = tflops * 0.5
+    bwd_tflops = 4 * B * H * S * S * DV + 6 * B * H * S * S * D
+    bwd_tflops = bwd_tflops * 0.5
+    torch.cuda.manual_seed(0)
+    dtype = dtype
+    device = "cuda"
+    accum_dtype = torch.float32
+    require_grad = False
+    query = torch.randn(
+        S, H, D, device=device, dtype=dtype, requires_grad=require_grad
+    )
+    key = torch.randn(
+        S, H, D, device=device, dtype=dtype, requires_grad=require_grad
+    )
+    value = torch.randn(
+        S, H, DV, device=device, dtype=dtype, requires_grad=require_grad
+    )
+    do = torch.randn(
+        S, H, DV, device=device, dtype=dtype, requires_grad=False
+    )
+
+    import flashinfer
+    from flashinfer import prefill
+    # out = prefill.single_prefill_with_kv_cache(query, key, value, causal=True)
+    # run = lambda: prefill.single_prefill_with_kv_cache(
+    #     query, key, value, causal=True
+    # )
+    
+    DIM_HOPPER = [64,128,256]
+    dim_padded_fa3 = list(filter(lambda x: x >= max(D,DV), DIM_HOPPER))
+    assert(len(dim_padded_fa3) > 0)
+    dim_padded_fa3 = min(dim_padded_fa3)
+    def fa3(dim_padded):
+        if D < dim_padded:
+            query_padded = F.pad(query, (0, dim_padded-D), value=0.)
+            key_padded = F.pad(key, (0, dim_padded-D), value=0.)
+        else:
+            query_padded = query
+            key_padded = key
+        if DV < dim_padded:
+            value_padded = F.pad(value, (0,dim_padded-DV), value=0.)
+        else:
+            value_padded = value
+        o_ref = prefill.single_prefill_with_kv_cache(query_padded, key_padded, value_padded, causal=True)
+        if DV < dim_padded:
+            o_ref = o_ref[:,:,:DV]
+        return o_ref
+    
+    run = lambda: fa3(dim_padded_fa3)
+
+    # from flash_attn import flash_attn_func
+    # dim_padded_fa2 = max(D,DV)
+    # def fa2(dim_padded):
+    #     if D < dim_padded:
+    #         query_padded = F.pad(query, (0, dim_padded-D), value=0.)
+    #         key_padded = F.pad(key, (0, dim_padded-D), value=0.)
+    #     else:
+    #         query_padded = query
+    #         key_padded = key
+    #     if DV < dim_padded:
+    #         value_padded = F.pad(value, (0,dim_padded-DV), value=0.)
+    #     else:
+    #         value_padded = value
+    #     o_ref = flash_attn_func(query_padded,key_padded,value_padded, softmax_scale=(1/D)**0.5,causal=True)
+    #     if DV < dim_padded:
+    #         o_ref = o_ref[:,:,:,:DV]
+    #     return o_ref
+    # o_ref = fa2(dim_padded_fa2)
+    # print_debug(o,o_ref)
+
+    # from tvm.tl.utils import do_bench
+    
+
+    # tl slow down when rep too large
+    latency = do_bench(run, warmup=50,rep=100)
+    print("tl: {:.2f} ms".format(latency))
+    print("tflops: {:.2f}".format(tflops/latency*1e-9))
+    # latency_ref = do_bench(run_ref, warmup=50,rep=100)
+    # print("flash: {:.2f} ms".format(latency_ref))
+    # print("tflops: {:.2f}".format(tflops/latency_ref*1e-9))
+    # latency_reffa3 = do_bench(run_ref_fa3, warmup=50,rep=100)
+    # print("flash fa3: {:.2f} ms".format(latency_reffa3))
+    # print("tflops: {:.2f}".format(tflops/latency_reffa3*1e-9))
+
+    # latency = do_bench(run_bacward, warmup=500,rep=1000)
+    # print("tl bwd: {:.2f} ms".format(latency))
+    # print("tflops: {:.2f}".format(bwd_tflops/latency*1e-9))
+
+# def do_bench_sigmoidattn_flashinfer(attn, B, H, S, D, DV, dtype=torch.float16):
+#     # TODO: 
+#     tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
+#     tflops = tflops * 0.5
+#     bwd_tflops = 4 * B * H * S * S * DV + 6 * B * H * S * S * D
+#     bwd_tflops = bwd_tflops * 0.5
+#     torch.cuda.manual_seed(0)
+#     dtype = dtype
+#     device = "cuda"
+#     accum_dtype = torch.float32
+#     query = torch.randn(
+#         B, S, H, D, device=device, dtype=dtype, requires_grad=True
+#     )
+#     key = torch.randn(
+#         B, S, H, D, device=device, dtype=dtype, requires_grad=True
+#     )
+#     value = torch.randn(
+#         B, S, H, DV, device=device, dtype=dtype, requires_grad=True
+#     )
+#     do = torch.randn(
+#         B, S, H, DV, device=device, dtype=dtype, requires_grad=True
+#     )
+#     softmax_bias = 0.1*torch.randn(1, device=device, dtype=accum_dtype, requires_grad=False)
+#     softmax_bias_cpu = softmax_bias.cpu()
+
+#     # o = attn(query, key, value, softmax_bias)
+#     # print(key)
+#     # print(o)
+#     # print(o.shape)
+#     # o.backward(do, retain_graph=True)
+#     # print(query.grad)
+#     # print(key.grad)
+#     # print(value.grad)
+#     # query_grad = query.grad.clone()
+#     # key_grad = key.grad.clone()
+#     # value_grad = value.grad.clone()
+
+#     variant_decl = r"""
+# template <typename ParamsT_>
+# struct FlashSigmoid {
+#   using ParamsT = ParamsT_;
+#   using DTypeQ = typename ParamsT::DTypeQ;
+#   using DTypeKV = typename ParamsT::DTypeKV;
+#   using DTypeO = typename ParamsT::DTypeO;
+#   using IdType = typename ParamsT::IdType;
+#   static constexpr bool use_softmax = false;
+
+#   uint32_t window_left, qo_len, kv_len;
+#   float sigmoid_bias_log2e;
+
+#   // Create closure
+#   __device__ __host__ FlashSigmoid(const ParamsT& params, uint32_t batch_idx,
+#                                    uint8_t* smem_ptr) {
+#     qo_len = params.get_qo_len(batch_idx);
+#     kv_len = params.get_kv_len(batch_idx);
+#     window_left = kv_len;
+#     sigmoid_bias_log2e = params.sigmoid_bias * math::log2e;
+#   }
+
+#   template <typename T>
+#   __device__ __forceinline__ T QueryTransform(const ParamsT& params, T q) {
+#     return float(q) * params.logits_scale * math::log2e;
+#   }
+
+#   template <typename T>
+#   __device__ __forceinline__ T LogitsTransform(const ParamsT& params, T logits, uint32_t batch_idx,
+#                                                uint32_t qo_idx, uint32_t kv_idx,
+#                                                uint32_t qo_head_idx, uint32_t kv_head_idx) {
+#     return math::ptx_rcp(1.f + math::ptx_exp2(-float(logits + sigmoid_bias_log2e)));
+#   }
+
+#   __device__ __forceinline__ bool LogitsMask(const ParamsT& params, uint32_t batch_idx,
+#                                              uint32_t qo_idx, uint32_t kv_idx, uint32_t qo_head_idx,
+#                                              uint32_t kv_head_idx) {
+#     return true;
+#   }
+# };
+# """
+#     jit_module = gen_customize_single_prefill_module(
+#         "flash_sigmoid",
+#         torch.float16,  # dtype_q
+#         torch.float16,  # dtype_kv
+#         torch.float16,  # dtype_o
+#         128,  # hidden_dim
+#         [],  # additional_input_tensor_var_names
+#         [],  # additional_input_tensor_var_types
+#         ["logits_scale", "sigmoid_bias"],  # additional_input_scalar_var_names
+#         ["float", "float"],  # additional_input_scalar_var_types
+#         "FlashSigmoid",
+#         variant_decl,
+#     )
+
+#     f = functools.partial(single_prefill_with_kv_cache_with_jit_module, jit_module)
+
+#     q = torch.randn(128, 8, 128, dtype=torch.float16, device="cuda")
+#     k = torch.randn(1027, 8, 128, dtype=torch.float16, device="cuda")
+#     v = torch.randn(1027, 8, 128, dtype=torch.float16, device="cuda")
+#     logits_scale = 1.0 / math.sqrt(128)
+#     sigmoid_bias = 0.25
+#     o = f(q, k, v, logits_scale, sigmoid_bias, mask_mode=MaskMode.NON_CAUSAL.value)
+
+#     p = torch.sigmoid(
+#         torch.einsum("mhd,nhd->hmn", q.float(), k.float()) * logits_scale + sigmoid_bias
+#     )
+#     o_ref = torch.einsum("hmn,nhd->mhd", p, v.float()).half()
+
+#     o_ref = flash_attn_func(query, key, value, softmax_scale=1.0,causal=True, sigmoid_bias=softmax_bias_cpu)
+#     print_debug(o, o_ref)
+
+#     query.grad = key.grad = value.grad = None
+#     o_ref.backward(do, retain_graph=True)
+#     # print("query.grad", query.grad)
+#     # print("query_grad", query_grad)
+#     # print("key.grad", key.grad)
+#     # print("key_grad", key_grad)
+#     # print_debug(query.grad, query_grad)
+#     # print_debug(key.grad, key_grad)
+#     # print_debug(value.grad, value_grad)
+
+
+
+#     from tvm.tl.utils import do_bench
+#     def run():
+#         o = attn(query, key, value, softmax_bias)
+#     def run_bacward():
+#         o.backward(do, retain_graph=True)
+
+#     def run_ref():
+#         o_ref = flash_attn_func(query, key, value, softmax_scale=1.0,causal=True, sigmoid_bias=softmax_bias_cpu)
+    
+#     # do_bench(run)
+#     # do_bench(run_bacward)
+
+#     latency = do_bench(run, warmup=500,rep=1000)
+#     print("tl: {:.2f} ms".format(latency))
+#     print("tflops: {:.2f}".format(tflops/latency*1e-9))
+
+#     # latency = do_bench(run_bacward, warmup=500,rep=1000)
+#     # print("tl bwd: {:.2f} ms".format(latency))
+#     # print("tflops: {:.2f}".format(bwd_tflops/latency*1e-9))
+
+#     # do_bench(run_ref)
+
+#     latency = do_bench(run_ref, warmup=500,rep=1000)
+#     print("flash: {:.2f} ms".format(latency))
+#     print("tflops: {:.2f}".format(tflops/latency*1e-9))
 

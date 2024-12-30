@@ -975,8 +975,8 @@ def autotune(B, HQ, HK, H, Tlen, D, DV, file_path="mamba2",device=H100()):
         problem_keys = {
             "B": B, "HQ": HQ, "HK": HK, "H": H, "Tlen": Tlen, "D": D, "DV": DV, "BT": BT
         }
-        best_config_h, best_latency_h = tl_tune(chunk_fwd_h, problem_keys, config_h, [3,], file_path=f"{file_path}_h.json")
-        best_config_o, best_latency_o  = tl_tune(chunk_o, problem_keys, config_o, [5,], file_path=f"{file_path}_o.json")
+        best_config_h, best_latency_h = tl_tune(chunk_fwd_h, problem_keys, config_h, {{output_idx_list_h}}, file_path=f"{file_path}_h.json")
+        best_config_o, best_latency_o  = tl_tune(chunk_o, problem_keys, config_o, {{output_idx_list_o}}, file_path=f"{file_path}_o.json")
         if best_latency_h + best_latency_o < best_latency:
             best_latency = best_latency_h + best_latency_o
             best_config = {
@@ -1006,10 +1006,11 @@ def autotune_bwd(B, HQ, HK, H, Tlen, D, DV, file_path="mamba2",device=H100()):
         problem_keys = {
             "B": B, "HQ": HQ, "HK": HK, "H": H, "Tlen": Tlen, "D": D, "DV": DV, "BT": BT
         }
-        best_config_h, best_latency_h = tl_tune(chunk_fwd_h, problem_keys, config_h, [4,], file_path=f"{file_path}_h.json")
+        best_config_h, best_latency_h = tl_tune(chunk_fwd_h, problem_keys, config_h, {{output_idx_list_h}}, file_path=f"{file_path}_h.json")
         best_config_dh, best_latency_dh = tl_tune(chunk_bwd_kernel_dh, problem_keys, config_dh, [5,], file_path=f"{file_path}_dh.json")
         best_config_dqkg, best_latency_dqkg = tl_tune(chunk_bwd_dqkg, problem_keys, config_dqkg, [7,8,9,], file_path=f"{file_path}_dqkg.json")
         best_config_dv, best_latency_dv = tl_tune(chunk_bwd_kernel_dv, problem_keys, config_dv, [5,], file_path=f"{file_path}_dv.json")
+        # print(BT, best_latency_h, best_latency_dh, best_latency_dqkg, best_latency_dv)
         if best_latency_h + best_latency_dh + best_latency_dqkg + best_latency_dv < best_latency:
             best_latency = best_latency_h + best_latency_dh + best_latency_dqkg + best_latency_dv
             best_config = {

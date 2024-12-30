@@ -3,13 +3,13 @@ import os
 import os.path as osp
 
 TEMPLATE_DIR = osp.join(osp.dirname(osp.abspath(__file__)) , 'tl_template/attn/attn_tl.py')
-with open(TEMPLATE_DIR, 'r') as f:
-    TL_KERNEL = f.read()
 
 class TlAttnTemplate:
-    def __init__(self, 
+    def __init__(self, template_dir=TEMPLATE_DIR,
                 **kargs
                     ):
+        with open(template_dir, 'r') as f:
+            TL_KERNEL = f.read()
 
         template = jinja2.Template(TL_KERNEL)
         
