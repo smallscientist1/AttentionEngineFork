@@ -67,6 +67,17 @@ bool isGemmSync(Stmt stmt) {
   return is_gemm_sync;
 }
 
+bool isArriveBarrier(Stmt stmt) {
+  bool is_arrive_barrier = false;
+  if (stmt.as<EvaluateNode>()) {
+    auto call = Downcast<Evaluate>(stmt)->value.as<CallNode>();
+    if (call && call->op.same_as(Op::Get("tir.ptx_arrive_barrier"))) {
+      is_arrive_barrier = true;
+    }
+  }
+  return is_arrive_barrier;
+}
+
 class WgmmaSyncRewriter : public StmtExprMutator {
  public:
   static PrimFunc Substitute(PrimFunc f) {
@@ -82,15 +93,25 @@ class WgmmaSyncRewriter : public StmtExprMutator {
     for (int i = 0; i < static_cast<int>(op->seq.size()); i++) {
       auto stmt= op->seq[i];
       if (isGemm(stmt)) {
-        ICHECK(op->seq.size() > i + 1);
-        auto release_stmt = op->seq[i + 1];
-        auto next_call = Downcast<Evaluate>(release_stmt)->value.as<CallNode>();
-        ICHECK(next_call);
-        ICHECK(next_call->op.same_as(Op::Get("tir.ptx_arrive_barrier")));
         gemm_stmts_.push_back(stmt);
-        gemm_release_stmts_.push_back(release_stmt);
         gemm_stmt_ids_.push_back(i);
-
+        bool found_release = false;
+        for (int j = i + 1; j < static_cast<int>(op->seq.size()); j++) {
+          auto release_stmt = op->seq[j];
+          if (isArriveBarrier(release_stmt)) {
+            found_release = true;
+            gemm_release_stmts_.push_back(release_stmt);
+            break;
+          }
+        }
+        if (!found_release) {
+          gemm_release_stmts_.push_back(Evaluate(0));
+        }
+        // ICHECK(op->seq.size() > i + 1);
+        // auto release_stmt = op->seq[i + 1];
+        // auto next_call = Downcast<Evaluate>(release_stmt)->value.as<CallNode>();
+        // ICHECK(next_call);
+        // ICHECK(next_call->op.same_as(Op::Get("tir.ptx_arrive_barrier")));
         Block block(/*iter_vars=*/{}, /*reads=*/{}, /*writes=*/{}, /*name_hint=*/"",
                   /*body*/ op->seq[i]);
         auto access = GetBlockReadWriteRegion(block, buffer_data_to_buffer_);
@@ -183,7 +204,11 @@ class WgmmaSyncRewriter : public StmtExprMutator {
           new_args.push_back(Integer(j));
           auto new_call = Call(DataType::Handle(), builtin::call_extern(), new_args);
           new_seq.push_back(Evaluate(new_call));
-          new_seq.push_back(gemm_release_stmts_[j]);
+          if (std::count(gemm_release_stmts_.begin(), gemm_release_stmts_.end(), gemm_release_stmts_[j]) == 1) {
+            new_seq.push_back(gemm_release_stmts_[j]);
+          } else {
+            gemm_release_stmts_[j] = Evaluate(0);
+          }
         }
       }
     }
@@ -199,7 +224,8 @@ class WgmmaSyncRewriter : public StmtExprMutator {
         auto wait_count = gemm_count - sync_index - 1;
         if (sync_index > max_sync_index) max_sync_index = sync_index;
         if (sync_index < max_sync_index) {
-          new_seq.erase(new_seq.begin() + i);
+          // new_seq.erase(new_seq.begin() + i);
+          new_seq.Set(i, Evaluate(0));
         } else {
           Array<PrimExpr> new_args;
           std::string call_str = "cute::warpgroup_wait<" + std::to_string(wait_count) + ">";
