@@ -271,7 +271,8 @@ class LowerTileOpPass : arith::IRMutatorWithAnalyzer {
     auto tile_op = ParseOperator(GetRef<Stmt>(op), buffer_data_to_buffer_);
     if (tile_op == nullptr) return IRMutatorWithAnalyzer::VisitStmt_(op);
     AddWorkspaceCallback callback = [this](int num_elem, DataType dtype) {
-      auto workspace = decl_buffer({PrimExpr(num_elem)}, dtype, "workspace", "shared.dyn");
+      // TODO: tmp for H100
+      auto workspace = decl_buffer({PrimExpr(num_elem)}, dtype, "workspace", "shared"); // shared
       workspaces_.push_back(workspace);
       return workspace.access_ptr(2);  // write
     };

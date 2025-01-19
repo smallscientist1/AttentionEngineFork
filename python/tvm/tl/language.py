@@ -339,8 +339,8 @@ def reduce_min(buffer: tir.Buffer, out: tir.Buffer, dim: int, clear: bool = True
     return reduce(buffer, out, "min", dim, clear)
 
 
-def reduce_sum(buffer: tir.Buffer, out: tir.Buffer, dim: int):
-    return reduce(buffer, out, "sum", dim, True)
+def reduce_sum(buffer: tir.Buffer, out: tir.Buffer, dim: int, clear: bool = True):
+    return reduce(buffer, out, "sum", dim, clear)
 
 
 def reduce_abssum(buffer: tir.Buffer, out: tir.Buffer, dim: int):

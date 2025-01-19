@@ -83,8 +83,9 @@ def tvm_callback_cuda_compile(code, target):
             "-DEXECMODE=0",
             "-I" + tl_template_path,
             "-I" + cutlass_path,
+            # debug_option,
         ],
-        verbose=False,
+        verbose=False, # True
     )
 
     return ptx

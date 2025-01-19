@@ -35,11 +35,13 @@ struct AllReduce {
   static TL_DEVICE T run(T x, T* red_buf = nullptr) {
     constexpr int offset = threads / 2;
     if constexpr (offset >= 32) {
-      __syncthreads();
-      // asm volatile("bar.sync %0, %1;" : : "r"(1), "r"(256));
+      // TODO: tmp for H100
+      // __syncthreads();
+      asm volatile("bar.sync %0, %1;" : : "r"(1), "r"(blockDim.x-128));
       red_buf[threadIdx.x] = x;
-      __syncthreads();
-      // asm volatile("bar.sync %0, %1;" : : "r"(2), "r"(256));
+      // __syncthreads();
+      // H100 ws only
+      asm volatile("bar.sync %0, %1;" : : "r"(2), "r"(blockDim.x-128));
       x = Reducer()(x, red_buf[threadIdx.x ^ offset]);
     } else {
       x = Reducer()(x, T(__shfl_xor_sync(uint32_t(-1), x, offset)));

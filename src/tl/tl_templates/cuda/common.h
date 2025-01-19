@@ -76,3 +76,8 @@ TL_DEVICE void DP4A(InDatatype* a, InDatatype* b, OutDatatype* c) {
   const int c_int = *((int*)c);
   *c = __dp4a(a_int, b_int, c_int);
 }
+
+template<typename InDatatype, typename OutDatatype>
+TL_DEVICE void fasttanh(InDatatype* a, OutDatatype* b) {
+  *b = cutlass::fast_tanh(*a);
+}
