@@ -1,3 +1,7 @@
 [submodule "3rd_parties/cutlass"]
 	path = 3rd_parties/cutlass
 	url = https://github.com/smallscientist1/cutlass.git
+[submodule "3rd_parties/tvm"]
+	path = 3rd_parties/tvm
+	url = git@github.com:smallscientist1/AttentionEngine.git
+	branch = attnengine_upstream
