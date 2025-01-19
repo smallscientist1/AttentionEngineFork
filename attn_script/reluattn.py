@@ -47,8 +47,38 @@ class OnlineIdentity(OnlineFunc):
 
 custom_fwd_inputs = CustomIO({
 })
+
+def eval():
+    import itertools
+    BHSD = list(
+        itertools.product(
+            (32,64,),
+            (6,),
+            (512,1024, 2048),
+            (64,),
+            (64,)
+        )
+    )
+    for B, H, S, D, DV in BHSD:
+        print(f"B={B}, H={H}, S={S}, D={D}, DV={DV}")
+        qkv_meta = (
+            meta_tensor(B, H, S, D, dtype=torch.float16),
+            meta_tensor(B, H, S, D, dtype=torch.float16),
+            meta_tensor(B, H, S, D, dtype=torch.float16),
+        )
+
+        mod = AttentionEngine(
+            qkv_meta,
+            custom_fwd_inputs, score_mod=score_mod, block_mask=None,
+            online_func=OnlineIdentity(),
+            tune = True, tune_file = "reluattn_tune.json"
+        )
+        with open("reluattn_tl_code.py", "w") as f:
+            f.write(mod.tl_code)
+        from benchmark.bench_utils import do_bench_reluattn
+        do_bench_reluattn(mod, B, H, S, D, D)
 if __name__ == "__main__":
-    B, H ,S, D = 64,6,1024,D
+    B, H ,S, D = 64,16,2048,D
     qkv_meta = (
         meta_tensor(B, H, S, D, dtype=torch.float16),
         meta_tensor(B, H, S, D, dtype=torch.float16),
@@ -61,8 +91,9 @@ if __name__ == "__main__":
         online_func=OnlineIdentity(),
         tune = True, tune_file = "reluattn_tune.json"
     )
-    # with open("reluattn_tl_code.py", "w") as f:
-    #     f.write(mod.tl_code)
+    with open("reluattn_tl_code.py", "w") as f:
+        f.write(mod.tl_code)
     from benchmark.bench_utils import do_bench_reluattn
     do_bench_reluattn(mod, B, H, S, D, D)
+    # eval()
 

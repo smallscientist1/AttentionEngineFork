@@ -70,10 +70,45 @@ class OnlineRetention(OnlineFunc):
 
         return dscores
 
+# For evaluation
+def eval():
+    import itertools
+    BHSDDV = list(
+        itertools.product(
+            (1,8,), # 64
+            (32,),
+            (2048,4096,8192),
+            (256,),
+            (512,)
+        )
+    )
+    for B, H, S, D, DV in BHSDDV:
+        print(f"B={B}, H={H}, S={S}, D={D}, DV={DV}")
+        qkv_meta = (
+            meta_tensor(B, H, S, D, dtype=torch.float16),
+            meta_tensor(B, H, S, D, dtype=torch.float16),
+            meta_tensor(B, H, S, DV, dtype=torch.float16),
+        )
+
+        block_mask = create_block_mask(causal_mask, 1, 1, S, S, device="cuda")
+
+        custom_fwd_inputs = CustomIO({
+            "mask": (1, "heads", "seq_len", "seq_len_kv"), # (1, H, S, S),
+        })
+
+        online = OnlineRetention()
+        mod = AttentionEngine(
+        qkv_meta,
+        custom_fwd_inputs, score_mod=score_mod, block_mask=block_mask,
+        online_func=online,
+        mask_value="0"
+        )
+
+        from benchmark.bench_utils import do_bench_retention
+        do_bench_retention(mod, B, H, S, D, DV, dtype=torch.float16)
 
 if __name__ == "__main__":
-    # 16,16,8192 fail for H100 TMA mask
-    B, H ,S, D, DV = 1,20,2048,Dimqk,512
+    B, H ,S, D, DV = 1,32,4096,Dimqk,512
     qkv_meta = (
         meta_tensor(B, H, S, D, dtype=torch.float16),
         meta_tensor(B, H, S, D, dtype=torch.float16),
@@ -100,3 +135,4 @@ if __name__ == "__main__":
 
     from benchmark.bench_utils import do_bench_retention
     do_bench_retention(mod, B, H, S, D, DV, dtype=torch.float16)
+    # eval()

@@ -34,8 +34,8 @@ def eval():
     import itertools
     BHSDDVs = itertools.product(
         [1,8], # 64
-        [16,20,32],
-        [1024,2048,4096],
+        [32],
+        [2048,4096,8192],
         [256,],
         [512,]
     )
@@ -52,34 +52,36 @@ def eval():
         )
         mod = LinearAttentionEngine(qkv_meta, q_mod=q_mod, decay_mod=decay_mod,
                                 custom_io = custom_io,
-                                tune=True, tune_filename="retention_linear")
+                                tune=False, tune_filename="retention_linear",
+                                tune_bwd=True)
 
         from benchmark.bench_utils import do_bench_retention_linear
         print(f"eval B={B}, H={H}, S={S}, D={D}, DV={DV}")
         try:
-            do_bench_retention_linear(mod, B, H, S, D, DV)
+            do_bench_retention_linear(mod, B, H, S, D, DV, requires_grad=True)
         except Exception as e:
             print("bench failed", e)
             
 if __name__ == "__main__":
-    # B, H, T, D, DV = 64, 20, 1024, D, 512 # bug 16384
-    # qkv_meta = (
-    #     meta_tensor(B, H, T, D, dtype=torch.bfloat16),
-    #     meta_tensor(B, H, T, D, dtype=torch.bfloat16),
-    #     meta_tensor(B, H, T, DV, dtype=torch.bfloat16),
-    # )
-    # custom_io = CustomIO(
-    #     {
-    #     }
-    # )
-    # mod = LinearAttentionEngine(
-    #     qkv_meta,
-    #     q_mod=q_mod, decay_mod=decay_mod,
-    #                         custom_io = custom_io,
-    #                         tune=True, tune_filename="retention_linear")
-    # with open("retention_linear_tlcode.py", "w") as f:
-    #     f.write(mod.tl_code)
+    B, H, T, D, DV = 8, 20, 1024, D, 512 # bug 16384
+    qkv_meta = (
+        meta_tensor(B, H, T, D, dtype=torch.bfloat16),
+        meta_tensor(B, H, T, D, dtype=torch.bfloat16),
+        meta_tensor(B, H, T, DV, dtype=torch.bfloat16),
+    )
+    custom_io = CustomIO(
+        {
+        }
+    )
+    mod = LinearAttentionEngine(
+        qkv_meta,
+        q_mod=q_mod, decay_mod=decay_mod,
+                            custom_io = custom_io,
+                            tune=True, tune_filename="retention_linear",
+                            tune_bwd=True)
+    with open("retention_linear_tlcode.py", "w") as f:
+        f.write(mod.tl_code)
 
-    # from benchmark.bench_utils import do_bench_retention_linear
-    # do_bench_retention_linear(mod, B, H, T, D, DV)
-    eval()
+    from benchmark.bench_utils import do_bench_retention_linear
+    do_bench_retention_linear(mod, B, H, T, D, DV, requires_grad=True)
+    # eval()

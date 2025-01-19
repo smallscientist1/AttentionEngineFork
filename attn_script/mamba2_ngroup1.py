@@ -32,11 +32,13 @@ def v_mod(v, custom_io): # (B,H,seqlen, D)
     dt = custom_io.input_tensors["dt"]
     return v * dt
 
+
 def eval():
     import itertools
+    from benchmark.bench_utils import do_bench_mamba
     BHTDDVs = itertools.product(
         [1,8],
-        [24, 48, 80],
+        [80],
         [2048,4096,8192],
         [128,],
         [64,]
@@ -57,13 +59,13 @@ def eval():
         mod = LinearAttentionEngine(qkv_meta,
             decay_mod=decay_mod, v_mod=v_mod,
                                     custom_io = custom_io,
-                                    tune=True, tune_filename="mamba2")
-        from benchmark.bench_utils import do_bench_mamba
+                                    tune=True, tune_filename="mamba2",
+                                    tune_bwd=True)
         print(f"B={B}, H={H}, T={T}, D={D}, DV={DV}")
-        do_bench_mamba(mod, B, HQ,HK,H, T, D, DV, BT=256)
+        do_bench_mamba(mod, B, HQ,HK,H, T, D, DV, BT=256, requires_grad=True)
 
 if __name__ == "__main__":
-    B, H, T, D, DV = 8,80, 2048, 128, 64 # bug 16384
+    B, H, T, D, DV = 8,24, 2048, 128, 64
     HQ, HK = 1, 1
     dtype = torch.bfloat16
     qkv_meta = (

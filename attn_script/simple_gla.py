@@ -30,7 +30,7 @@ def q_mod(q, custom_io):
 def eval():
     import itertools
     BHSDDVs = itertools.product(
-        # [1, 16, 64],
+        # [64,],# [1, 16, 64],
         # [8,16],
         # [1024,2048,4096],
         # [64,],
@@ -42,11 +42,17 @@ def eval():
         # [128,],
         # [128,]
         
-        [8], # 64
-        [40],
-        [1024,2048,4096],
+        # [8], # 64
+        # [40],
+        # [1024,2048,4096],
+        # [256,],
+        # [256,]
+        
+        [1,8],
+        [32],
+        [2048,4096],
         [256,],
-        [256,]
+        [512,]
         
     )
     
@@ -63,34 +69,36 @@ def eval():
         )
         mod = LinearAttentionEngine(qkv_meta, q_mod=q_mod,
                                 custom_io = custom_io,
-                                tune=True, tune_filename="simple_gla")
+                                tune=False, tune_filename="simple_gla",
+                                tune_bwd=True)
 
         from benchmark.bench_utils import do_bench_simple_gla
         print(f"eval B={B}, H={H}, S={S}, D={D}, DV={DV}")
-        try:
-            do_bench_simple_gla(mod, B, H, S, D, DV, BT=64)
-        except Exception as e:
-            print("bench failed")
-            continue
+        # try:
+        do_bench_simple_gla(mod, B, H, S, D, DV, BT=64, requires_grad=True)
+        # except Exception as e:
+        #     print("bench failed", e)
+        #     continue
         
 if __name__ == "__main__":
-    # B, H, S, D, DV = 16, 8, 2048, D, 64 # bug 16384
-    # dtype = torch.bfloat16
-    # qkv_meta = (
-    #     meta_tensor(B, H, S, D, dtype=dtype),
-    #     meta_tensor(B, H, S, D, dtype=dtype),
-    #     meta_tensor(B, H, S, DV, dtype=dtype),
-    # )
-    # custom_io = CustomIO(
-    #     {
-    #     }
-    # )
-    # mod = LinearAttentionEngine(qkv_meta, q_mod=q_mod,
-    #                         custom_io = custom_io,
-    #                         tune=True, tune_filename="simple_gla")
-    # with open("simple_gla_tlcode.py", "w") as f:
-    #     f.write(mod.tl_code)
+    B, H, S, D, DV = 1, 32, 2048, D, 512
+    dtype = torch.bfloat16
+    qkv_meta = (
+        meta_tensor(B, H, S, D, dtype=dtype),
+        meta_tensor(B, H, S, D, dtype=dtype),
+        meta_tensor(B, H, S, DV, dtype=dtype),
+    )
+    custom_io = CustomIO(
+        {
+        }
+    )
+    mod = LinearAttentionEngine(qkv_meta, q_mod=q_mod,
+                            custom_io = custom_io,
+                            tune=False, tune_filename="simple_gla",
+                            tune_bwd=False)
+    with open("simple_gla_tlcode.py", "w") as f:
+        f.write(mod.tl_code)
 
-    # from benchmark.bench_utils import do_bench_simple_gla
-    # do_bench_simple_gla(mod, B, H, S, D, DV, BT=64)
-    eval()
+    from benchmark.bench_utils import do_bench_simple_gla
+    do_bench_simple_gla(mod, B, H, S, D, DV, BT=64, requires_grad=False)
+    # eval()

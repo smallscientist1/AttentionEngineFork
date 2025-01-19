@@ -18,7 +18,7 @@ Example of causal attention with online softmax
 def causal_mask(b, h, q_idx, kv_idx):
     return q_idx >= kv_idx
 
-D = 192
+D = 128
 softmax_scale = 1/D ** 0.5
 # elementwise on attention scores
 def score_mod(score, custom_fwd_inputs, b, h, q_idx, kv_idx):
@@ -112,4 +112,4 @@ if __name__ == "__main__":
         f.write(mod.tl_code)
 
     from benchmark.bench_utils import do_bench_attention
-    do_bench_attention(mod, B, H, S, D, DV, dtype=dtype)
+    do_bench_attention(mod, B, H, S, D, DV, dtype=dtype, require_grad=True)

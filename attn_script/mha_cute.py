@@ -18,7 +18,7 @@ Example of causal attention with online softmax
 def causal_mask(b, h, q_idx, kv_idx):
     return q_idx >= kv_idx
 
-D = 96 # 128
+D = 128 # 128
 softmax_scale = (1/D) ** 0.5
 softmax_scale_log2e = softmax_scale * math.log2(math.e)
 # elementwise on attention scores
@@ -89,19 +89,26 @@ def eval():
     import itertools
     BHSDDV = list(
         # itertools.product(
-        #     (1,),
-        #     (12,20),
-        #     (2048,4096,32768,65536),
+        #     (1,8),
+        #     (32,),
+        #     (2048,4096,8192),
         #     (128,),
-        #     (256,),
+        #     (128,),
         # )
         itertools.product(
-            (1,),
-            (8,),
-            (2048,4096,32768, 65536),
-            (96,),
-            (192,),
+            (1,8),
+            (12,),
+            (2048,4096,8192),
+            (128,),
+            (256,),
         )
+        # itertools.product(
+        #     (1,),
+        #     (8,),
+        #     (2048,4096,32768, 65536),
+        #     (96,),
+        #     (192,),
+        # )
     )
     dtype = torch.bfloat16
     for B,H,S,D,DV in BHSDDV:
