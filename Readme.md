@@ -36,3 +36,8 @@ cd ../../
 export PYTHONPATH="$(pwd)/attention_engine:$(pwd)/3rdparties/tvm/python:$PYTHONPATH"
 export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libcuda.so
 ```
+
+# Roadmap
+- [ ] Support backward on CuTe backend 
+- [ ] Support decoding shape
+- [ ] Support AMD MI250
