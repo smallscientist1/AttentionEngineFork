@@ -1,47 +1,14 @@
-# AttentionEngine
+# Project
 
-AttentionEngine is a unified framework to customized attention, including parallel attention and linear attention (For example, replacing softmax to sigmoid in standard attention, implementing retnet attention, and implementing mamba2).
+> This repo has been populated by an initial template to help get you started. Please
+> make sure to update the content to build a great experience for community-building.
 
-# Tested Device
-- NVIDIA H100
-- AMD MI250 (TODO)
+As the maintainer of this project, please make a few updates:
 
-# Customized attention Examples
-
-Customized attention examples are under folder `attn_script`, including:
-+ parallel attention
-    - `attn_script/mha.py`: softmax attention
-    - `attn_script/sigmoidattn.py`: sigmoid attention
-    - `attn_script/reluattn.py`: relu attention
-    - `attn_script/retention.py`: retnet attention
-+ linear attention
-    - `attn_script/mamba2_ngroup1.py`: mamba2
-    - `attn_script/simple_gla.py`: gated retention
-    - `attn_script/retnetion_linear.py`: retnet linear
-
-# Installation
-- install cuda==12.4 & pytorch
-- clone the repo and its submodule
-```
-git clone --recursive https://github.com/smallscientist1/AttentionEngine.git
-```
-- install tvm
-```
-cd 3rdparties/tvm
-mkdir -p build && cd build && cp ../cmake/config.cmake . && cmake .. && make -j && cd -
-cd ../../
-```
-- export some environment variables
-```
-export PYTHONPATH="$(pwd)/attention_engine:$(pwd)/3rdparties/tvm/python:$PYTHONPATH"
-export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libcuda.so
-```
-
-# Roadmap
-- [ ] Support backward on CuTe backend 
-- [ ] Support decoding shape
-- [ ] Support AMD MI250
-
+- Improving this README.MD file to provide a great experience
+- Updating SUPPORT.MD with content about this project's support experience
+- Understanding the security reporting process in SECURITY.MD
+- Remove this section from the README
 
 ## Contributing
 
