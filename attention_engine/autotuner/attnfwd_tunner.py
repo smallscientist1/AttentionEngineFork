@@ -61,9 +61,7 @@ class AttnFwdTunner:
             with open(file_path,"r", encoding='utf-8') as file:
                 data = json.load(file)
             for item in data:
-                # 检查 item 中的键值对是否与 problem_keys 相同
                 if all(item.get(key) == value for key, value in problem_keys.items()):
-                # 提取 tuned_config 字段
                     tuned_config = item.get('tuned_config')
                     return tuned_config
         else:

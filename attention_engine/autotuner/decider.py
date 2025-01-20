@@ -55,7 +55,7 @@ def decider(qkv_meta, hardware_meta) -> Tuple[bool, dict]:
     block_K_stride = hardware_meta.mma_primitive[2]
     block_K_max = next_multiple_of(dim_qk, block_K_stride)
     # block_K = [bk for bk in range(block_K_stride, block_K_max + 1, block_K_stride)]
-    # dim_qk 很小， 需要能被dim_qk整除
+    # divided by dim_qk
     block_K = [bk for bk in range(block_K_stride, block_K_max + 1, block_K_stride) if dim_qk % bk == 0]
 
 

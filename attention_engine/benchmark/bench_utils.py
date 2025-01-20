@@ -128,23 +128,18 @@ def check_close(o, O_ref, rtol=1e-3, atol=1e-3):
     absolute_error = torch.abs(o - O_ref)
     relative_error = absolute_error / (torch.abs(O_ref)+1e-6)
 
-    # 检查是否满足任意一个条件
     tolerance_check = (absolute_error < atol) | (relative_error < rtol)
 
-    # 打印不满足条件的百分比
     num_not_close = (~tolerance_check).sum().item()
     total_elements = o.numel()
     percentage_not_close = (num_not_close / total_elements) * 100
     print(f"{percentage_not_close:.2f}% of the elements are not close.")
-    # 判断是否所有元素都满足任意一个条件
     result = torch.all(tolerance_check)
     if not result:
-        # 打印不满足条件的百分比
         num_not_close = (~tolerance_check).sum().item()
         total_elements = o.numel()
         percentage_not_close = (num_not_close / total_elements) * 100
         print(f"{percentage_not_close:.2f}% of the elements are not close.")
-        # 打印10个错误元素
         print("Error elements:")
         error_indices = torch.nonzero(~tolerance_check, as_tuple=False)
         for idx in error_indices[:10]:

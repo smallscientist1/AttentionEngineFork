@@ -49,11 +49,11 @@ class OnlineFunc:
         """
         compute scores, online_rowscale, o_scale
         input: 
-            scores: 一维向量, 仅包含getreduce()
-            online_rowscales: 在线算法的上一轮中间结果
+            scores: symbolic tensor, including method like getreduce()
+            online_rowscales: the intermediate scale results of the previous round
         return:
-            scores: 一维向量
-            online_rowscales: 保存在线算法的更新后中间结果
+            scores: symbolic tensor
+            online_rowscales: save the updated intermediate results of the online algorithm
             o_scale:  for online rescale o
 
         """
@@ -65,8 +65,8 @@ class OnlineFunc:
         """
         compute o, final_rowscales at the end of online attention forward
         return:
-            o: online_fwd 最后对o进行的缩放
-            final_rowscales: online_fwd执行完成后保存的scale，用于backward
+            o: symbolic tensor
+            final_rowscales: save the final scale results of the online algorithm, used for backward
         """
         final_rowscales = online_rowscales
         return o, final_rowscales
@@ -156,7 +156,6 @@ class AttentionEngine:
         self.tl_code = tl_code # for debug
         # local_vars = {}
         # exec(tl_code, globals(), local_vars)
-        # # 将 local_vars 转化为全局变量
         # globals().update(local_vars)
         # self.attention = local_vars["attention"]
         code_hash = hashlib.md5(tl_code.encode()).hexdigest()
