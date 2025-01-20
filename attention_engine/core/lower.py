@@ -232,8 +232,8 @@ def lower_online_func(online_func, lower_output:lowerOutput,scores_name="scores"
     custom_bwd_inputs = f"g_doosum: T.Buffer([batch, heads, seq_len], accum_dtype), \n" if isused_doosum else ""
     final_rowscales_shared_init = ""
     for k,v in final_rowscales_bwd.items():
-        final_rowscales_shared_init += f"{v.varname} = T.alloc_shared([{', '.join(v.shape_idx)}], accum_dtype)\n"
-    custom_bwd_inputs_init = "doosum_shared = T.alloc_shared([1, block_N], accum_dtype)" if isused_doosum else ""
+        final_rowscales_shared_init += f"{v.varname} = T.alloc_shared([{', '.join(v.shape_idx)}], accum_dtype, scope='shared')\n"
+    custom_bwd_inputs_init = "doosum_shared = T.alloc_shared([1, block_N], accum_dtype, scope='shared')" if isused_doosum else ""
     final_rowscales_load = ""
     for k,v in final_rowscales_bwd.items():
         final_rowscales_load += f"T.copy(g_{k}[bz, bx, k * block_N : (k + 1) * block_N], {v.varname})\n"

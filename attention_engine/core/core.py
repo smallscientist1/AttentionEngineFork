@@ -249,7 +249,6 @@ class CustomIO:
         self.input_tensors[tensor_name].shape = tensor_shape
         def decorator(func):
             def wrapper(*args, **kwargs):
-            # 调用原始函数并返回结果
                 result = func(*args, **kwargs)
             
                 return result

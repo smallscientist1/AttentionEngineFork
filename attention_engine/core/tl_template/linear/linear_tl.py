@@ -233,8 +233,8 @@ def chunk_o(
                 # q_mod here (fused)
                 {{q_mod_expr | indent(16)}}
 
-                T.gemm(bq, bk_shared, bs, transpose_B=True)
-                T.gemm(bq, b_state_shared, bo, transpose_B=False)
+                T.gemm(bq, bk_shared, bs, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                T.gemm(bq, b_state_shared, bo, transpose_B=False, policy=T.GemmWarpPolicy.FullRow)
             
             # T.copy(g[bb, bh, by*BT:(by+1)*BT], bg)
             # T.copy(g[bb, bh, by*BT:(by+1)*BT], bg1)
@@ -257,7 +257,7 @@ def chunk_o(
             
             T.copy(v[bb, bh, by*BT:(by+1)*BT, bx*BV:(bx+1)*BV], bv_shared)
             T.copy(bs, bs_cast)
-            T.gemm(bs_cast, bv_shared, bo)
+            T.gemm(bs_cast, bv_shared, bo, policy=T.GemmWarpPolicy.FullRow)
             # T.copy(bo, o[bb, bh, by*BT:(by+1)*BT, bx*BV:(bx+1)*BV]) # slow for stride between thread
             T.copy(bo, bo_shared) # implicit type convert
             T.copy(bo_shared, o[bb, bh, by*BT:(by+1)*BT, bx*BV:(bx+1)*BV])
@@ -666,6 +666,7 @@ class LinearAttention(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, do):
+        do = do.contiguous()
         BT = {{BT_BWD}}# ctx.BT
         q, k, v, decay, {{custom_inputs_list}} = ctx.saved_tensors #  decay_cumsum
 

@@ -1,6 +1,6 @@
 import torch
-from core.attn_template import TlAttnTemplate
 from core.lower import lower_tl
+from core.lower_decode import lower_tl as lower_tl_decode
 from core.lower_cute import lower_cute
 from core.core import CustomIO, SymbolicArray, SymbolScalar, Var
 
@@ -49,11 +49,11 @@ class OnlineFunc:
         """
         compute scores, online_rowscale, o_scale
         input: 
-            scores: 一维向量, 仅包含getreduce()
-            online_rowscales: 在线算法的上一轮中间结果
+            scores: symbolic tensor, including method like getreduce()
+            online_rowscales: the intermediate scale results of the previous round
         return:
-            scores: 一维向量
-            online_rowscales: 保存在线算法的更新后中间结果
+            scores: symbolic tensor
+            online_rowscales: save the updated intermediate results of the online algorithm
             o_scale:  for online rescale o
 
         """
@@ -65,8 +65,8 @@ class OnlineFunc:
         """
         compute o, final_rowscales at the end of online attention forward
         return:
-            o: online_fwd 最后对o进行的缩放
-            final_rowscales: online_fwd执行完成后保存的scale，用于backward
+            o: symbolic tensor
+            final_rowscales: save the final scale results of the online algorithm, used for backward
         """
         final_rowscales = online_rowscales
         return o, final_rowscales
@@ -146,11 +146,16 @@ class AttentionEngine:
             torch.float16: "float16",
             torch.bfloat16: "bfloat16",
         }
-        tl_code = lower_tl(score_mod, block_mask, online_func, custom_fwd_inputs, qkv_meta[0].shape[3], qkv_meta[2].shape[3],tl_dtype_map[qkv_meta[0].dtype], mask_value, tuned_config)
+        q_seqlen = qkv_meta[0].shape[2]
+        kv_len = qkv_meta[2].shape[2]
+        if q_seqlen != kv_len:
+            assert(q_seqlen < kv_len)
+            tl_code = lower_tl_decode(score_mod, block_mask, online_func, custom_fwd_inputs, qkv_meta[0].shape[3], qkv_meta[2].shape[3],tl_dtype_map[qkv_meta[0].dtype], mask_value, tuned_config)
+        else:
+            tl_code = lower_tl(score_mod, block_mask, online_func, custom_fwd_inputs, qkv_meta[0].shape[3], qkv_meta[2].shape[3],tl_dtype_map[qkv_meta[0].dtype], mask_value, tuned_config)
         self.tl_code = tl_code # for debug
         # local_vars = {}
         # exec(tl_code, globals(), local_vars)
-        # # 将 local_vars 转化为全局变量
         # globals().update(local_vars)
         # self.attention = local_vars["attention"]
         code_hash = hashlib.md5(tl_code.encode()).hexdigest()

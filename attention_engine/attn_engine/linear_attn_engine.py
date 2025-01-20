@@ -33,7 +33,6 @@ class LinearAttentionEngine:
         self.tl_code = tl_code # for debug
         # local_vars = {}
         # exec(tl_code, globals(), local_vars)
-        # # 将 local_vars 转化为全局变量
         # globals().update(local_vars)
         # self.attention = local_vars["attention"]
         code_hash = hashlib.md5(tl_code.encode()).hexdigest()
