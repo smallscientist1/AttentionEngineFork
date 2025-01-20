@@ -1,6 +1,6 @@
 import torch
-from core.attn_template import TlAttnTemplate
 from core.lower import lower_tl
+from core.lower_decode import lower_tl as lower_tl_decode
 from core.lower_cute import lower_cute
 from core.core import CustomIO, SymbolicArray, SymbolScalar, Var
 
@@ -146,7 +146,13 @@ class AttentionEngine:
             torch.float16: "float16",
             torch.bfloat16: "bfloat16",
         }
-        tl_code = lower_tl(score_mod, block_mask, online_func, custom_fwd_inputs, qkv_meta[0].shape[3], qkv_meta[2].shape[3],tl_dtype_map[qkv_meta[0].dtype], mask_value, tuned_config)
+        q_seqlen = qkv_meta[0].shape[2]
+        kv_len = qkv_meta[2].shape[2]
+        if q_seqlen != kv_len:
+            assert(q_seqlen < kv_len)
+            tl_code = lower_tl_decode(score_mod, block_mask, online_func, custom_fwd_inputs, qkv_meta[0].shape[3], qkv_meta[2].shape[3],tl_dtype_map[qkv_meta[0].dtype], mask_value, tuned_config)
+        else:
+            tl_code = lower_tl(score_mod, block_mask, online_func, custom_fwd_inputs, qkv_meta[0].shape[3], qkv_meta[2].shape[3],tl_dtype_map[qkv_meta[0].dtype], mask_value, tuned_config)
         self.tl_code = tl_code # for debug
         # local_vars = {}
         # exec(tl_code, globals(), local_vars)

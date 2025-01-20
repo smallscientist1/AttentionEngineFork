@@ -230,9 +230,9 @@ class _attention(torch.autograd.Function):
         N_CTXKV = k.shape[1]
         assert(N_CTXQ <= {{block_M}})
         # TODO: pad
+        N_CTXQOLD = N_CTXQ
         if N_CTXQ < {{block_M}}:
             q = F.pad(q, (0, 0, 0 , 0, 0, {{block_M}} - N_CTXQ))
-            N_CTXQOLD = N_CTXQ
             N_CTXQ = {{block_M}}
             
         
