@@ -208,11 +208,10 @@ class AttentionEngine:
                                tl_dtype_map[qkv_meta[0].dtype],
                                mask_value,
                                tuned_config)
-        self.tl_code = tl_code  # for debug
-        # local_vars = {}
-        # exec(tl_code, globals(), local_vars)
-        # globals().update(local_vars)
-        # self.attention = local_vars["attention"]
+        self.tl_code = tl_code  
+        # for debug
+        # with open("generated_tl.py","w") as f:
+        #      f.write(tl_code)
         code_hash = hashlib.md5(tl_code.encode()).hexdigest()
         cache_dir = os.path.join(os.path.dirname(__file__), "cache")
         file_path = os.path.join(cache_dir, f"{code_hash}.py")

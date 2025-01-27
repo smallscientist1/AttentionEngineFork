@@ -96,8 +96,6 @@ if __name__ == "__main__":
                             custom_io = custom_io,
                             tune=False, tune_filename="simple_gla",
                             tune_bwd=False)
-    with open("simple_gla_tlcode.py", "w") as f:
-        f.write(mod.tl_code)
 
     from benchmark.bench_utils import do_bench_simple_gla
     do_bench_simple_gla(mod, B, H, S, D, DV, BT=64, requires_grad=False)

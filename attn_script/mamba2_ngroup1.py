@@ -84,8 +84,6 @@ if __name__ == "__main__":
                             custom_io = custom_io,
                             tune=True, tune_filename="mamba2",
                             tune_bwd=True)
-    with open("mamba2_tl.py","w") as f:
-        f.write(mod.tl_code)
 
     from benchmark.bench_utils import do_bench_mamba
     do_bench_mamba(mod, B, HQ,HK,H, T, D, DV, BT=256, requires_grad=True)

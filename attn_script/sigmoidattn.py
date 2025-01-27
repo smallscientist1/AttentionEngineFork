@@ -68,8 +68,6 @@ if __name__ == "__main__":
         custom_fwd_inputs, score_mod=score_mod, block_mask=block_mask,
         online_func=OnlineIdentity(),
     )
-    with open("sigmoid_tl_code.py", "w") as f:
-        f.write(mod.tl_code)
     from benchmark.bench_utils import do_bench_sigmoidattn
     do_bench_sigmoidattn(mod, B, H, S, D, D, requires_grad=True)
 

@@ -50,8 +50,6 @@ if __name__ == "__main__":
         qkv_meta,
         decay_mod=decay_mod, k_mod=k_mod,
                             custom_io = custom_io)
-    with open("mamba2_tl.py","w") as f:
-        f.write(mod.tl_code)
 
     from benchmark.bench_utils import do_bench_mamba
     do_bench_mamba(mod, B, H,H,H, T, D, DV, BT=64)
