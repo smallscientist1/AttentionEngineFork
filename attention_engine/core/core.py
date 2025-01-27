@@ -7,6 +7,7 @@ import functools
 
 # TODO: support online_func extern_input_tensor
 
+
 def plus_count(func):
     @functools.wraps(func)
     def wrapper(self, *args, **kwargs):
@@ -24,9 +25,10 @@ def plus_count(func):
         return func(self, *args, **kwargs)
     return wrapper
 
+
 class SymbolScalar:
-    def __init__(self, varname:str, value:Node, prev=[], shape_idx:list=["block_M"],
-                 require_grad:bool=True):
+    def __init__(self, varname: str, value: Node, prev=[], shape_idx: list = ["block_M"],
+                 require_grad: bool = True):
         self.varname = varname
         self.code = value
         self.prev = prev
@@ -39,10 +41,11 @@ class SymbolScalar:
         self.lowered = False
         self.visit_count = 0
 
-        self.grad = None # SymbolicScalar
-    
+        self.grad = None  # SymbolicScalar
+
     # @plus_count # TODO: plus count bug
-    def op(self, code:Type[Node], others:list=[], shape_idx:list=None, varname_suffix:str=None):
+    def op(self, code: Type[Node], others: list = [],
+           shape_idx: list = None, varname_suffix: str = None):
         for i, other in enumerate(others):
             # if other is python scalar
             if isinstance(other, (int, float)):
@@ -55,9 +58,13 @@ class SymbolScalar:
         if varname_suffix is not None:
             output_varname = f"{output_varname}_{varname_suffix}"
 
-        code = code(*[x.code for x in [self]+others])
+        code = code(*[x.code for x in [self] + others])
         # TODO: now must be var+1 not 1+var
-        output = self.__class__(f"{output_varname}_{self.count}", code, [self]+others, shape_idx)
+        output = self.__class__(
+            f"{output_varname}_{self.count}",
+            code,
+            [self] + others,
+            shape_idx)
         self.use_list.append(output)
         self.count += 1
         # print(self.count)
@@ -73,14 +80,14 @@ class SymbolScalar:
             #     print(other,other.varname)
         return output
 
-    def backward(self, grad=None): # SymbolicScalar
+    def backward(self, grad=None):  # SymbolicScalar
         if grad:
             self.grad = grad
         self._backward(self.grad)
         for node in self.prev:
             node.backward()
 
-    def _backward(self, grad): # symblocscalar
+    def _backward(self, grad):  # symblocscalar
         if self.code.type == "Var" or self.code.type == "Const":
             return
         if self.code.type == "Add":
@@ -124,7 +131,7 @@ class SymbolScalar:
                 # grad_t = self * grad
                 # grad_t = self * grad_t
                 # grad0 = grad - grad_t
-                grad0 = grad  - grad * self * self
+                grad0 = grad - grad * self * self
                 if self.prev[0].grad:
                     grad0 = grad0 + self.prev[0].grad
                 self.prev[0].grad = grad0
@@ -140,7 +147,7 @@ class SymbolScalar:
                 if self.prev[1].grad:
                     grad1 = grad1 + self.prev[1].grad
                 self.prev[1].grad = grad1
-        
+
         elif self.code.type == "Log":
             if self.prev[0].require_grad:
                 grad0 = grad / self.prev[0]
@@ -148,7 +155,8 @@ class SymbolScalar:
                     grad0 = grad0 + self.prev[0].grad
                 self.prev[0].grad = grad0
         else:
-            raise NotImplementedError(f"backward for {self.code.type} is not implemented")
+            raise NotImplementedError(
+                f"backward for {self.code.type} is not implemented")
         # change shape_idx
         for idx, node in enumerate(self.prev):
             if node.require_grad:
@@ -157,9 +165,11 @@ class SymbolScalar:
     def clear_usecount(self):
         self.count = 0
         self.use_list.clear()
+
     def clear_visit(self):
         self.visit_count = 0
         self.lowered = False
+
     def clear_codegen(self):
         self.clear_usecount()
         self.clear_visit()
@@ -181,13 +191,13 @@ class SymbolScalar:
 
     def abs(self):
         return self.op(Abs)
-    
+
     def tanh(self):
         return self.op(Tanh)
 
     def exp(self):
         return self.op(Exp)
-    
+
     def exp2(self):
         return self.op(Exp2)
 
@@ -202,55 +212,68 @@ class SymbolicArray(SymbolScalar):
     """
     Array for OnlineFunc.online_fwd
     """
-    def __init__(self, varname:str="", code:Node=Var(" "), prev=[], shape_idx:list=["block_M", "block_N"]):
+
+    def __init__(self, varname: str = "", code: Node = Var(" "),
+                 prev=[], shape_idx: list = ["block_M", "block_N"]):
         super().__init__(varname, code, prev, shape_idx)
 
-    def get_reduce(self,op:Literal["sum", "max", "abssum"]):
+    def get_reduce(self, op: Literal["sum", "max", "abssum"]):
         """
         get reduce result of array
         """
         if op == "sum":
-            return self.op(ReduceSum, shape_idx=self.shape_idx[:-1], varname_suffix="sum")
+            return self.op(
+                ReduceSum, shape_idx=self.shape_idx[:-1], varname_suffix="sum")
         elif op == "max":
-            return self.op(ReduceMax, shape_idx=self.shape_idx[:-1], varname_suffix="max")
+            return self.op(
+                ReduceMax, shape_idx=self.shape_idx[:-1], varname_suffix="max")
         elif op == "abssum":
-            return self.op(ReduceAbsSum, shape_idx=self.shape_idx[:-1], varname_suffix="abssum")
+            return self.op(
+                ReduceAbsSum, shape_idx=self.shape_idx[:-1], varname_suffix="abssum")
         else:
             raise NotImplementedError
-    
+
+
 class SymbolicTensor(SymbolScalar):
     """
     Tensor for CustomIO
     """
-    def __init__(self, varname:str, shape:tuple):
+
+    def __init__(self, varname: str, shape: tuple):
         # convert shape to shape_idx
-        super().__init__(varname, Var(varname), shape_idx=[str(i) for i in shape])
+        super().__init__(
+            varname, Var(varname), shape_idx=[
+                str(i) for i in shape])
         self.shape = shape
-    
+
+
 class SymbolicConst(SymbolScalar):
     """
     Const for constant value
     """
+
     def __init__(self, value):
-        # TODO: not float const # str(value)+(".f" if isinstance(value, int) else "f")
+        # TODO: not float const # str(value)+(".f" if isinstance(value, int)
+        # else "f")
         super().__init__(f"float({str(value)})", Const(value), prev=[], shape_idx=[],
                          require_grad=False)
 
-        
-class CustomIO:
-    def __init__(self, input_tensors:dict[str, tuple]={}):
-        self.input_tensors:dict[str, SymbolicTensor] = {}
-        for k,v in input_tensors.items():
-            self.input_tensors[k] = SymbolicTensor(k,v)
 
-    def __call__(self, tensor_name:str, tensor_shape:tuple):
+class CustomIO:
+    def __init__(self, input_tensors: dict[str, tuple] = {}):
+        self.input_tensors: dict[str, SymbolicTensor] = {}
+        for k, v in input_tensors.items():
+            self.input_tensors[k] = SymbolicTensor(k, v)
+
+    def __call__(self, tensor_name: str, tensor_shape: tuple):
         if tensor_name in self.input_tensors:
             raise ValueError(f"Tensor {tensor_name} already exists")
         self.input_tensors[tensor_name].shape = tensor_shape
+
         def decorator(func):
             def wrapper(*args, **kwargs):
                 result = func(*args, **kwargs)
-            
+
                 return result
             return wrapper
         return decorator
@@ -258,5 +281,3 @@ class CustomIO:
 
 def create_block_mask(causal_mask, B, H, QLen, KVLen, device):
     return True
-        
-
