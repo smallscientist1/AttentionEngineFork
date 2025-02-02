@@ -4,6 +4,7 @@ import functools
 from .graph import *
 from .utils import IndentedCode
 import functools
+from copy import copy, deepcopy
 
 # TODO: support online_func extern_input_tensor
 
@@ -42,6 +43,9 @@ class SymbolScalar:
         self.visit_count = 0
 
         self.grad = None  # SymbolicScalar
+    
+    def __repr__(self):
+        return f"SymbolScalar({self.varname}, {self.code}, {self.prev}, {self.shape_idx}, {self.require_grad})"
 
     # @plus_count # TODO: plus count bug
     def op(self, code: Type[Node], others: list = [],
@@ -91,8 +95,8 @@ class SymbolScalar:
         if self.code.type == "Var" or self.code.type == "Const":
             return
         if self.code.type == "Add":
-            grad_0 = grad
-            grad_1 = grad
+            grad_0 = copy(grad)
+            grad_1 = copy(grad)
             if self.prev[0].require_grad:
                 if self.prev[0].grad:
                     grad_0 = grad_0 + self.prev[0].grad

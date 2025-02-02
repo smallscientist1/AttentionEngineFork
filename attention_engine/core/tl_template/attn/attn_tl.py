@@ -312,6 +312,12 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual,
                 # T.clear(dsT)
                 # T.gemm(V_local, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
+                if is_casual:
+                    for i, j in T.Parallel(block_M, block_N):
+                        dsT[i, j] = T.if_then_else(
+                            by * block_M + i <= k * block_N + j, dsT[i, j], 0
+                        )
+
                 # custom_bwd
                 {{custom_bwd_body | indent(16)}}
                 
