@@ -19,7 +19,7 @@ def to_tl_op(type: str, *args: SymbolScalar):
         code.add_line(
             f"T.reduce_abssum({args[1].varname}, {args[0].varname},dim=1)"
         )
-    elif type == "Sub" or type == "Add" or type == "Mul" or type == "Div" or type == "Neg" or type == "Exp" or type == "Log" or type == "Abs" or type == "Max" or type == "Tanh":
+    elif type == "Sub" or type == "Add" or type == "Mul" or type == "Div" or type == "Neg" or type == "Exp" or type == "Log" or type == "Abs" or type == "Max" or type == "Tanh" or type == "MaxBwd":
         # args idx
         # note: assume input shape is validate: ["1",...] or [arg0[0], ...]
         idx_strs = []
@@ -81,6 +81,10 @@ def to_tl_op(type: str, *args: SymbolScalar):
         elif type == "Abs":
             code.add_line(
                 f"{args[0].varname}[{idx_str}] = T.abs({args[1].varname}{idx_strs[1]})"
+            )
+        elif type == "MaxBwd":
+            code.add_line(
+                f"{args[0].varname}[{idx_str}] = T.if_then_else({args[2].varname}{idx_strs[2]} > {args[3].varname}{idx_strs[3]}, {args[1].varname}{idx_strs[1]}, float(0))"
             )
         else:  # TODO
             raise NotImplementedError(str(type))

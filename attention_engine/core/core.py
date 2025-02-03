@@ -142,12 +142,12 @@ class SymbolScalar:
         elif self.code.type == "Max":
             # TODO: max backward,implement is then else lower
             if self.prev[0].require_grad:
-                grad0 = grad * (self.prev[0] == self)
+                grad0 = grad.maxbwd(self, self.prev[1])
                 if self.prev[0].grad:
                     grad0 = grad0 + self.prev[0].grad
                 self.prev[0].grad = grad0
             if self.prev[1].require_grad:
-                grad1 = grad * (self.prev[1] == self)
+                grad1 = grad.maxbwd(self, self.prev[0])
                 if self.prev[1].grad:
                     grad1 = grad1 + self.prev[1].grad
                 self.prev[1].grad = grad1
@@ -210,6 +210,9 @@ class SymbolScalar:
 
     def max(self, other):
         return self.op(Max, [other])
+    
+    def maxbwd(self, other1, other2):
+        return self.op(MaxBwd, [other1, other2])
 
 
 class SymbolicArray(SymbolScalar):

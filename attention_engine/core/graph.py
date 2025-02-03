@@ -172,6 +172,14 @@ class Max(Node):
 
     def _backward(self, grad: Node):
         raise NotImplementedError
+    
+class MaxBwd(Node):
+    def __init__(self, grad: Node, left: Node, right: Node):
+        super().__init__("MaxBwd")
+        self.inputs = [grad, left, right]
+        
+    def _backward(self, grad: Node):
+        raise NotImplementedError
 
 # reduce ops
 
