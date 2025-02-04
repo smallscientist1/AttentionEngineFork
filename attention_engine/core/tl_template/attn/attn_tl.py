@@ -392,9 +392,9 @@ class _attention(torch.autograd.Function):
         # final_rowscales = tmp[-{{final_rowscales_length}}:]
         maybe_contiguous = lambda x: x.contiguous() if x.stride(-1) != 1 else x
         do, q, k, v, o = [maybe_contiguous(x) for x in (do, q, k, v, o)]
-        block_M = 128
-        block_N = 64 
-        thread_num = 256
+        block_M = {{block_M_bwd}} # 128
+        block_N = {{block_N_bwd}} # 64 
+        thread_num = {{thread_num_bwd}} # 256
         mod_prep = tl.cached(flashattn_bwd_preprocess, [2], BATCH, H, N_CTX, D_HEAD, D_HEAD_V)
         mod_post = tl.cached(flashattn_bwd_postprocess, [1], BATCH, H, N_CTX, D_HEAD, D_HEAD_V)
         if {{isused_doosum}}:

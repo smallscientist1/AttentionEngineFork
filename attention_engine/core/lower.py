@@ -54,6 +54,10 @@ class TunnerOutput:
     stages: str = "2"
     thread_num: str = "256"
     shared_fuse: str = "False"
+    
+    block_M_bwd: str = "128"
+    block_N_bwd: str = "64"
+    thread_num_bwd: str = "256"
 
 
 class lowerOnlineFuncOutput:
@@ -403,15 +407,24 @@ def lower_tl(score_mod, block_mask, online_func,
     else:
         tune_output = TunnerOutput(**tuned_config)
     scores_name = "scores"
-    # TODO
+    # Fwd config
+    # TODO: remove this special check into autotuner
     if dimv > 256:
         tune_output.block_M = "64"
         tune_output.block_N = "64"
         tune_output.stages = "1"
         tune_output.shared_fuse = "True"
-    # TODO: ugly
     if tune_output.shared_fuse == "True":
         scores_name = "scores_1"
+    # Bwd config(TODO: autotuner bwd)
+    if max(dimqk, dimv) <= 64:
+        tune_output.block_M_bwd = "128"
+        tune_output.block_N_bwd = "128"
+        tune_output.thread_num_bwd = "256"
+    elif max(dimqk, dimv) <= 128:
+        tune_output.block_M_bwd = "128"
+        tune_output.block_N_bwd = "64"
+        tune_output.thread_num_bwd = "256"
 
     custom_fwd_inputs_load_shared_bwd = ""
     # for k,v in custom_fwd_inputs.input_tensors.items():
