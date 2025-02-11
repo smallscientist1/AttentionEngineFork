@@ -123,9 +123,5 @@ if __name__ == "__main__":
         # tune=False, tune_file="mha_tune.json"
     )
 
-    # debug: lowered code
-    with open("generated_tl_code.py", "w") as f:
-        f.write(mod.tl_code)
-
     from benchmark.bench_utils import do_bench_attention
     do_bench_attention(mod, B, H, S, D, DV, dtype=dtype, causal=False, seqlenq=128)

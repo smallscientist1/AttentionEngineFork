@@ -79,8 +79,6 @@ if __name__ == "__main__":
                             custom_io = custom_io,
                             tune=True, tune_filename="retention_linear",
                             tune_bwd=True)
-    with open("retention_linear_tlcode.py", "w") as f:
-        f.write(mod.tl_code)
 
     from benchmark.bench_utils import do_bench_retention_linear
     do_bench_retention_linear(mod, B, H, T, D, DV, requires_grad=True)

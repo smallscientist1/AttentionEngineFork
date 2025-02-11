@@ -1,9 +1,11 @@
 from .arch_base import Arch
+
+
 class A100(Arch):
     def __init__(self):
-        self.reg_cap = 65536 # 32768
+        self.reg_cap = 65536  # 32768
         self.register_per_thread = 255
-        self.smem_cap = 163*1024 # 164*1024
+        self.smem_cap = 163 * 1024  # 164*1024
         self.mma_primitive = [16, 8, 16]
 
         self.compute_max_core = 108

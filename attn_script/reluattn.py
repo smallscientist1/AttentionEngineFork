@@ -91,8 +91,6 @@ if __name__ == "__main__":
         online_func=OnlineIdentity(),
         tune = True, tune_file = "reluattn_tune.json"
     )
-    with open("reluattn_tl_code.py", "w") as f:
-        f.write(mod.tl_code)
     from benchmark.bench_utils import do_bench_reluattn
     do_bench_reluattn(mod, B, H, S, D, D)
     # eval()

@@ -130,9 +130,6 @@ if __name__ == "__main__":
     mask_value="0"
     )
 
-    with open("retention_tl.py", "w") as f:
-        f.write(mod.tl_code)
-
     from benchmark.bench_utils import do_bench_retention
     do_bench_retention(mod, B, H, S, D, DV, dtype=torch.float16)
     # eval()
