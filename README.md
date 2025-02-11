@@ -43,7 +43,7 @@ cd ../../
 ```
 - export some environment variables
 ```
-export PYTHONPATH="$(pwd)/attention_engine:$(pwd)/3rdparties/tvm/python:$PYTHONPATH"
+export PYTHONPATH="$(pwd)/attention_engine:$(pwd)/3rd_parties/tvm/python:$PYTHONPATH"
 export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libcuda.so
 ```
 
