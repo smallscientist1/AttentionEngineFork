@@ -1,9 +1,10 @@
 # from ..attn_engine import OnlineFunc
-from .core import SymbolScalar, SymbolicArray, CustomIO
+from .core import SymbolScalar, SymbolicArray, CustomIO, is_causal_mask, is_less_causal_mask, create_block_mask
 from .graph import Var, Const
 from .utils import IndentedCode
 from .tl_gen import generate_tl_from_dag
 from .attn_template import TlAttnTemplate
+from .blockattn_template import TlBlockAttnTemplate
 from dataclasses import dataclass
 
 # TODO: bwd map
@@ -45,6 +46,7 @@ class lowerOutput:
     swizzle_shared: str = ""
     tl_dtype: str = "float16"
     is_inf_mask: str = "True"
+    is_casual: str = "False"
 
 
 @dataclass
@@ -394,7 +396,8 @@ def lower_score_mod(score_mod, custom_fwd_inputs, lower_output: lowerOutput):
 
 def lower_tl(score_mod, block_mask, online_func,
              custom_fwd_inputs,
-             dimqk, dimv, tl_dtype, mask_value, tuned_config=None):
+             Batch, head, seqlen,
+             dimqk, dimv, tl_dtype, mask_value, tuned_config=None, infer_mask=False):
 
     lower_output = lowerOutput()
     lower_output.tl_dtype = tl_dtype
@@ -511,23 +514,60 @@ def lower_tl(score_mod, block_mask, online_func,
                                             len(online_func.final_rowscales) +
                                             int(lower_online_func_output.isused_doosum) +
                                             3)]
+    
+    if infer_mask:
+        block_M = int(tune_output.block_M)
+        block_N = int(tune_output.block_N)
+        import torch
+        if block_mask is not None:
+            block_mask = create_block_mask(block_mask, Batch, head, seqlen, seqlen, "cuda" if torch.cuda.is_available() else "cpu", block_M, block_N)
+        if block_mask is not None:
+            lower_output.is_casual = "True" if is_less_causal_mask(block_mask,block_M, block_N) else "False"
+        else:
+            lower_output.is_casual = "False"
+        if block_mask is not None and not is_causal_mask(block_mask, block_M, block_N):
+            tlattn_template = TlBlockAttnTemplate
+            output_idx_list = [i+1 for i in output_idx_list]
+        else:
+            tlattn_template = TlAttnTemplate
+        
+        return tlattn_template(
+            custom_fwd_inputs=custom_fwd_inputs_str,
+            custom_fwd_inputs_init=custom_fwd_inputs_init,
+            custom_fwd_inputs_load_prolog=custom_fwd_inputs_load_prolog,
+            custom_fwd_inputs_load_s2r=custom_fwd_inputs_load_s2r,
+            custom_fwd_inputs_load_shared=custom_fwd_inputs_load_shared,
+            custom_fwd_inputs_load_shared_bwd=custom_fwd_inputs_load_shared_bwd,
+            **lower_online_func_output.__dict__,
+            **lower_score_mod_output.__dict__,
 
-    return TlAttnTemplate(
-        custom_fwd_inputs=custom_fwd_inputs_str,
-        custom_fwd_inputs_init=custom_fwd_inputs_init,
-        custom_fwd_inputs_load_prolog=custom_fwd_inputs_load_prolog,
-        custom_fwd_inputs_load_s2r=custom_fwd_inputs_load_s2r,
-        custom_fwd_inputs_load_shared=custom_fwd_inputs_load_shared,
-        custom_fwd_inputs_load_shared_bwd=custom_fwd_inputs_load_shared_bwd,
-        **lower_online_func_output.__dict__,
-        **lower_score_mod_output.__dict__,
+            **lower_output.__dict__,
+            **tune_output.__dict__,
 
-        **lower_output.__dict__,
-        **tune_output.__dict__,
+            output_idx_list=str(output_idx_list),
+            bwd_output_idx_list=str(bwd_output_idx_list)
+        )(), block_mask
+        
+    else:
+        tlattn_template = TlAttnTemplate
+        lower_output.is_casual = "True" if block_mask is not None else "False"
 
-        output_idx_list=str(output_idx_list),
-        bwd_output_idx_list=str(bwd_output_idx_list)
-    )()
+        return tlattn_template(
+            custom_fwd_inputs=custom_fwd_inputs_str,
+            custom_fwd_inputs_init=custom_fwd_inputs_init,
+            custom_fwd_inputs_load_prolog=custom_fwd_inputs_load_prolog,
+            custom_fwd_inputs_load_s2r=custom_fwd_inputs_load_s2r,
+            custom_fwd_inputs_load_shared=custom_fwd_inputs_load_shared,
+            custom_fwd_inputs_load_shared_bwd=custom_fwd_inputs_load_shared_bwd,
+            **lower_online_func_output.__dict__,
+            **lower_score_mod_output.__dict__,
+
+            **lower_output.__dict__,
+            **tune_output.__dict__,
+
+            output_idx_list=str(output_idx_list),
+            bwd_output_idx_list=str(bwd_output_idx_list)
+        )()
 
 
 if __name__ == "__main__":

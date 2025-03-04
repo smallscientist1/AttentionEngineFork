@@ -96,7 +96,8 @@ class OnlineFunc:
 
 class AttentionEngine:
     def __init__(self, qkv_meta, custom_fwd_inputs, score_mod, block_mask,
-                 online_func, mask_value="-inf", device=H100(), backend="tl", tune=False, tune_file="tuned_result.json"):
+                 online_func, mask_value="-inf", device=H100(), backend="tl", tune=False, tune_file="tuned_result.json", 
+                 infer_mask=False):
         # tunner
         need_engine_fuse, fuse_config = decider(qkv_meta, device)
 
@@ -108,7 +109,7 @@ class AttentionEngine:
                 score_mod,
                 block_mask,
                 online_func,
-                mask_value)
+                mask_value, infer_mask=infer_mask and not tune)
 
             if tune:
                 from autotuner.attnfwd_tunner_engine2 import AttnFwdTunner
@@ -150,7 +151,8 @@ class AttentionEngine:
                     block_mask,
                     online_func,
                     mask_value,
-                    tuned_config)
+                    tuned_config,
+                    infer_mask=infer_mask)
 
         elif backend == "cute":
             # must be same with cute_template.py
@@ -180,7 +182,7 @@ class AttentionEngine:
                 causal=True if block_mask is not None else False)
 
     def _compile_tl(self, qkv_meta, custom_fwd_inputs, score_mod, block_mask,
-                    online_func, mask_value="-inf", tuned_config=None):
+                    online_func, mask_value="-inf", tuned_config=None, infer_mask=False):
         tl_dtype_map = {
             torch.float16: "float16",
             torch.bfloat16: "bfloat16",
@@ -199,15 +201,32 @@ class AttentionEngine:
                                       mask_value,
                                       tuned_config)
         else:
-            tl_code = lower_tl(score_mod,
-                               block_mask,
-                               online_func,
-                               custom_fwd_inputs,
-                               qkv_meta[0].shape[3],
-                               qkv_meta[2].shape[3],
-                               tl_dtype_map[qkv_meta[0].dtype],
-                               mask_value,
-                               tuned_config)
+            if infer_mask:
+                tl_code, block_mask = lower_tl(score_mod,
+                                block_mask,
+                                online_func,
+                                custom_fwd_inputs,
+                                qkv_meta[0].shape[0], # B
+                                qkv_meta[0].shape[1], # H
+                                q_seqlen, # S
+                                qkv_meta[0].shape[3],
+                                qkv_meta[2].shape[3],
+                                tl_dtype_map[qkv_meta[0].dtype],
+                                mask_value,
+                                tuned_config, infer_mask)
+            else:
+                tl_code = lower_tl(score_mod,
+                                block_mask,
+                                online_func,
+                                custom_fwd_inputs,
+                                qkv_meta[0].shape[0], # B
+                                qkv_meta[0].shape[1], # H
+                                q_seqlen, # S
+                                qkv_meta[0].shape[3],
+                                qkv_meta[2].shape[3],
+                                tl_dtype_map[qkv_meta[0].dtype],
+                                mask_value,
+                                tuned_config)
         self.tl_code = tl_code  
         # for debug
         # with open("generated_tl.py","w") as f:
@@ -227,10 +246,14 @@ class AttentionEngine:
         spec.loader.exec_module(tl_attn)
         self.kernel = tl_attn.kernel
         self.attention = tl_attn.attention
+        if infer_mask:
+            self.block_mask = block_mask
 
     def __call__(self, *args, **kargs):
-
-        o = self.attention(*args, **kargs)
+        if self.block_mask is not None:
+            o = self.attention(*args, self.block_mask, **kargs)
+        else:
+            o = self.attention(*args, **kargs)
         return o
 
 
