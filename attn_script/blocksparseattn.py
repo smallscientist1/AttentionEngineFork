@@ -87,7 +87,7 @@ class OnlineSoftmax(OnlineFunc):
         return dscores
 
 if __name__ == "__main__":
-    B, H ,S, D, DV = 1,1,2048,D, 128
+    B, H ,S, D, DV = 1,32,2048,D, 128
     dtype = torch.float16 # performance regression for bfloat16
     qkv_meta = (
         meta_tensor(B, H, S, D, dtype=dtype),
@@ -118,13 +118,13 @@ if __name__ == "__main__":
     o = mod(q,k,v)
     from core.core import create_mask
     mask = create_mask(block_sparse_mask, B, H, S, S, device="cuda")
-    print(mask)
     def ref_attn(q,k,v):
         attn = torch.einsum("bqhd,bkhd->bhqk", q, k)
-        attn = attn * (1/D ** 0.5)
-        attn = attn * mask
+        attn = (attn * (1/D ** 0.5)).float()
+        # set to -inf for not masked positions
+        attn = attn.masked_fill(~mask, float("-inf"))
         attn = attn.softmax(dim=-1)
-        return torch.einsum("bhqk,bkhd->bqhd", attn, v)
+        return torch.einsum("bhqk,bkhd->bqhd", attn.to(dtype), v)
     
     ref_o = ref_attn(q,k,v)
     with open("o.txt", "w") as f:
