@@ -248,6 +248,8 @@ class AttentionEngine:
         self.attention = tl_attn.attention
         if infer_mask:
             self.block_mask = block_mask
+        else:
+            self.block_mask = None
 
     def __call__(self, *args, **kargs):
         if self.block_mask is not None:

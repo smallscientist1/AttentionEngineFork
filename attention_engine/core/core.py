@@ -407,7 +407,7 @@ def is_causal_mask(mask_tensor, block_M, block_N):
     # 创建一个下三角掩码
     mask = (q_idx+1)*block_M > kv_idx*block_N
     # 判断是否相等
-    return torch.all(mask_tensor.bool() == mask)
+    return torch.all(mask_tensor.bool() == mask.to(mask_tensor.device))
 
 def is_less_causal_mask(mask_tensor, block_M, block_N):
     """

@@ -93,7 +93,7 @@ def kernel(batch, heads, seq_len, dim, dimv,
             {{online_rowscales_initvalue | indent(12)}}
 
             for vj in T.serial(downsample_len):
-                    block_mask[vj] = BlockSparseMask[bz, by, bx, vj]
+                block_mask[vj] = BlockSparseMask[bz, by, bx, vj]
 
             # TODO: mask
             loop_range = (
@@ -145,7 +145,6 @@ def kernel(batch, heads, seq_len, dim, dimv,
                         T.gemm(acc_s_cast_1, V_shared, acc_o, policy=(T.GemmWarpPolicy.FullCol))
                     else:
                         T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
-                
             # online_fwd_epilogue
             {{online_func_epilogue | indent(12)}}
 
@@ -382,11 +381,14 @@ class _attention(torch.autograd.Function):
         D_HEADV = v.shape[-1]
         block_M = {{block_M}} # 128
         block_N = {{block_N}} # 128 if D_HEAD <= 128 else 64
-        stages = {{stages}} # 2
+        downsample_len = N_CTX // block_N
+        # stages = 0 for tilelang blocksparse
+        stages = 0 # {{stages}} # 2
         thread_num = {{thread_num}} # 256
         shared_fuse = {{shared_fuse}} # False
         output_idx_list = {{output_idx_list}}
-        mod = tl.profiler.cached(kernel, output_idx_list, BATCH, H, N_CTX, D_HEAD, D_HEADV, block_M, block_N, stages, thread_num, shared_fuse)
+        program = kernel(BATCH, H, N_CTX, D_HEAD, D_HEADV, downsample_len, block_M, block_N, stages, thread_num, shared_fuse)
+        mod = tl.compile(program, out_idx=output_idx_list)
         if len(output_idx_list) == 1:
             o = mod(q, k, v, *custom_fwd_inputs, block_sparse_mask)
             final_scale = []
