@@ -1,6 +1,7 @@
 import torch
 from core.lower import lower_tl
 from core.lower_decode import lower_tl as lower_tl_decode
+from core.lower_decode_gqa import lower_tl as lower_tl_decode_gqa
 from core.lower_cute import lower_cute
 from core.core import CustomIO, SymbolicArray, SymbolScalar, Var
 
@@ -189,9 +190,27 @@ class AttentionEngine:
         }
         q_seqlen = qkv_meta[0].shape[2]
         kv_len = qkv_meta[2].shape[2]
+        head = qkv_meta[0].shape[1]
+        head_kv = qkv_meta[2].shape[1]
         if q_seqlen != kv_len:
             assert (q_seqlen < kv_len)
-            tl_code = lower_tl_decode(score_mod,
+            if head > head_kv:
+                assert q_seqlen == 1
+                infer_mask = True
+                tl_code, block_mask = lower_tl_decode_gqa(score_mod,
+                                      block_mask,
+                                      online_func,
+                                      custom_fwd_inputs,
+                                      qkv_meta[0].shape[0], # B
+                                        qkv_meta[0].shape[1], # H
+                                        kv_len, # S
+                                      qkv_meta[0].shape[3],
+                                      qkv_meta[2].shape[3],
+                                      tl_dtype_map[qkv_meta[0].dtype],
+                                      mask_value,
+                                      tuned_config)
+            else:
+                tl_code = lower_tl_decode(score_mod,
                                       block_mask,
                                       online_func,
                                       custom_fwd_inputs,
