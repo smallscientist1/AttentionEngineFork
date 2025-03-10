@@ -1174,9 +1174,11 @@ def bench_retention_fwd(attn, B, H, S, D, DV, dtype=torch.bfloat16):
 
 
 def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16,
-                       seqlenq=None, require_grad=False, causal=True):
+                       seqlenq=None, require_grad=False, causal=True, groupnum=None):
     if seqlenq is None:
         seqlenq = S
+    if groupnum is None:
+        groupnum = H
     tflops = 2 * B * H * seqlenq * S * D + 2 * B * H * seqlenq * S * DV
     tflops = tflops * 0.5 if causal else tflops
     bwd_tflops = 4 * B * H * S * S * DV + 6 * B * H * S * S * D
@@ -1190,10 +1192,10 @@ def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16,
         B, seqlenq, H, D, device=device, dtype=dtype, requires_grad=require_grad
     )
     key = torch.randn(
-        B, S, H, D, device=device, dtype=dtype, requires_grad=require_grad
+        B, S, groupnum, D, device=device, dtype=dtype, requires_grad=require_grad
     )
     value = torch.randn(
-        B, S, H, DV, device=device, dtype=dtype, requires_grad=require_grad
+        B, S, groupnum, DV, device=device, dtype=dtype, requires_grad=require_grad
     )
     do = torch.randn(
         B, seqlenq, H, DV, device=device, dtype=dtype, requires_grad=False

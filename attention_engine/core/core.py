@@ -444,3 +444,9 @@ def create_block_mask(mask_mod, B, H, QLen, KVLen, device, Q_BLOCK_SIZE=None, KV
     # TODO: sparse block
     
     return partial_block_mask
+
+def create_block_idx(mask_mod, B, H, QLen, KVLen, device, Q_BLOCK_SIZE=None, KV_BLOCK_SIZE=None):
+    block_mask = create_block_mask(mask_mod, B, H, QLen, KVLen, device, Q_BLOCK_SIZE, KV_BLOCK_SIZE)
+    block_idx = torch.nonzero(block_mask, as_tuple=False)
+    # TODO
+    return block_idx

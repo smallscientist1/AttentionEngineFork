@@ -4,6 +4,7 @@ import tilelang
 from tilelang.autotuner import *
 import tilelang.language as T
 import itertools
+from tilelang.profiler import cached
 
 # TL_GLOBAL_FUNC = """
 def fast_tanh(A, B):
@@ -35,10 +36,10 @@ def get_configs():
 
 def kernel(batch, heads, groups, seqlen_kv, dim, dimv, tune=False):
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
-    shape_q = [batch, heads, dim]
+    shape_q = [batch, 1, heads, dim]
     shape_k = [batch, seqlen_kv, groups, dim]
     shape_v = [batch, seqlen_kv, groups, dimv]
-    shape_o = [batch, heads, dimv]
+    shape_o = [batch, 1, heads, dimv]
     dtype = "{{tl_dtype}}" # "float16"
     accum_dtype = "float"
     kv_group_num = heads // groups
@@ -48,21 +49,22 @@ def kernel(batch, heads, groups, seqlen_kv, dim, dimv, tune=False):
         valid_block_H = min(block_H, kv_group_num)
         
          # TL_MAIN = """
-        @T.macro
-        def score_mod(
-            # scores: T.Buffer([block_M, block_N], accum_dtype),
-            {{score_mod_inputs | indent(12)}}
-            ):
-            {{score_mod_body | indent(12)}}
-            pass
+         # TODO
+        # @T.macro
+        # def score_mod(
+        #     # scores: T.Buffer([block_M, block_N], accum_dtype),
+        #     {#{score_mod_inputs | indent(12)}#}
+        #     ):
+        #     {#{score_mod_body | indent(12)}#}
+        #     pass
         
-        @T.macro
-        def online_func(
-            # scores: T.Buffer([block_M, block_N], accum_dtype),
-            {{online_func_inputs | indent(12)}}
-        ):
-            {{online_func_body | indent(12)}}
-            pass
+        # @T.macro
+        # def online_func(
+        #     # scores: T.Buffer([block_M, block_N], accum_dtype),
+        #     {#{online_func_inputs | indent(12)}#}
+        # ):
+        #     {#{online_func_body | indent(12)}#}
+        #     pass
 
         @T.macro
         def flash_attn(
@@ -73,7 +75,7 @@ def kernel(batch, heads, groups, seqlen_kv, dim, dimv, tune=False):
                 
                 mask: T.Buffer([batch, groups, 1, seqlen_kv], "uint8"),
                 Output: T.Buffer([batch, heads, dimv], dtype),
-                {{final_rowscales_output | indent(8)}}
+                # {#{final_rowscales_output | indent(8)}#}
         ):
             with T.Kernel(
                     batch, heads // valid_block_H, num_split, threads=threads) as (bx, by, bz):
@@ -95,7 +97,7 @@ def kernel(batch, heads, groups, seqlen_kv, dim, dimv, tune=False):
                 hid = by
                 cur_kv_head = hid // (kv_group_num // valid_block_H)
 
-                T.copy(Q[bid, hid * valid_block_H:hid * valid_block_H + block_H, :], Q_shared)
+                T.copy(Q[bid, 0, hid * valid_block_H:hid * valid_block_H + block_H, :], Q_shared)
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
@@ -134,7 +136,7 @@ def kernel(batch, heads, groups, seqlen_kv, dim, dimv, tune=False):
                 for i in T.Parallel(block_H):
                     logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
                 T.copy(acc_o[:valid_block_H, :], O_shared)
-                T.copy(O_shared, Output[bid, hid * valid_block_H:(hid + 1) * valid_block_H, :])
+                T.copy(O_shared, Output[bid, 0, hid * valid_block_H:(hid + 1) * valid_block_H, :])
 
         @T.macro
         def flash_attn_split(
@@ -166,7 +168,7 @@ def kernel(batch, heads, groups, seqlen_kv, dim, dimv, tune=False):
                 sid = bz
                 cur_kv_head = hid // (kv_group_num // valid_block_H)
 
-                T.copy(Q[bid, hid * valid_block_H:hid * valid_block_H + block_H, :], Q_shared)
+                T.copy(Q[bid, 0, hid * valid_block_H:hid * valid_block_H + block_H, :], Q_shared)
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
@@ -178,7 +180,7 @@ def kernel(batch, heads, groups, seqlen_kv, dim, dimv, tune=False):
                           k * block_N:(seqlen_kv // num_split) * sid + (k + 1) * block_N,
                           cur_kv_head, :], K_shared)
                     T.copy(
-                        mask[bid, cur_kv_head, 1, (seqlen_kv // num_split) * sid +
+                        mask[bid, cur_kv_head, 0, (seqlen_kv // num_split) * sid +
                              k * block_N:(seqlen_kv // num_split) * sid + (k + 1) * block_N], mask_local)
                     T.clear(acc_s)
                     T.gemm(
@@ -260,7 +262,7 @@ def kernel(batch, heads, groups, seqlen_kv, dim, dimv, tune=False):
                     for i in T.Parallel(dim):
                         o_accum_local[i] += po_local[i] * scale_local[0]
                 for i in T.Parallel(dim):
-                    Output[bz, by, i] = o_accum_local[i]
+                    Output[bz, 0, by, i] = o_accum_local[i]
 
         @T.prim_func
         def main_split(
@@ -316,7 +318,37 @@ def kernel(batch, heads, groups, seqlen_kv, dim, dimv, tune=False):
 
         return kernel
 
-program = kernel(
-                block_N={{block_N}}, block_H={{block_M}}, num_split=8, num_stages=2, threads=128)
-torch_kernel = tilelang.compile(program, out_idx=[6])
-attention = torch_kernel
+# def attention(
+#     q,
+#     k,
+#     v,
+#     *custom_fwd_inputs,
+# ):
+#     BATCH, N_CTXQ, H, D_HEAD = q.shape
+#     _, N_CTXKV, G, D_HEADV = v.shape
+#     program = kernel(BATCH, H,G, N_CTXKV,D_HEAD,D_HEADV)
+#     mod = cached(program, [6], {{block_N}}, {{block_M}}, 8, 2, 128)
+#     num_split = 8
+#     {{torch_alloc_final_rowscales | indent(8)}}
+#     O_partial = torch.empty(BATCH, H, num_split, D_HEADV, dtype=q.dtype, device=q.device)
+#     o = mod(q, k, v, *custom_fwd_inputs, {{final_rowscales_list}} O_partial)
+#     return o
+
+class _attention(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, q, k, v, *custom_fwd_inputs):
+        BATCH, N_CTXQ, H, D_HEAD = q.shape
+        _, N_CTXKV, G, D_HEADV = v.shape
+        program = kernel(BATCH, H, G, N_CTXKV, D_HEAD, D_HEADV)
+        mod = cached(program, [6], {{block_N}}, {{block_M}}, 8, 2, 128)
+        num_split = 8
+        {{torch_alloc_final_rowscales | indent(8)}}
+        O_partial = torch.empty(BATCH, H, num_split, D_HEADV, dtype=q.dtype, device=q.device)
+        o = mod(q, k, v, *custom_fwd_inputs, {{final_rowscales_list}} O_partial)
+        return o
+
+    @staticmethod
+    def backward(ctx, grad_o):
+        raise NotImplementedError("Backward not implemented for attention")
+
+attention = _attention.apply

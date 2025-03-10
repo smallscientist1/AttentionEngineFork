@@ -202,7 +202,7 @@ class AttentionEngine:
                                       online_func,
                                       custom_fwd_inputs,
                                       qkv_meta[0].shape[0], # B
-                                        qkv_meta[0].shape[1], # H
+                                        head_kv, # H
                                         kv_len, # S
                                       qkv_meta[0].shape[3],
                                       qkv_meta[2].shape[3],

@@ -1,5 +1,5 @@
 # from ..attn_engine import OnlineFunc
-from .core import SymbolScalar, SymbolicArray, CustomIO, create_block_mask
+from .core import SymbolScalar, SymbolicArray, CustomIO, create_block_mask, create_mask
 from .graph import Var, Const
 from .utils import IndentedCode
 from .tl_gen import generate_tl_from_dag
@@ -58,7 +58,7 @@ class lowerOutput:
 @dataclass
 class TunnerOutput:
     block_M: str = "64"
-    block_N: str = "64"
+    block_N: str = "128"
     stages: str = "2"
     thread_num: str = "256"
     shared_fuse: str = "False"
@@ -200,7 +200,7 @@ def lower_online_func(online_func, lower_output: lowerOutput,
     for k, v in online_func.final_rowscales.items():
         final_rowscales_output += f"g_{k}: T.Buffer([batch, heads, num_split, seq_len], accum_dtype), \n"
         final_rowscales_list += f"g_{k}, "
-        torch_alloc_final_rowscales += f"g_{k} = torch.empty([BATCH, H, num_split, N_CTXQ], dtype=torch.float, device=q.device)\n"
+        torch_alloc_final_rowscales += f"g_{k} = torch.empty([BATCH, H, num_split], dtype=q.dtype, device=q.device)\n"
     final_rowscales_save = ""
     for k, v in new_final_rowscales.items():
         final_rowscales_save += f"T.copy({v.varname}, g_{k}[bid, hid, sid, mid * block_M : (mid + 1) * block_M])\n"
@@ -521,7 +521,8 @@ def lower_tl(score_mod, block_mask, online_func,
     if block_mask is not None:
         block_M = int(tune_output.block_M)
         block_N = int(tune_output.block_N)
-        block_mask = create_block_mask(block_mask, Batch, head, 1, seqlenkv, "cuda" if torch.cuda.is_available() else "cpu", block_M, block_N)
+        # block_mask = create_block_mask(block_mask, Batch, head, 1, seqlenkv, "cuda" if torch.cuda.is_available() else "cpu", block_M, block_N)
+        block_mask = create_mask(block_mask, Batch, head, 1, seqlenkv, "cuda" if torch.cuda.is_available() else "cpu", block_M, block_N)
     else:
         block_mask = torch.ones((Batch, head, 1, seqlenkv), dtype=torch.uint8, device="cuda" if torch.cuda.is_available() else "cpu")
         
