@@ -1,18 +1,25 @@
 # from ..attn_engine import OnlineFunc
-from .core import SymbolScalar, SymbolicArray, CustomIO, is_causal_mask, is_less_causal_mask, create_block_mask
+from .core import SymbolScalar, SymbolicArray, CustomIO, create_block_mask, create_mask
 from .graph import Var, Const
 from .utils import IndentedCode
 from .tl_gen import generate_tl_from_dag
 from .attn_template import TlAttnTemplate
-from .blockattn_template import TlBlockAttnTemplate
 from dataclasses import dataclass
+
+import torch
+import os
+import os.path as osp
+THIS_FILE_PATH = osp.dirname(osp.abspath(__file__))
+TEMPLATE_PATH = osp.join(
+    THIS_FILE_PATH,
+    "tl_template/attn/attn_gqa_inference_tl.py")
 
 # TODO: bwd map
 shape_idx_map = {
-    "batch": "bz",
-    "heads": "by",
-    "seq_len": "bx*block_M:(bx+1)*block_M",
-    "seq_len_kv": "k*block_N:(k+1)*block_N",
+    "batch": "bid",
+    "heads": "hid",
+    "seq_len": "mid*block_M:(mid+1)*block_M",
+    "seq_len_kv": "(seq_len_kv // num_split) * sid + k * block_N : (seq_len_kv // num_split) * sid + (k + 1) * block_N",
     "1": "0"
     # others: ":" -> ":"
 }
@@ -46,32 +53,29 @@ class lowerOutput:
     swizzle_shared: str = ""
     tl_dtype: str = "float16"
     is_inf_mask: str = "True"
-    is_casual: str = "False"
 
 
 @dataclass
 class TunnerOutput:
-    block_M: str = "128"
+    block_M: str = "64"
     block_N: str = "128"
     stages: str = "2"
     thread_num: str = "256"
     shared_fuse: str = "False"
-    
-    block_M_bwd: str = "128"
-    block_N_bwd: str = "64"
-    thread_num_bwd: str = "256"
 
 
 class lowerOnlineFuncOutput:
 
-    def __init__(self, final_rowscales_output, final_rowscales_init, online_rowscales_initvalue, online_func_init, online_func_inputs, online_func_body, online_func_inputs_list, o_scale, online_func_epilogue, final_rowscales_save,
+    def __init__(self, final_rowscales_list, final_rowscales_output, final_rowscales_init, torch_alloc_final_rowscales, online_rowscales_initvalue, online_func_init, online_func_inputs, online_func_body, online_func_inputs_list, o_scale, online_func_epilogue, final_rowscales_save,
                  online_rowscales_update,
                  isused_doosum, final_rowscales_length, final_rowscales_load, online_func_fwd, custom_bwd_inputs_load, custom_bwd_body,
                  final_rowscales_shared_init,
                  custom_bwd_inputs, custom_bwd_inputs_init,
                  o_scale_varname):
+        self.final_rowscales_list = final_rowscales_list
         self.final_rowscales_output = final_rowscales_output
         self.final_rowscales_init = final_rowscales_init
+        self.torch_alloc_final_rowscales = torch_alloc_final_rowscales
         self.online_rowscales_initvalue = online_rowscales_initvalue
         self.online_func_init = online_func_init
         self.online_func_inputs = online_func_inputs
@@ -191,11 +195,15 @@ def lower_online_func(online_func, lower_output: lowerOutput,
     online_func_epilogue = str(tl_code)
     input_vars.update(input_vars_final)
     final_rowscales_output = ""
+    final_rowscales_list = ""
+    torch_alloc_final_rowscales = ""
     for k, v in online_func.final_rowscales.items():
-        final_rowscales_output += f"g_{k}: T.Buffer([batch, heads, seq_len], accum_dtype), \n"
+        final_rowscales_output += f"g_{k}: T.Buffer([batch, heads, num_split, seq_len], accum_dtype), \n"
+        final_rowscales_list += f"g_{k}, "
+        torch_alloc_final_rowscales += f"g_{k} = torch.empty([BATCH, H, num_split], dtype=q.dtype, device=q.device)\n"
     final_rowscales_save = ""
     for k, v in new_final_rowscales.items():
-        final_rowscales_save += f"T.copy({v.varname}, g_{k}[bz, by, bx * block_M : (bx + 1) * block_M])\n"
+        final_rowscales_save += f"T.copy({v.varname}, g_{k}[bid, hid, sid, mid * block_M : (mid + 1) * block_M])\n"
 
     online_func_init = ""
     # already in input_vars
@@ -271,8 +279,8 @@ def lower_online_func(online_func, lower_output: lowerOutput,
     custom_bwd_inputs = f"g_doosum: T.Buffer([batch, heads, seq_len], accum_dtype), \n" if isused_doosum else ""
     final_rowscales_shared_init = ""
     for k, v in final_rowscales_bwd.items():
-        final_rowscales_shared_init += f"{v.varname} = T.alloc_shared([{', '.join(v.shape_idx)}], accum_dtype, scope='shared')\n"
-    custom_bwd_inputs_init = "doosum_shared = T.alloc_shared([1, block_N], accum_dtype, scope='shared')" if isused_doosum else ""
+        final_rowscales_shared_init += f"{v.varname} = T.alloc_shared([{', '.join(v.shape_idx)}], accum_dtype)\n"
+    custom_bwd_inputs_init = "doosum_shared = T.alloc_shared([1, block_N], accum_dtype)" if isused_doosum else ""
     final_rowscales_load = ""
     for k, v in final_rowscales_bwd.items():
         final_rowscales_load += f"T.copy(g_{k}[bz, bx, k * block_N : (k + 1) * block_N], {v.varname})\n"
@@ -280,7 +288,9 @@ def lower_online_func(online_func, lower_output: lowerOutput,
     final_rowscales_length = len(final_rowscales_bwd)
 
     return lowerOnlineFuncOutput(
+        final_rowscales_list=final_rowscales_list,
         final_rowscales_output=final_rowscales_output,
+        torch_alloc_final_rowscales=torch_alloc_final_rowscales,
         online_rowscales_initvalue=online_rowscales_initvalue,
         online_func_init=online_func_init,
         online_func_inputs=online_func_inputs,
@@ -396,8 +406,8 @@ def lower_score_mod(score_mod, custom_fwd_inputs, lower_output: lowerOutput):
 
 def lower_tl(score_mod, block_mask, online_func,
              custom_fwd_inputs,
-             Batch, head, seqlen,
-             dimqk, dimv, tl_dtype, mask_value, tuned_config=None, infer_mask=False):
+             Batch, head, seqlenkv,
+             dimqk, dimv, tl_dtype, mask_value, tuned_config=None):
 
     lower_output = lowerOutput()
     lower_output.tl_dtype = tl_dtype
@@ -410,24 +420,15 @@ def lower_tl(score_mod, block_mask, online_func,
     else:
         tune_output = TunnerOutput(**tuned_config)
     scores_name = "scores"
-    # Fwd config
-    # TODO: remove this special check into autotuner
+    # TODO
     if dimv > 256:
         tune_output.block_M = "64"
         tune_output.block_N = "64"
         tune_output.stages = "1"
         tune_output.shared_fuse = "True"
+    # TODO: ugly
     if tune_output.shared_fuse == "True":
         scores_name = "scores_1"
-    # Bwd config(TODO: autotuner bwd)
-    if max(dimqk, dimv) <= 64:
-        tune_output.block_M_bwd = "128"
-        tune_output.block_N_bwd = "128"
-        tune_output.thread_num_bwd = "256"
-    elif max(dimqk, dimv) <= 128:
-        tune_output.block_M_bwd = "128"
-        tune_output.block_N_bwd = "64"
-        tune_output.thread_num_bwd = "256"
 
     custom_fwd_inputs_load_shared_bwd = ""
     # for k,v in custom_fwd_inputs.input_tensors.items():
@@ -458,6 +459,7 @@ def lower_tl(score_mod, block_mask, online_func,
     #     custom_fwd_inputs.input_tensors[k].shape_idx = shape_idx_block
 
     custom_fwd_inputs_str = ""
+    custom_fwd_inputs_list = ""
     # for k,v in custom_fwd_inputs.input_tensors.items():
     #     custom_fwd_inputs_str += f"g_{k}: T.Buffer([{', '.join(v.shape_idx)}], accum_dtype), \n"
     custom_fwd_inputs_init = ""
@@ -493,16 +495,18 @@ def lower_tl(score_mod, block_mask, online_func,
         # TODO: dtype of custom_fwd_inputs
         custom_fwd_inputs_init += f"{k} = T.alloc_fragment([{', '.join(shape_idx_block)}], {custom_input_dtype})\n"
         custom_fwd_inputs_str += f"g_{k}: T.Buffer([{', '.join(v.shape_idx)}], {custom_input_dtype}), \n"
+        custom_fwd_inputs_list += f"g_{k}, "
         custom_fwd_inputs.input_tensors[k].shape_idx = shape_idx_block
 
     lower_score_mod_output = lower_score_mod(
         score_mod, custom_fwd_inputs, lower_output)
     lower_online_func_output = lower_online_func(
         online_func, lower_output, scores_name)
-    output_idx_list = [i for i in range(3 +
-                                        len(custom_fwd_inputs.input_tensors), 3 +
+    output_idx_list = [i for i in range(4 +
                                         len(custom_fwd_inputs.input_tensors) +
+                                        len(online_func.final_rowscales), 4 +
                                         1 +
+                                        len(custom_fwd_inputs.input_tensors) +
                                         len(online_func.final_rowscales))]
 
     # TODO: custom_fwd_inputs grad
@@ -514,60 +518,32 @@ def lower_tl(score_mod, block_mask, online_func,
                                             len(online_func.final_rowscales) +
                                             int(lower_online_func_output.isused_doosum) +
                                             3)]
-    
-    if infer_mask:
+    if block_mask is not None:
         block_M = int(tune_output.block_M)
         block_N = int(tune_output.block_N)
-        import torch
-        if block_mask is not None:
-            block_mask = create_block_mask(block_mask, Batch, head, seqlen, seqlen, "cuda" if torch.cuda.is_available() else "cpu", block_M, block_N)
-        if block_mask is not None:
-            lower_output.is_casual = "True" if is_less_causal_mask(block_mask,block_M, block_N) else "False"
-        else:
-            lower_output.is_casual = "False"
-        if block_mask is not None and not is_causal_mask(block_mask, block_M, block_N):
-            tlattn_template = TlBlockAttnTemplate
-            output_idx_list = [i+1 for i in output_idx_list]
-        else:
-            tlattn_template = TlAttnTemplate
-        
-        return tlattn_template(
-            custom_fwd_inputs=custom_fwd_inputs_str,
-            custom_fwd_inputs_init=custom_fwd_inputs_init,
-            custom_fwd_inputs_load_prolog=custom_fwd_inputs_load_prolog,
-            custom_fwd_inputs_load_s2r=custom_fwd_inputs_load_s2r,
-            custom_fwd_inputs_load_shared=custom_fwd_inputs_load_shared,
-            custom_fwd_inputs_load_shared_bwd=custom_fwd_inputs_load_shared_bwd,
-            **lower_online_func_output.__dict__,
-            **lower_score_mod_output.__dict__,
-
-            **lower_output.__dict__,
-            **tune_output.__dict__,
-
-            output_idx_list=str(output_idx_list),
-            bwd_output_idx_list=str(bwd_output_idx_list)
-        )(), block_mask
-        
+        # block_mask = create_block_mask(block_mask, Batch, head, 1, seqlenkv, "cuda" if torch.cuda.is_available() else "cpu", block_M, block_N)
+        block_mask = create_mask(block_mask, Batch, head, 1, seqlenkv, "cuda" if torch.cuda.is_available() else "cpu", block_M, block_N)
     else:
-        tlattn_template = TlAttnTemplate
-        lower_output.is_casual = "True" if block_mask is not None else "False"
+        block_mask = torch.ones((Batch, head, 1, seqlenkv), dtype=torch.uint8, device="cuda" if torch.cuda.is_available() else "cpu")
+        
+    return TlAttnTemplate(
+        TEMPLATE_PATH,
+        custom_fwd_inputs=custom_fwd_inputs_str,
+        custom_fwd_inputs_list=custom_fwd_inputs_list,
+        custom_fwd_inputs_init=custom_fwd_inputs_init,
+        custom_fwd_inputs_load_prolog=custom_fwd_inputs_load_prolog,
+        custom_fwd_inputs_load_s2r=custom_fwd_inputs_load_s2r,
+        custom_fwd_inputs_load_shared=custom_fwd_inputs_load_shared,
+        custom_fwd_inputs_load_shared_bwd=custom_fwd_inputs_load_shared_bwd,
+        **lower_online_func_output.__dict__,
+        **lower_score_mod_output.__dict__,
 
-        return tlattn_template(
-            custom_fwd_inputs=custom_fwd_inputs_str,
-            custom_fwd_inputs_init=custom_fwd_inputs_init,
-            custom_fwd_inputs_load_prolog=custom_fwd_inputs_load_prolog,
-            custom_fwd_inputs_load_s2r=custom_fwd_inputs_load_s2r,
-            custom_fwd_inputs_load_shared=custom_fwd_inputs_load_shared,
-            custom_fwd_inputs_load_shared_bwd=custom_fwd_inputs_load_shared_bwd,
-            **lower_online_func_output.__dict__,
-            **lower_score_mod_output.__dict__,
+        **lower_output.__dict__,
+        **tune_output.__dict__,
 
-            **lower_output.__dict__,
-            **tune_output.__dict__,
-
-            output_idx_list=str(output_idx_list),
-            bwd_output_idx_list=str(bwd_output_idx_list)
-        )()
+        output_idx_list=str(output_idx_list),
+        bwd_output_idx_list=str(bwd_output_idx_list)
+    )(), block_mask
 
 
 if __name__ == "__main__":

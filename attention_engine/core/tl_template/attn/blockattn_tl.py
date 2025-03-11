@@ -15,6 +15,7 @@ def make_dq_layout(dQ):
 
 # TL_KERNEL = """
 def kernel(batch, heads, seq_len, dim, dimv, 
+           downsample_len,
         block_M = None, block_N = None, num_stages = None, thread_num = None,
         shared_fuse = None):
     # scale = (1.0 / dim) ** 0.5 * 1.44269504  # log2(e) # 0.69314718  loge(2)
@@ -22,12 +23,15 @@ def kernel(batch, heads, seq_len, dim, dimv,
     shape_v = [batch, seq_len, heads, dimv]
     # TODO: seqlenkv
     seq_len_kv = seq_len
+    block_mask_shape = [batch, heads, downsample_len, downsample_len]
     dtype = "{{tl_dtype}}" # "float16"
     accum_dtype = "float"
+    block_mask_dtype = "int8"
     
     # TODO: mask
     is_casual = {{is_casual}} # True
     # shared_fuse = True
+    assert(downsample_len == seq_len_kv // block_N)
 
 # TL_MAIN = """
     @T.macro
@@ -54,6 +58,7 @@ def kernel(batch, heads, seq_len, dim, dimv,
         V: T.Buffer(shape_v, dtype), # type: ignore
         {{custom_fwd_inputs | indent(8)}}
 
+        BlockSparseMask: T.Buffer(block_mask_shape, block_mask_dtype), # type: ignore
         Output: T.Buffer(shape_v, dtype), # type: ignore
         {{final_rowscales_output | indent(8)}}
     ):
@@ -72,6 +77,8 @@ def kernel(batch, heads, seq_len, dim, dimv,
             {{custom_fwd_inputs_init | indent(12)}}
             {{online_func_init | indent(12)}}
             {{final_rowscales_init | indent(12)}}
+            
+            block_mask = T.alloc_local([downsample_len], block_mask_dtype)
 
             T.annotate_layout({
                 Q_shared: tl.layout.make_swizzled_layout(Q_shared),
@@ -85,56 +92,59 @@ def kernel(batch, heads, seq_len, dim, dimv,
 
             {{online_rowscales_initvalue | indent(12)}}
 
+            for vj in T.serial(downsample_len):
+                block_mask[vj] = BlockSparseMask[bz, by, bx, vj]
+
             # TODO: mask
             loop_range = (
                 T.ceildiv((bx + 1) * block_M, block_N) if is_casual else T.ceildiv(seq_len, block_N)
             )
 
             for k in T.Pipelined(loop_range, num_stages=num_stages):
-                T.copy(K[bz, k * block_N : (k + 1) * block_N, by, :], K_shared)
+                if block_mask[k] != 0:
+                    T.copy(K[bz, k * block_N : (k + 1) * block_N, by, :], K_shared)
 
-                # TODO: copy custom_fwd_input_tensor in score_mod&online_func
-                {{custom_fwd_inputs_load_shared | indent(16)}}
+                    # TODO: copy custom_fwd_input_tensor in score_mod&online_func
+                    {{custom_fwd_inputs_load_shared | indent(20)}}
 
-                # TODO: naive solution: if reduce_max, -T.inf; if reduce_sum, 0
-                if is_casual and {{is_inf_mask}}:
-                    for i, j in T.Parallel(block_M, block_N):
-                        scores[i, j] = T.if_then_else(
-                            bx * block_M + i >= k * block_N + j, 0, -T.infinity(scores.dtype)
-                        )
-                else:
-                    T.clear(scores)
-                
-                T.gemm(Q_shared, K_shared, scores, transpose_B=True, policy= (T.GemmWarpPolicy.FullRow if (not shared_fuse) else T.GemmWarpPolicy.FullCol))
-                T.copy(V[bz, k * block_N : (k + 1) * block_N, by, :], V_shared)
+                    # TODO: naive solution: if reduce_max, -T.inf; if reduce_sum, 0
+                    if is_casual and {{is_inf_mask}}:
+                        for i, j in T.Parallel(block_M, block_N):
+                            scores[i, j] = T.if_then_else(
+                                bx * block_M + i >= k * block_N + j, 0, -T.infinity(scores.dtype)
+                            )
+                    else:
+                        T.clear(scores)
                     
-                {{custom_fwd_inputs_load_s2r | indent(16)}}
-                # call score_mod
-                score_mod({{score_mod_inputs_list}}) # scores
+                    T.gemm(Q_shared, K_shared, scores, transpose_B=True, policy= (T.GemmWarpPolicy.FullRow if (not shared_fuse) else T.GemmWarpPolicy.FullCol))
+                    T.copy(V[bz, k * block_N : (k + 1) * block_N, by, :], V_shared)
+                        
+                    {{custom_fwd_inputs_load_s2r | indent(20)}}
+                    # call score_mod
+                    score_mod({{score_mod_inputs_list}}) # scores
+                        
+                    # call online_func
+                    if shared_fuse:
+                        T.copy(scores, scores_shared)
+                        T.copy(scores_shared, scores_1)
+                        online_func({{online_func_inputs_list}})
+                        T.copy(scores_1, acc_s_cast_1)
+
+                    else:
+                        online_func({{online_func_inputs_list}}) # scores
+                        T.copy(scores, acc_s_cast)
+
+                    # for i, j in T.Parallel(block_M, dimv):
+                    #     acc_o[i, j] *= o_scale[i]
+                    {{o_scale | indent(20)}}
                     
-                # call online_func
-                if shared_fuse:
-                    T.copy(scores, scores_shared)
-                    T.copy(scores_shared, scores_1)
-                    online_func({{online_func_inputs_list}})
-                    T.copy(scores_1, acc_s_cast_1)
+                    # update online_rowscales
+                    {{online_rowscales_update | indent(20)}}
 
-                else:
-                    online_func({{online_func_inputs_list}}) # scores
-                    T.copy(scores, acc_s_cast)
-
-                # for i, j in T.Parallel(block_M, dimv):
-                #     acc_o[i, j] *= o_scale[i]
-                {{o_scale | indent(16)}}
-                
-                # update online_rowscales
-                {{online_rowscales_update | indent(16)}}
-
-                if shared_fuse:
-                    T.gemm(acc_s_cast_1, V_shared, acc_o, policy=(T.GemmWarpPolicy.FullCol))
-                else:
-                    T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
-            
+                    if shared_fuse:
+                        T.gemm(acc_s_cast_1, V_shared, acc_o, policy=(T.GemmWarpPolicy.FullCol))
+                    else:
+                        T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
             # online_fwd_epilogue
             {{online_func_epilogue | indent(12)}}
 
@@ -366,20 +376,24 @@ def flashattn_bwd_postprocess(batch, heads, seq_len, dim, dimv):
 class _attention(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v, *custom_fwd_inputs):
+        custom_fwd_inputs, block_sparse_mask = custom_fwd_inputs[:-1], custom_fwd_inputs[-1]
         BATCH, N_CTX, H, D_HEAD = q.shape
         D_HEADV = v.shape[-1]
         block_M = {{block_M}} # 128
         block_N = {{block_N}} # 128 if D_HEAD <= 128 else 64
-        stages = {{stages}} # 2
+        downsample_len = N_CTX // block_N
+        # stages = 0 for tilelang blocksparse
+        stages = 0 # {{stages}} # 2
         thread_num = {{thread_num}} # 256
         shared_fuse = {{shared_fuse}} # False
         output_idx_list = {{output_idx_list}}
-        mod = tl.profiler.cached(kernel, output_idx_list, BATCH, H, N_CTX, D_HEAD, D_HEADV, block_M, block_N, stages, thread_num, shared_fuse)
+        program = kernel(BATCH, H, N_CTX, D_HEAD, D_HEADV, downsample_len, block_M, block_N, stages, thread_num, shared_fuse)
+        mod = tl.compile(program, out_idx=output_idx_list)
         if len(output_idx_list) == 1:
-            o = mod(q, k, v, *custom_fwd_inputs)
+            o = mod(q, k, v, *custom_fwd_inputs, block_sparse_mask)
             final_scale = []
         else:
-            o, *final_scale = mod(q, k, v, *custom_fwd_inputs)
+            o, *final_scale = mod(q, k, v, *custom_fwd_inputs, block_sparse_mask)
         ctx.save_for_backward(q, k, v, o, *custom_fwd_inputs, *final_scale)
         return o
     
