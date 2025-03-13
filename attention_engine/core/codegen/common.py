@@ -72,8 +72,9 @@ def parallel_for_block(iter_size:List[str], iter_vars:List[str],body:Union[Inden
 def func_def_block(func_name:str, args:List) -> IndentedCode:
     def_code = IndentedCode()
     def_code.add_line(f"def {func_name}(")
+    def_code.more_indent()
     for arg in args:
-        def_code.add_line(f"{arg_def(arg)},")
+        def_code.add_line(f"{arg_def(arg)}")
     def_code.less_indent()
     def_code.add_line("):")
     return def_code

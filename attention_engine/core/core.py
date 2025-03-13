@@ -267,7 +267,7 @@ class SymbolicTensor(SymbolScalar):
         super().__init__(
             varname, Var(varname), shape_idx=[
                 str(i) for i in shape])
-        self.shape = shape
+        # self.shape = shape
 
 
 class SymbolicConst(SymbolScalar):
@@ -291,7 +291,8 @@ class CustomIO:
     def __call__(self, tensor_name: str, tensor_shape: tuple):
         if tensor_name in self.input_tensors:
             raise ValueError(f"Tensor {tensor_name} already exists")
-        self.input_tensors[tensor_name].shape = tensor_shape
+        # self.input_tensors[tensor_name].shape = tensor_shape
+        self.input_tensors[tensor_name].shape_idx = [str(i) for i in tensor_shape]
 
         def decorator(func):
             def wrapper(*args, **kwargs):

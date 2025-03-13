@@ -31,20 +31,10 @@ def kernel(batch, heads, seq_len, dim, dimv,
 
 # TL_MAIN = """
     @T.macro
-    def score_mod(
-        # scores: T.Buffer([block_M, block_N], accum_dtype),
-        {{score_mod_inputs | indent(8)}}
-        ):
-        {{score_mod_body | indent(8)}}
-        pass
+    {{score_mod_func_def | indent(4)}}
     
     @T.macro
-    def online_func(
-        # scores: T.Buffer([block_M, block_N], accum_dtype),
-        {{online_func_inputs | indent(8)}}
-    ):
-        {{online_func_body | indent(8)}}
-        pass
+    {{online_func_def | indent(4)}}
 
         
     @T.prim_func
@@ -110,17 +100,17 @@ def kernel(batch, heads, seq_len, dim, dimv,
                     
                 {{custom_fwd_inputs_load_s2r | indent(16)}}
                 # call score_mod
-                score_mod({{score_mod_inputs_list}}) # scores
+                {{call_score_mod | indent(16)}}
                     
                 # call online_func
                 if shared_fuse:
                     T.copy(scores, scores_shared)
                     T.copy(scores_shared, scores_1)
-                    online_func({{online_func_inputs_list}})
+                    {{call_online_func | indent(20)}}
                     T.copy(scores_1, acc_s_cast_1)
 
                 else:
-                    online_func({{online_func_inputs_list}}) # scores
+                    {{call_online_func | indent(20)}}
                     T.copy(scores, acc_s_cast)
 
                 # for i, j in T.Parallel(block_M, dimv):

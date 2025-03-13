@@ -70,7 +70,7 @@ class TunnerOutput:
 
 class lowerOnlineFuncOutput:
 
-    def __init__(self, final_rowscales_output, final_rowscales_init, online_rowscales_initvalue, online_func_init, online_func_inputs, online_func_body, online_func_inputs_list, o_scale, online_func_epilogue, final_rowscales_save,
+    def __init__(self, final_rowscales_output, final_rowscales_init, online_rowscales_initvalue, online_func_init, online_func_def, call_online_func, o_scale, online_func_epilogue, final_rowscales_save,
                  online_rowscales_update,
                  isused_doosum, final_rowscales_length, final_rowscales_load, online_func_fwd, custom_bwd_inputs_load, custom_bwd_body,
                  final_rowscales_shared_init,
@@ -80,9 +80,8 @@ class lowerOnlineFuncOutput:
         self.final_rowscales_init = final_rowscales_init
         self.online_rowscales_initvalue = str(online_rowscales_initvalue)
         self.online_func_init = str(online_func_init)
-        self.online_func_inputs = str(online_func_inputs)
-        self.online_func_body = online_func_body
-        self.online_func_inputs_list = online_func_inputs_list
+        self.online_func_def = str(online_func_def)
+        self.call_online_func = call_online_func
         self.o_scale = o_scale
         self.online_func_epilogue = online_func_epilogue
         self.final_rowscales_save = str(final_rowscales_save)
@@ -101,7 +100,8 @@ class lowerOnlineFuncOutput:
 
 
 class lowerScoreModOutput:
-    def __init__(self, score_mod_inputs, score_mod_body, score_mod_inputs_list,
+    def __init__(self, score_mod_func_def,
+                call_score_mod,
                  score_mod_backward,
                  score_mod_bwd_inputs_list,
                  score_mod_bwd_inputs,
@@ -112,9 +112,8 @@ class lowerScoreModOutput:
                  score_mod_bwd_inputs_declare,
                  score_mod_bwd_inputs_declare_shared
                  ):
-        self.score_mod_inputs = str(score_mod_inputs)
-        self.score_mod_body = score_mod_body
-        self.score_mod_inputs_list = score_mod_inputs_list
+        self.score_mod_func_def = str(score_mod_func_def)
+        self.call_score_mod = call_score_mod
         self.score_mod_backward = score_mod_backward
         self.score_mod_bwd_inputs = str(score_mod_bwd_inputs)
         self.score_mod_bwd_inputs_list = score_mod_bwd_inputs_list
@@ -157,14 +156,10 @@ def lower_online_func(online_func, lower_output: lowerOutput,
     o_scalevar.count += 1
     tl_code, input_vars_online = generate_tl_from_dag(
         list(new_online_rowscales.values()) + [scores_new, o_scalevar])
-    online_func_body = str(tl_code)
-    if online_func_body == "":
-        online_func_body = "pass"
-    online_func_inputs = IndentedCode()
-    for varname, input_var in input_vars_online.items():
-        online_func_inputs.add_line(arg_def(input_var))
-    online_func_inputs_list = ", ".join(
-        [input_var.varname for varname, input_var in input_vars_online.items()])
+    online_func_def = func_block(
+        "online_func", input_vars_online.values(), tl_code
+    )
+    call_online_func = call_op("online_func", input_vars_online.values())
     input_vars.update(input_vars_online)
     # o_scale = o_scalevar.varname
     o_scale_varname = o_scalevar.varname
@@ -288,9 +283,8 @@ def lower_online_func(online_func, lower_output: lowerOutput,
         final_rowscales_output=final_rowscales_output,
         online_rowscales_initvalue=online_rowscales_initvalue,
         online_func_init=online_func_init,
-        online_func_inputs=online_func_inputs,
-        online_func_body=online_func_body,
-        online_func_inputs_list=online_func_inputs_list,
+        online_func_def=online_func_def,
+        call_online_func=call_online_func,
         o_scale=o_scale,
         online_func_epilogue=online_func_epilogue,
         final_rowscales_save=final_rowscales_save,
@@ -324,14 +318,8 @@ def lower_score_mod(score_mod, custom_fwd_inputs, lower_output: lowerOutput):
 
     scores_new = score_mod(scores, custom_fwd_inputs, b, h, q_idx, kv_idx)
     tl_code, input_vars = generate_tl_from_dag([scores_new])
-    score_mod_body = str(tl_code)
-    score_mod_inputs = IndentedCode()
-    for varname, input_var in input_vars.items():
-        score_mod_inputs.add_line(arg_def(input_var))
-    score_mod_inputs_list = ", ".join(
-        [input_var.varname for varname, input_var in input_vars.items()])
-    # print(tl_code)
-    # print(input_vars)
+    score_mod_func_def = func_block("score_mod", input_vars.values(), tl_code)
+    call_score_mod = call_op("score_mod", input_vars.values())
 
     # backward, block_M : k, block_N : q
     qkT = SymbolScalar("qkT", Var("qkT"), shape_idx=["block_M", "block_N"])
@@ -387,9 +375,8 @@ def lower_score_mod(score_mod, custom_fwd_inputs, lower_output: lowerOutput):
             
 
     return lowerScoreModOutput(
-        score_mod_inputs=score_mod_inputs,
-        score_mod_body=score_mod_body,
-        score_mod_inputs_list=score_mod_inputs_list,
+        score_mod_func_def=score_mod_func_def,
+        call_score_mod=call_score_mod,
         score_mod_backward=score_mod_backward,
         score_mod_bwd_inputs_list=score_mod_bwd_inputs_list,
         score_mod_bwd_inputs=score_mod_bwd_inputs,
