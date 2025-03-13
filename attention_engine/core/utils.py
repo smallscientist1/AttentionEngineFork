@@ -14,11 +14,15 @@ class IndentedCode:
         self.code += "    " * self.indent + line + "\n"
 
     def __iadd__(self, other):
-        assert (isinstance(other, IndentedCode))
+        assert (isinstance(other, IndentedCode) or isinstance(other, str))
+        if isinstance(other, str):
+            self.add_line(other)
+            return self
+        
         for line in other.code.split("\n"):
             if len(line) > 0:
                 self.add_line(line)
-        self.indent += other.indent
+        # self.indent += other.indent
         return self
 
     def more_indent(self, indent=1):

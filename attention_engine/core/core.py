@@ -9,6 +9,8 @@ from copy import copy, deepcopy
 from torch import Tensor
 from typing import Optional, Union, Any
 
+import sympy
+
 # TODO: support online_func extern_input_tensor
 
 
@@ -32,7 +34,7 @@ def plus_count(func):
 
 class SymbolScalar:
     def __init__(self, varname: str, value: Node, prev=[], shape_idx: list = ["block_M"],
-                 require_grad: bool = True):
+                 require_grad: bool = True, dtype="float"):
         self.varname = varname
         self.code = value
         self.prev = prev
@@ -46,10 +48,21 @@ class SymbolScalar:
         self.visit_count = 0
 
         self.grad = None  # SymbolicScalar
+        
+        self.dtype = dtype
     
     def __repr__(self):
         return f"SymbolScalar({self.varname}, {self.code}, {self.prev}, {self.shape_idx}, {self.require_grad})"
 
+    @property
+    def name(self):
+        return self.varname
+    
+    @property
+    def shape(self):
+        shapes = sympy.symbols(self.shape_idx)
+        return shapes
+    
     # @plus_count # TODO: plus count bug
     def op(self, code: Type[Node], others: list = [],
            shape_idx: list = None, varname_suffix: str = None):
