@@ -29,27 +29,51 @@ def fill_op(arg, value:str)->str:
 def call_op(func_name:str, args:List)->str:
     return f"{func_name}({', '.join([arg.name for arg in args])})"
 
-def load_op(src, dst, src_dim_list:List[int], src_idx_list:List[Symbol], src_step_list:List[Symbol])->str:
-    assert(len(src_dim_list) == len(src_idx_list) and len(src_dim_list) == len(src_step_list))
+def load_op(src, dst, dim_map_list:List[int], src_dim_list:List[int], src_idx_list:List[Symbol], src_step_list:List[Symbol]=None)->str:
+    """
+
+    Args:
+        src (_type_): _description_
+        dst (_type_): _description_
+        dim_map_list (List[int]): _description_
+        src_dim_list (List[int]): _description_
+        src_idx_list (List[Symbol]): _description_
+        src_step_list (List[Symbol], optional): 0 for idx, >= 1 for range. Defaults to None.
+
+    Returns:
+        str: _description_
+    """
+    assert(len(src_dim_list) == len(src_idx_list))
     src_copy_list = [":" for _ in range(len(src_dim_list))]
+    if src_step_list is None:
+        src_step_list = [0 for _ in range(len(src_dim_list))]
+        for dst_dim, src_dim in enumerate(dim_map_list):
+            src_step_list[src_dim] = dst.shape[dst_dim]
+    else:
+        assert(len(src_dim_list) == len(src_step_list))
     for dim in src_dim_list:
         start_idx = src_idx_list[dim]
         end_idx = src_idx_list[dim] + src_step_list[dim]
-        if src_step_list[dim] == 1:
+        if src_step_list[dim] == 0:
             src_copy_list[dim] = f"{start_idx}"
         else:
             src_copy_list[dim] = f"{start_idx}:{end_idx}"
             
     return f"T.copy({src.name}[{', '.join(src_copy_list)}], {dst.name})"
 
-def store_op(src, dst, dst_dim_list:List[int], dst_idx_list:List[Symbol], dst_step_list:List[Symbol])->str:
-    assert(len(dst_dim_list) == len(dst_idx_list) and len(dst_dim_list) == len(dst_step_list))
+def store_op(src, dst, dim_map_list:List[int], dst_dim_list:List[int], dst_idx_list:List[Symbol], dst_step_list:List[Symbol]=None)->str:
+    assert(len(dst_dim_list) == len(dst_idx_list))
     dst_copy_list = [":" for _ in range(len(dst_dim_list))]
+    if dst_step_list is None:
+        dst_step_list = [0 for _ in range(len(dst_dim_list))]
+        for src_dim, dst_dim in enumerate(dim_map_list):
+            dst_step_list[dst_dim] = src.shape[src_dim]
+    else:
+        assert(len(dst_dim_list) == len(dst_step_list))
     for dim in dst_dim_list:
         start_idx = dst_idx_list[dim]
         end_idx = dst_idx_list[dim] + dst_step_list[dim]
-        print(dst_idx_list[dim], dst_step_list[dim])
-        if dst_step_list[dim] == 1:
+        if dst_step_list[dim] == 0:
             dst_copy_list[dim] = f"{start_idx}"
         else:
             dst_copy_list[dim] = f"{start_idx}:{end_idx}"

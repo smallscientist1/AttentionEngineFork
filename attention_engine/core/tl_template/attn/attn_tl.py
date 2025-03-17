@@ -60,8 +60,6 @@ def kernel(batch, heads, seq_len, dim, dimv,
             # acc_o = T.alloc_fragment([block_M, dimv], accum_dtype)
 
             {{custom_fwd_inputs_init | indent(12)}}
-            {{online_func_init | indent(12)}}
-            {{final_rowscales_init | indent(12)}}
 
             T.annotate_layout({
                 Q_shared: tl.layout.make_swizzled_layout(Q_shared),
