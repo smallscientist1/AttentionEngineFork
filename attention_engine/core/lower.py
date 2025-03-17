@@ -546,7 +546,7 @@ def lower_tl(score_mod, block_mask, online_func,
         custom_input_dtype = "accum_dtype"
         
         kernel_options.fragment_tensors[k] = (SymbolScalar(k, Var(k), shape_idx=shape_idx_block, dtype=custom_input_dtype))
-        kernel_options.global_tensors[k] = (SymbolScalar(f"g_{k}", Var(f"g_{k}"), shape_idx=v.shape_idx, dtype=custom_input_dtype))
+        kernel_options.global_tensors[f"g_{k}"] = (SymbolScalar(f"g_{k}", Var(f"g_{k}"), shape_idx=v.shape_idx, dtype=custom_input_dtype))
         
         # tl copy bug when "1"
         if shape_idx_block == []:
@@ -563,7 +563,7 @@ def lower_tl(score_mod, block_mask, online_func,
             kernel_options.shared_tensors[f"{k}_shared"] = (SymbolScalar(f"{k}_shared", Var(f"{k}_shared"), shape_idx=shape_idx_block, dtype=custom_input_dtype))
             # custom_fwd_inputs_load_shared += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k}_shared)\n"
             custom_fwd_inputs_load_shared += str(
-                load_op(kernel_options.global_tensors[k], kernel_options.shared_tensors[f"{k}_shared"], shape_idx_dim_map, src_dim_list=list(range(len(shape_idx_copy_sp))), src_idx_list=shape_idx_copy_sp) + "\n"
+                load_op(kernel_options.global_tensors[f"g_{k}"], kernel_options.shared_tensors[f"{k}_shared"], shape_idx_dim_map, src_dim_list=list(range(len(shape_idx_copy_sp))), src_idx_list=shape_idx_copy_sp) + "\n"
             )
             # custom_fwd_inputs_load_s2r += f"T.copy({k}_shared, {k})\n"
             custom_fwd_inputs_load_s2r += copy_op(kernel_options.shared_tensors[f"{k}_shared"], kernel_options.fragment_tensors[k]) + "\n"
@@ -571,7 +571,7 @@ def lower_tl(score_mod, block_mask, online_func,
         else:
             # custom_fwd_inputs_load_shared += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k})\n"
             custom_fwd_inputs_load_shared += str(
-                load_op(kernel_options.global_tensors[k], kernel_options.fragment_tensors[k], shape_idx_dim_map, src_dim_list=list(range(len(shape_idx_copy_sp))), src_idx_list=shape_idx_copy_sp) + "\n"
+                load_op(kernel_options.global_tensors[f"g_{k}"], kernel_options.fragment_tensors[k], shape_idx_dim_map, src_dim_list=list(range(len(shape_idx_copy_sp))), src_idx_list=shape_idx_copy_sp) + "\n"
             )
         # TODO: dtype of custom_fwd_inputs
         
@@ -579,7 +579,7 @@ def lower_tl(score_mod, block_mask, online_func,
         kernel_options.fragment_tensors[k].dtype = custom_input_dtype
         kernel_options.fragment_tensors[k].shape_idx = shape_idx_block
         # custom_fwd_inputs_str += f"g_{k}: T.Buffer([{', '.join(v.shape_idx)}], {custom_input_dtype}), \n"
-        kernel_options.global_tensors[k].dtype = custom_input_dtype
+        kernel_options.global_tensors[f"g_{k}"].dtype = custom_input_dtype
         custom_fwd_inputs.input_tensors[k].shape_idx = shape_idx_block
 
     lower_score_mod_output = lower_score_mod(
