@@ -262,12 +262,13 @@ def lower_kernel(kernel_options: KernelOptionsBase, kernel_template:KernelBase):
 def lower_online_func(online_func, lower_output: lowerOutput,
                       scores_name="scores", kernel_options: AttnFwdKernelOption=None):  
     online_fwd = online_func.online_fwd
+    # 1. init input vars
     scores = SymbolicArray(
         scores_name,
         Var(scores_name),
         shape_idx=[
-            "block_M",
-            "block_N"])
+            kernel_options.tile_M,
+            kernel_options.tile_N])
     online_rowscales = online_func.online_rowscales
     b = SymbolScalar("b", Var("b"))
     h = SymbolScalar("h", Var("h"))
@@ -276,13 +277,13 @@ def lower_online_func(online_func, lower_output: lowerOutput,
     # online&epilogue
     input_vars = {}
 
-    # generate init value for online_rowscales
+    # 2. fill op for online_rowscales
     online_rowscales_initvalue = IndentedCode()
     for k, v in online_rowscales.items():  # v.code is Var
         tl_init_value = v.code.name
         online_rowscales_initvalue.add_line(fill_op(v, tl_init_value))
 
-    # online_fwd
+    # 3. online_fwd func op def&call
     scores_new, new_online_rowscales, o_scalevar = online_fwd(
         scores, online_rowscales, b, h, q_idx)
     for k, v in new_online_rowscales.items():
@@ -295,7 +296,8 @@ def lower_online_func(online_func, lower_output: lowerOutput,
     )
     call_online_func = call_op("online_func", input_vars_online.values())
     input_vars.update(input_vars_online)
-    # o_scale = o_scalevar.varname
+    
+    # 4. o_scale & online_rowscales update(TODO: too ad hoc)
     o_scale_varname = o_scalevar.varname
     o_scale = parallel_for_block(["block_M", "dimv"], ["i", "j"], f"acc_o[i, j] *= {o_scalevar.varname}[i]")
     o_scale = str(o_scale)
@@ -307,7 +309,7 @@ def lower_online_func(online_func, lower_output: lowerOutput,
         # TODO: 
         online_rowscales_update += f"T.copy({v.varname}, {k})\n"
 
-    # final_rowscales
+    # 5. final_rowscales block
     acco = SymbolicArray("acc_o", Var("acc_o"), shape_idx=["block_M", "dimv"])
     for k, v in online_rowscales.items():
         online_rowscales[k].clear_codegen()
@@ -317,6 +319,8 @@ def lower_online_func(online_func, lower_output: lowerOutput,
         [acco_new] + list(new_final_rowscales.values()))
     online_func_epilogue = str(tl_code)
     input_vars.update(input_vars_final)
+    
+    # 6. add kernel output tensor & intermediate tensor
     for k, v in new_final_rowscales.items():
         kernel_options.add_output_tensor(
             v.varname, v.shape, False, 
@@ -329,33 +333,12 @@ def lower_online_func(online_func, lower_output: lowerOutput,
     for _, input_var in input_vars.items():
         if input_var.varname == scores_name:
             continue
-        # kernel_options.fragment_tensors[input_var.varname] = input_var
         kernel_options.add_intermediate_tensor(
             input_var.varname, input_var.shape_idx, False, input_var.dtype
         )
 
-    # acco
-    # acco = SymbolicArray("acco", Var("acco"), shape_idx=["block_M", "dimv"])
-    # acco = acco * o_scale
-    # tl_code += generate_tl(acco, varname="acco")
 
-    # tmp_solution: mask_value
-    # mask_value = "0"
-    # for used in scores.use_list:
-    #     if used.code.type == "ReduceMax":
-    #         mask_value = "-inf"
-    #         break
-    # is_inf_mask = "True" if mask_value == "-inf" else "False"
-
-    # print(tl_code)
-    # print("o_scalevar:", o_scalevar.varname)
-    # for k,v in new_online_rowscales.items():
-    #     print(f"online_rowscale['{k}'] : {v.varname}")
-    # print(input_vars)
-    # print("mask_value:", mask_value)
-    # print("online_func_epilogue:", online_func_epilogue)
-
-    # bwd
+    # 7. bwd: TODO
     isused_doosum = False
     final_rowscales_bwd = {}
     for k, v in online_func.final_rowscales.items():
@@ -429,6 +412,7 @@ def lower_online_func(online_func, lower_output: lowerOutput,
 
 
 def lower_score_mod(score_mod, custom_fwd_inputs, lower_output: lowerOutput, kernel_options: AttnFwdKernelOption):
+    # 1. init input vars
     scores = SymbolScalar(
         "scores",
         Var("scores"),
@@ -440,10 +424,13 @@ def lower_score_mod(score_mod, custom_fwd_inputs, lower_output: lowerOutput, ker
     q_idx = SymbolScalar("q_idx", Var("q_idx"))
     kv_idx = SymbolScalar("kv_idx", Var("kv_idx"))
 
+    # 2. score_mod func op def&call
     scores_new = score_mod(scores, custom_fwd_inputs, b, h, q_idx, kv_idx)
     tl_code, input_vars = generate_tl_from_dag([scores_new])
     score_mod_func_def = func_block("score_mod", input_vars.values(), tl_code)
     call_score_mod = call_op("score_mod", input_vars.values())
+    
+    # 3. score_mod bwd TODO
 
     # backward, block_M : k, block_N : q
     qkT = SymbolScalar("qkT", Var("qkT"), shape_idx=["block_M", "block_N"])
@@ -524,6 +511,7 @@ def lower_tl(score_mod, block_mask, online_func,
     # TODO: mask_value: 0 or -inf
     lower_output.is_inf_mask = "True" if block_mask is not None and mask_value == "-inf" else "False"
 
+    # 1. kernel performance configs
     # tune
     if tuned_config is None:
         tune_output = TunnerOutput()
@@ -549,6 +537,7 @@ def lower_tl(score_mod, block_mask, online_func,
         tune_output.block_N_bwd = "64"
         tune_output.thread_num_bwd = "256"
 
+    # 2. kernel config options 
     kernel_options = AttnFwdKernelOption(tile_M=sp.simplify("block_M"), tile_N=sp.simplify("block_N"))
     kernel_code_template = KernelBase("kernel")
     
@@ -641,6 +630,7 @@ def lower_tl(score_mod, block_mask, online_func,
         kernel_options.global_tensors_input[f"g_{k}"].dtype = custom_input_dtype
         custom_fwd_inputs.input_tensors[k].shape_idx = shape_idx_block
 
+    # 3.kernel template specific lower
     lower_score_mod_output = lower_score_mod(
         score_mod, custom_fwd_inputs, lower_output, kernel_options)
     lower_online_func_output = lower_online_func(
@@ -661,8 +651,10 @@ def lower_tl(score_mod, block_mask, online_func,
                                             int(lower_online_func_output.isused_doosum) +
                                             3)]
     
+    # 4. general kernel lower
     lower_kernel(kernel_options, kernel_code_template)
     
+    # 5. mask mod
     if infer_mask:
         block_M = int(tune_output.block_M)
         block_N = int(tune_output.block_N)
