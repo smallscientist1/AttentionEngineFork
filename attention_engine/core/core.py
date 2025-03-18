@@ -38,7 +38,7 @@ class SymbolScalar:
         self.varname = varname
         self.code = value
         self.prev = prev
-        self.shape_idx = shape_idx
+        self.shape_idx = [str(i) for i in shape_idx]
         self.require_grad = require_grad
 
         self.count = 0
