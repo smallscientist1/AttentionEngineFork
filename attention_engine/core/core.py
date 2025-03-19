@@ -60,7 +60,8 @@ class SymbolScalar:
     
     @property
     def shape(self):
-        shapes = sympy.symbols(self.shape_idx)
+        # cannot use sympy.symbols() because of constant
+        shapes = [sympy.simplify(sh_idx) for sh_idx in self.shape_idx]
         return shapes
     
     # @plus_count # TODO: plus count bug

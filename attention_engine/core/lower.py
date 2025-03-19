@@ -573,8 +573,6 @@ def lower_tl(score_mod, block_mask, online_func,
     # custom_fwd_inputs_str = ""
     # for k,v in custom_fwd_inputs.input_tensors.items():
     #     custom_fwd_inputs_str += f"g_{k}: T.Buffer([{', '.join(v.shape_idx)}], accum_dtype), \n"
-    # custom_fwd_inputs_init = ""
-    custom_fwd_inputs_load_prolog = ""
     custom_fwd_inputs_load_shared = ""
     custom_fwd_inputs_load_s2r = ""
     for k, v in custom_fwd_inputs.input_tensors.items():
@@ -588,6 +586,8 @@ def lower_tl(score_mod, block_mask, online_func,
         # remove "" in list
         # TODO:bug[block_N] -> [1,block_N]
         shape_idx_block = [shape for shape in shape_idx_block if shape != ""]
+        if shape_idx_block == []:
+            shape_idx_block = ["1"]
         shape_idx_block_step_sp = [(shape_idx_onchip_step_map_sp[shape] if shape in shape_idx_onchip_step_map_sp.keys(
         ) else sp.simplify(shape)) for shape in v.shape_idx]
         shape_idx_dim_map = [idx for idx, shape in enumerate(v.shape_idx) if shape in shape_idx_onchip_dim_map]
@@ -597,12 +597,7 @@ def lower_tl(score_mod, block_mask, online_func,
         kernel_options.global_tensors_input[f"g_{k}"] = (SymbolScalar(f"g_{k}", Var(f"g_{k}"), shape_idx=v.shape_idx, dtype=custom_input_dtype))
         
         # tl copy bug when "1"
-        if shape_idx_block == []:
-            # shape_idx_copy = [idx_copy if idx_copy != ":" else "0" for idx_copy in shape_idx_copy]
-            shape_idx_block = ["1"]
-            custom_fwd_inputs_load_prolog += f"{k}[0] = g_{k}[{', '.join(shape_idx_copy)}]\n"
-        elif not (RECURRENT_DIM in shape_idx_block):
-            # custom_fwd_inputs_load_prolog += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k})\n"
+        if not (RECURRENT_DIM in shape_idx_block):
             kernel_options.copy_maps.append(
                 CopyMap(kernel_options.global_tensors_input[f"g_{k}"], kernel_options.fragment_tensors[k], shape_idx_copy_sp, shape_idx_dim_map)
             )
@@ -674,7 +669,7 @@ def lower_tl(score_mod, block_mask, online_func,
         return tlattn_template(
             custom_fwd_inputs=kernel_code_template.input_args,
             custom_fwd_inputs_init=kernel_code_template.alloc,
-            custom_fwd_inputs_load_prolog=custom_fwd_inputs_load_prolog+kernel_code_template.input_args_copy_prologue,
+            custom_fwd_inputs_load_prolog=kernel_code_template.input_args_copy_prologue,
             custom_fwd_inputs_load_s2r=custom_fwd_inputs_load_s2r,
             custom_fwd_inputs_load_shared=custom_fwd_inputs_load_shared,
             custom_fwd_inputs_load_shared_bwd=custom_fwd_inputs_load_shared_bwd,
@@ -697,7 +692,7 @@ def lower_tl(score_mod, block_mask, online_func,
             custom_fwd_inputs_init=kernel_code_template.alloc,
             final_rowscales_output=kernel_code_template.output_args,
             final_rowscales_save=kernel_code_template.output_args_copy_epilogue,
-            custom_fwd_inputs_load_prolog=custom_fwd_inputs_load_prolog+kernel_code_template.input_args_copy_prologue,
+            custom_fwd_inputs_load_prolog=kernel_code_template.input_args_copy_prologue,
             custom_fwd_inputs_load_s2r=custom_fwd_inputs_load_s2r,
             custom_fwd_inputs_load_shared=custom_fwd_inputs_load_shared,
             custom_fwd_inputs_load_shared_bwd=custom_fwd_inputs_load_shared_bwd,

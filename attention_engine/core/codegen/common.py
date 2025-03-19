@@ -59,6 +59,10 @@ def load_op(src, dst, dim_map_list:List[int], src_dim_list:List[int], src_idx_li
         else:
             src_copy_list[dim] = f"{start_idx}:{end_idx}"
             
+    # handle shape [1] tensor seperately
+    if len(dst.shape) == 1 and sp.simplify(dst.shape[0]) == 1:
+        return f"{dst.name}[0] = {src.name}[{', '.join(src_copy_list)}]"
+            
     return f"T.copy({src.name}[{', '.join(src_copy_list)}], {dst.name})"
 
 def store_op(src, dst, dim_map_list:List[int], dst_dim_list:List[int], dst_idx_list:List[Symbol], dst_step_list:List[Symbol]=None)->str:
