@@ -3,6 +3,8 @@ import torch
 import tilelang as tl
 import tilelang.language as T
 
+import operator
+
 # TL_GLOBAL_FUNC = """
 def fast_tanh(A, B):
     return T.call_extern("handle", "fasttanh", T.address_of(A), T.address_of(B))
@@ -85,10 +87,15 @@ def kernel(batch, heads, seq_len, dim, dimv,
                 {{custom_fwd_inputs_load_shared | indent(16)}}
 
                 # TODO: naive solution: if reduce_max, -T.inf; if reduce_sum, 0
-                if is_casual and {{is_inf_mask}}:
+                if (is_casual or {{is_mask_mod_code}}) and {{is_inf_mask}}:
                     for i, j in T.Parallel(block_M, block_N):
+                        {{q_idx}} = bx * block_M + i
+                        {{kv_idx}} = k * block_N + j
+                        {{batch_idx}} = bz
+                        {{head_idx}} = by
+                        {{mask_mod_code | indent(24)}}
                         scores[i, j] = T.if_then_else(
-                            bx * block_M + i >= k * block_N + j, 0, -T.infinity(scores.dtype)
+                            {{mask_output}}, 0, -T.infinity(scores.dtype)
                         )
                 else:
                     T.clear(scores)

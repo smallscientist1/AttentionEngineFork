@@ -14,6 +14,8 @@ from typing import Callable
 
 import logging
 
+import torch.fx as fx
+
 accum_type = "float"
 
 # TODO: bwd map
@@ -151,6 +153,13 @@ class lowerOutput:
     tl_dtype: str = "float16"
     is_inf_mask: str = "True"
     is_casual: str = "False"
+    q_idx: str = "q_idx"
+    kv_idx: str = "kv_idx"
+    batch_idx: str = "batch_idx"
+    head_idx: str = "head_idx"
+    mask_output: str = "True"
+    mask_mod_code: str = ""
+    is_mask_mod_code: str = "False"
 
 
 @dataclass
@@ -650,6 +659,19 @@ def lower_tl(score_mod, block_mask, online_func,
     lower_kernel(kernel_options, kernel_code_template)
     
     # 5. mask mod
+    if block_mask is not None:
+        mask_graph = fx.symbolic_trace(block_mask)
+        # TODO: check input and output
+        node_list = [node for node in mask_graph.graph.nodes]
+        lower_output.batch_idx = node_list[0].name
+        lower_output.head_idx = node_list[1].name
+        lower_output.q_idx = node_list[2].name
+        lower_output.kv_idx = node_list[3].name
+        lower_output.mask_output = node_list[-1].args[0].name
+        lower_output.mask_mod_code = str(tl_codegen_from_torchfx(mask_graph))
+        lower_output.is_mask_mod_code = "True"
+    
+    # TODO: infer mask logic
     if infer_mask:
         block_M = int(tune_output.block_M)
         block_N = int(tune_output.block_N)

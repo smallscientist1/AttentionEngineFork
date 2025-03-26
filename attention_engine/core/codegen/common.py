@@ -117,5 +117,37 @@ def func_block(func_name:str, func_args:List, func_body:Union[IndentedCode,str])
     func_code.less_indent()
     return func_code
 
+import torch
+import torch.fx as fx
+import operator
 
+torch_supported_ops = {
+    # TODO: add more here
+    torch.logical_and: "operator.and_",
+}
+
+def is_operator_func(func):
+    return func in operator.__dict__.values()
+
+def tl_codegen_from_torchNode(node: fx.Node) -> str:
+    if node.op == "call_function":
+        if is_operator_func(node.target):
+            return f"{node} = operator.{node.target.__name__}({', '.join([str(arg) for arg in node.args])})"
+        elif node.target in torch_supported_ops:
+            return f"{node} = {torch_supported_ops[node.target]}({', '.join([str(arg) for arg in node.args])})"
+        else:
+            raise NotImplementedError(f"Operator {node.target} is not supported")
+    elif node.op == "placeholder":
+        return ""
+    elif node.op == "output":
+        return ""
+    else:
+        raise NotImplementedError(f"Operator {node.op} is not supported")
+                
+def tl_codegen_from_torchfx(mask_graph: fx.GraphModule)->IndentedCode:
+    graph = mask_graph.graph
+    mask_code = IndentedCode()
+    for node in graph.nodes:
+        mask_code.add_line(tl_codegen_from_torchNode(node))
+    return mask_code
     
