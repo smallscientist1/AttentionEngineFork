@@ -298,10 +298,15 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual,
                 {{ online_func_fwd | indent(16) }}
                 
                 # TODO: is causal
-                if is_casual:
+                if is_casual or {{is_mask_mod_code}}:
                     for i, j in T.Parallel(block_M, block_N):
+                        {{q_idx}} = k * block_N + j
+                        {{kv_idx}} =  by * block_M + i
+                        {{batch_idx}} = bz
+                        {{head_idx}} = bx
+                        {{mask_mod_code | indent(24)}}
                         {{score_mod_output_var}}[i, j] = T.if_then_else(
-                            by * block_M + i <= k * block_N + j, {{score_mod_output_var}}[i, j], 0
+                            {{mask_output}}, {{score_mod_output_var}}[i, j], 0
                         )
                 
                 T.copy(dO[bz, k * block_N : (k + 1) * block_N, bx, :], do)
@@ -317,10 +322,15 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual,
                 # T.clear(dsT)
                 # T.gemm(V_local, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
-                if is_casual:
+                if is_casual or {{is_mask_mod_code}}:
                     for i, j in T.Parallel(block_M, block_N):
+                        {{q_idx}} = k * block_N + j
+                        {{kv_idx}} =  by * block_M + i
+                        {{batch_idx}} = bz
+                        {{head_idx}} = bx
+                        {{mask_mod_code | indent(24)}}
                         dsT[i, j] = T.if_then_else(
-                            by * block_M + i <= k * block_N + j, dsT[i, j], 0
+                            {{mask_output}}, dsT[i, j], 0
                         )
 
                 # custom_bwd
