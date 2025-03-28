@@ -25,8 +25,3 @@ class TlBlockAttnTemplate:
         return self.tlcode
 
 
-if __name__ == "__main__":
-    tl_code = TlAttnTemplate()()
-    print(tl_code)
-    exec(tl_code)
-    print(attention)

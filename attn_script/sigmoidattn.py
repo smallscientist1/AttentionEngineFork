@@ -61,11 +61,10 @@ if __name__ == "__main__":
         meta_tensor(B, H, S, D, dtype=torch.float16),
     )
 
-    block_mask = create_block_mask(causal_mask, 1, 1, S, S, device="cuda")
 
     mod = AttentionEngine(
         qkv_meta,
-        custom_fwd_inputs, score_mod=score_mod, block_mask=block_mask,
+        custom_fwd_inputs, score_mod=score_mod, block_mask=causal_mask,
         online_func=OnlineIdentity(),
     )
     from benchmark.bench_utils import do_bench_sigmoidattn

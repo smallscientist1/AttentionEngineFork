@@ -3,6 +3,8 @@ import torch
 import tilelang as tl
 import tilelang.language as T
 
+import operator
+
 # TL_GLOBAL_FUNC = """
 def fast_tanh(A, B):
     return T.call_extern("handle", "fasttanh", T.address_of(A), T.address_of(B))
@@ -31,20 +33,10 @@ def kernel(batch, heads, seq_len, dim, dimv,
 
 # TL_MAIN = """
     @T.macro
-    def score_mod(
-        # scores: T.Buffer([block_M, block_N], accum_dtype),
-        {{score_mod_inputs | indent(8)}}
-        ):
-        {{score_mod_body | indent(8)}}
-        pass
+    {{score_mod_func_def | indent(4)}}
     
     @T.macro
-    def online_func(
-        # scores: T.Buffer([block_M, block_N], accum_dtype),
-        {{online_func_inputs | indent(8)}}
-    ):
-        {{online_func_body | indent(8)}}
-        pass
+    {{online_func_def | indent(4)}}
 
         
     @T.prim_func
@@ -70,8 +62,6 @@ def kernel(batch, heads, seq_len, dim, dimv,
             # acc_o = T.alloc_fragment([block_M, dimv], accum_dtype)
 
             {{custom_fwd_inputs_init | indent(12)}}
-            {{online_func_init | indent(12)}}
-            {{final_rowscales_init | indent(12)}}
 
             T.annotate_layout({
                 Q_shared: tl.layout.make_swizzled_layout(Q_shared),
@@ -97,10 +87,15 @@ def kernel(batch, heads, seq_len, dim, dimv,
                 {{custom_fwd_inputs_load_shared | indent(16)}}
 
                 # TODO: naive solution: if reduce_max, -T.inf; if reduce_sum, 0
-                if is_casual and {{is_inf_mask}}:
+                if (is_casual or {{is_mask_mod_code}}) and {{is_inf_mask}}:
                     for i, j in T.Parallel(block_M, block_N):
+                        {{q_idx}} = bx * block_M + i
+                        {{kv_idx}} = k * block_N + j
+                        {{batch_idx}} = bz
+                        {{head_idx}} = by
+                        {{mask_mod_code | indent(24)}}
                         scores[i, j] = T.if_then_else(
-                            bx * block_M + i >= k * block_N + j, 0, -T.infinity(scores.dtype)
+                            {{mask_output}}, 0, -T.infinity(scores.dtype)
                         )
                 else:
                     T.clear(scores)
@@ -110,17 +105,17 @@ def kernel(batch, heads, seq_len, dim, dimv,
                     
                 {{custom_fwd_inputs_load_s2r | indent(16)}}
                 # call score_mod
-                score_mod({{score_mod_inputs_list}}) # scores
+                {{call_score_mod | indent(16)}}
                     
                 # call online_func
                 if shared_fuse:
                     T.copy(scores, scores_shared)
                     T.copy(scores_shared, scores_1)
-                    online_func({{online_func_inputs_list}})
+                    {{call_online_func | indent(20)}}
                     T.copy(scores_1, acc_s_cast_1)
 
                 else:
-                    online_func({{online_func_inputs_list}}) # scores
+                    {{call_online_func | indent(20)}}
                     T.copy(scores, acc_s_cast)
 
                 # for i, j in T.Parallel(block_M, dimv):
@@ -293,10 +288,15 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual,
                 {{ online_func_fwd | indent(16) }}
                 
                 # TODO: is causal
-                if is_casual:
+                if is_casual or {{is_mask_mod_code}}:
                     for i, j in T.Parallel(block_M, block_N):
+                        {{q_idx}} = k * block_N + j
+                        {{kv_idx}} =  by * block_M + i
+                        {{batch_idx}} = bz
+                        {{head_idx}} = bx
+                        {{mask_mod_code | indent(24)}}
                         {{score_mod_output_var}}[i, j] = T.if_then_else(
-                            by * block_M + i <= k * block_N + j, {{score_mod_output_var}}[i, j], 0
+                            {{mask_output}}, {{score_mod_output_var}}[i, j], 0
                         )
                 
                 T.copy(dO[bz, k * block_N : (k + 1) * block_N, bx, :], do)
@@ -312,10 +312,15 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual,
                 # T.clear(dsT)
                 # T.gemm(V_local, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
-                if is_casual:
+                if is_casual or {{is_mask_mod_code}}:
                     for i, j in T.Parallel(block_M, block_N):
+                        {{q_idx}} = k * block_N + j
+                        {{kv_idx}} =  by * block_M + i
+                        {{batch_idx}} = bz
+                        {{head_idx}} = bx
+                        {{mask_mod_code | indent(24)}}
                         dsT[i, j] = T.if_then_else(
-                            by * block_M + i <= k * block_N + j, dsT[i, j], 0
+                            {{mask_output}}, dsT[i, j], 0
                         )
 
                 # custom_bwd

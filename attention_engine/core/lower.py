@@ -5,7 +5,18 @@ from .utils import IndentedCode
 from .tl_gen import generate_tl_from_dag
 from .attn_template import TlAttnTemplate
 from .blockattn_template import TlBlockAttnTemplate
-from dataclasses import dataclass
+from dataclasses import dataclass, field, InitVar
+
+from .codegen.common import *
+from copy import copy, deepcopy
+from sympy import symbols
+from typing import Callable
+
+import logging
+
+import torch.fx as fx
+
+accum_type = "float"
 
 # TODO: bwd map
 shape_idx_map = {
@@ -16,6 +27,14 @@ shape_idx_map = {
     "1": "0"
     # others: ":" -> ":"
 }
+shape_idx_map_sp = {
+    "batch": sp.simplify("bz"),
+    "heads": sp.simplify("by"),
+    "seq_len": sp.simplify("bx*block_M"),
+    "seq_len_kv": sp.simplify("k*block_N"),
+    "1": sp.simplify("0")
+    # others: ":" -> ":"
+}
 shape_idx_onchip_map = {
     "batch": "",
     "heads": "",
@@ -23,6 +42,18 @@ shape_idx_onchip_map = {
     "seq_len_kv": "block_N",
     "1": ""
 }
+shape_idx_onchip_step_map_sp = {
+    "batch": sp.simplify("0"),
+    "heads": sp.simplify("0"),
+    "seq_len": sp.simplify("block_M"),
+    "seq_len_kv": sp.simplify("block_N"),
+    "1": sp.simplify("0")
+}
+
+shape_idx_onchip_dim_map = [
+    "seq_len", "seq_len_kv"
+]
+
 shape_idx_map_bwd = {
     "batch": "bz",
     "heads": "by",
@@ -40,6 +71,81 @@ shape_idx_onchip_map_bwd = {
 
 RECURRENT_DIM = "block_N"
 
+@dataclass
+class CopyMap:
+    src: SymbolScalar
+    dst: SymbolScalar
+    idx_list: List[sp.Symbol]
+    idx_dim_map: List[int]
+    
+@dataclass
+class KernelOptionsBase:
+    global_tensors_input: Dict[str, SymbolScalar] = field(default_factory=dict)
+    global_tensors_output: Dict[str, SymbolScalar] = field(default_factory=dict)
+    shared_tensors: Dict[str, SymbolScalar] = field(default_factory=dict)
+    fragment_tensors: Dict[str, SymbolScalar] = field(default_factory=dict)
+    copy_maps: List[CopyMap] = field(default_factory=list)
+    
+    def add_output_tensor(self, tensor_name: str, tile_shape, is_sharedmem: bool, global_shape, dtype:str, global_name=None, global_idx: List[sp.Symbol]=None, global_dim_map: List[int]=None):
+        if global_name is None:
+            global_name = f"g_{tensor_name}"
+        new_tensor = SymbolScalar(tensor_name, Var(tensor_name), shape_idx=tile_shape, dtype=dtype)
+        if is_sharedmem:
+            if tensor_name in self.shared_tensors.keys():
+                logging.warning(f"Tensor {tensor_name} already exists in shared memory")
+            self.shared_tensors[tensor_name] = new_tensor
+        else:
+            if tensor_name in self.fragment_tensors.keys():
+                logging.warning(f"Tensor {tensor_name} already exists in fragment memory")
+            self.fragment_tensors[tensor_name] = new_tensor
+        if global_idx is not None:
+            self.global_tensors_output[global_name] = SymbolScalar(global_name, Var(global_name), shape_idx=global_shape, dtype=dtype)
+            self.copy_maps.append(
+                CopyMap(
+                    new_tensor,
+                    self.global_tensors_output[global_name],
+                    global_idx,
+                    global_dim_map,
+                )
+            )
+        
+    def add_input_tensor(self, tensor_name: str, tile_shape, is_sharedmem: bool, global_shape, dtype:str, global_idx: List[sp.Symbol]=None, global_dim_map: List[int]=None):
+        new_tensor = SymbolScalar(tensor_name, Var(tensor_name), shape_idx=tile_shape, dtype=dtype)
+        if is_sharedmem:
+            if tensor_name in self.shared_tensors.keys():
+                logging.warning(f"Tensor {tensor_name} already exists in shared memory")
+            self.shared_tensors[tensor_name] = new_tensor
+        else:
+            if tensor_name in self.fragment_tensors.keys():
+                logging.warning(f"Tensor {tensor_name} already exists in fragment memory")
+            self.fragment_tensors[tensor_name] = new_tensor
+        if global_idx is not None:
+            self.global_tensors_input[f"g_{tensor_name}"] = SymbolScalar(f"g_{tensor_name}", Var(f"g_{tensor_name}"), shape_idx=global_shape, dtype=dtype)
+            self.copy_maps.append(
+                CopyMap(
+                    self.global_tensors_input[f"g_{tensor_name}"],
+                    new_tensor,
+                    global_idx,
+                    global_dim_map,
+                )
+            )
+            
+    def add_intermediate_tensor(self, tensor_name: str, shape, is_sharedmem: bool, dtype:str):
+        tensor = SymbolScalar(tensor_name, Var(tensor_name), shape_idx=shape, dtype=dtype)
+        if is_sharedmem:
+            if tensor_name in self.shared_tensors.keys():
+                logging.warning(f"Tensor {tensor_name} already exists in shared memory")
+            self.shared_tensors[tensor.name] = tensor
+        else:
+            if tensor_name in self.fragment_tensors.keys():
+                logging.warning(f"Tensor {tensor_name} already exists in fragment memory")
+            self.fragment_tensors[tensor.name] = tensor
+    
+@dataclass
+class AttnFwdKernelOption(KernelOptionsBase):
+    tile_M: sp.Symbol = field(default_factory=sp.Symbol)
+    tile_N: sp.Symbol = field(default_factory=sp.Symbol)
+    accum_type: str = "float"
 
 @dataclass
 class lowerOutput:
@@ -47,6 +153,13 @@ class lowerOutput:
     tl_dtype: str = "float16"
     is_inf_mask: str = "True"
     is_casual: str = "False"
+    q_idx: str = "q_idx"
+    kv_idx: str = "kv_idx"
+    batch_idx: str = "batch_idx"
+    head_idx: str = "head_idx"
+    mask_output: str = "True"
+    mask_mod_code: str = ""
+    is_mask_mod_code: str = "False"
 
 
 @dataclass
@@ -64,23 +177,18 @@ class TunnerOutput:
 
 class lowerOnlineFuncOutput:
 
-    def __init__(self, final_rowscales_output, final_rowscales_init, online_rowscales_initvalue, online_func_init, online_func_inputs, online_func_body, online_func_inputs_list, o_scale, online_func_epilogue, final_rowscales_save,
+    def __init__(self, online_rowscales_initvalue, online_func_def, call_online_func, o_scale, online_func_epilogue,
                  online_rowscales_update,
                  isused_doosum, final_rowscales_length, final_rowscales_load, online_func_fwd, custom_bwd_inputs_load, custom_bwd_body,
                  final_rowscales_shared_init,
                  custom_bwd_inputs, custom_bwd_inputs_init,
                  o_scale_varname):
-        self.final_rowscales_output = final_rowscales_output
-        self.final_rowscales_init = final_rowscales_init
-        self.online_rowscales_initvalue = online_rowscales_initvalue
-        self.online_func_init = online_func_init
-        self.online_func_inputs = online_func_inputs
-        self.online_func_body = online_func_body
-        self.online_func_inputs_list = online_func_inputs_list
+        self.online_rowscales_initvalue = str(online_rowscales_initvalue)
+        self.online_func_def = str(online_func_def)
+        self.call_online_func = call_online_func
         self.o_scale = o_scale
         self.online_func_epilogue = online_func_epilogue
-        self.final_rowscales_save = final_rowscales_save
-        self.online_rowscales_update = online_rowscales_update
+        self.online_rowscales_update = str(online_rowscales_update)
 
         self.isused_doosum = isused_doosum
         self.final_rowscales_length = final_rowscales_length
@@ -94,41 +202,82 @@ class lowerOnlineFuncOutput:
         self.o_scale_varname = o_scale_varname
 
 
+@dataclass
 class lowerScoreModOutput:
-    def __init__(self, score_mod_inputs, score_mod_body, score_mod_inputs_list,
-                 score_mod_backward,
-                 score_mod_bwd_inputs_list,
-                 score_mod_bwd_inputs,
-                 score_mod_inputs_bwd_list,
-                 score_mod_fwd_inputs,
-                 score_mod_fwd_body,
-                 score_mod_output_var,
-                 score_mod_bwd_inputs_declare,
-                 score_mod_bwd_inputs_declare_shared
-                 ):
-        self.score_mod_inputs = score_mod_inputs
-        self.score_mod_body = score_mod_body
-        self.score_mod_inputs_list = score_mod_inputs_list
-        self.score_mod_backward = score_mod_backward
-        self.score_mod_bwd_inputs = score_mod_bwd_inputs
-        self.score_mod_bwd_inputs_list = score_mod_bwd_inputs_list
-        self.score_mod_inputs_bwd_list = score_mod_inputs_bwd_list
-        self.score_mod_fwd_inputs = score_mod_fwd_inputs
-        self.score_mod_fwd_body = score_mod_fwd_body
-        self.score_mod_output_var = score_mod_output_var
-        self.score_mod_bwd_inputs_declare = score_mod_bwd_inputs_declare
-        self.score_mod_bwd_inputs_declare_shared = score_mod_bwd_inputs_declare_shared
+    score_mod_func_def: str
+    call_score_mod: str
+    score_mod_backward: str
+    score_mod_bwd_inputs_list: str
+    score_mod_bwd_inputs: str
+    score_mod_inputs_bwd_list: str
+    score_mod_fwd_inputs: str
+    score_mod_fwd_body: str
+    score_mod_output_var: str
+    score_mod_bwd_inputs_declare: str
+    score_mod_bwd_inputs_declare_shared: str
+
+@dataclass
+class KernelBase:
+    kernel_name: str
+    input_args: str = ""
+    output_args: str = ""
+    alloc: str = ""
+    output_args_copy_epilogue: str = ""
+    input_args_copy_prologue: str = ""
+
+def lower_kernel(kernel_options: KernelOptionsBase, kernel_template:KernelBase):
+    # generate input args
+    input_args_code = IndentedCode()
+    for tensor in kernel_options.global_tensors_input.values():
+        input_args_code.add_line(arg_def(tensor))
+    kernel_template.input_args = str(input_args_code)
+    
+    # generate output args
+    output_args_code = IndentedCode()
+    for tensor in kernel_options.global_tensors_output.values():
+        output_args_code.add_line(arg_def(tensor))
+    kernel_template.output_args = str(output_args_code)
+    
+    # generate alloc
+    alloc_code = IndentedCode()
+    for tensor in kernel_options.shared_tensors.values():
+        alloc_code.add_line(alloc_shared_op(tensor))
+    for tensor in kernel_options.fragment_tensors.values():
+        alloc_code.add_line(alloc_fragment_op(tensor))
+    kernel_template.alloc = str(alloc_code)
+    
+    # generate output args copy epilogue(reg/shared->global)
+    output_args_copy_epilogue_code = IndentedCode()
+    for copy_map in kernel_options.copy_maps:
+        if copy_map.dst.name in kernel_options.global_tensors_output.keys():
+            
+            output_args_copy_epilogue_code.add_line(
+                store_op(copy_map.src, copy_map.dst, copy_map.idx_dim_map, dst_dim_list=list(range(len(copy_map.idx_list))), dst_idx_list=copy_map.idx_list)
+            )
+    
+    kernel_template.output_args_copy_epilogue = str(output_args_copy_epilogue_code)
+    
+    # generate input args copy prologue(global->reg/shared)
+    input_args_copy_prologue_code = IndentedCode()
+    for copy_map in kernel_options.copy_maps:
+        if copy_map.src.name in kernel_options.global_tensors_input.keys():
+            input_args_copy_prologue_code.add_line(
+                load_op(copy_map.src, copy_map.dst, copy_map.idx_dim_map, src_dim_list=list(range(len(copy_map.idx_list))), src_idx_list=copy_map.idx_list)
+            )
+            
+    kernel_template.input_args_copy_prologue = str(input_args_copy_prologue_code)
 
 
 def lower_online_func(online_func, lower_output: lowerOutput,
-                      scores_name="scores"):  # OnlineFunc):
+                      scores_name="scores", kernel_options: AttnFwdKernelOption=None):  
     online_fwd = online_func.online_fwd
+    # 1. init input vars
     scores = SymbolicArray(
         scores_name,
         Var(scores_name),
         shape_idx=[
-            "block_M",
-            "block_N"])
+            kernel_options.tile_M,
+            kernel_options.tile_N])
     online_rowscales = online_func.online_rowscales
     b = SymbolScalar("b", Var("b"))
     h = SymbolScalar("h", Var("h"))
@@ -137,16 +286,13 @@ def lower_online_func(online_func, lower_output: lowerOutput,
     # online&epilogue
     input_vars = {}
 
-    # generate init value for online_rowscales
-    online_rowscales_initvalue = ""
+    # 2. fill op for online_rowscales
+    online_rowscales_initvalue = IndentedCode()
     for k, v in online_rowscales.items():  # v.code is Var
-        if v.code.name == "-inf":
-            tl_init_value = "-T.infinity(accum_dtype)"
-        else:
-            tl_init_value = v.code.name
-        online_rowscales_initvalue += f"T.fill({v.varname}, {tl_init_value})\n"
+        tl_init_value = v.code.name
+        online_rowscales_initvalue.add_line(fill_op(v, tl_init_value))
 
-    # online_fwd
+    # 3. online_fwd func op def&call
     scores_new, new_online_rowscales, o_scalevar = online_fwd(
         scores, online_rowscales, b, h, q_idx)
     for k, v in new_online_rowscales.items():
@@ -154,33 +300,25 @@ def lower_online_func(online_func, lower_output: lowerOutput,
     o_scalevar.count += 1
     tl_code, input_vars_online = generate_tl_from_dag(
         list(new_online_rowscales.values()) + [scores_new, o_scalevar])
-    online_func_body = str(tl_code)
-    if online_func_body == "":
-        online_func_body = "pass"
-    online_func_inputs = ""
-    for varname, input_var in input_vars_online.items():
-        online_func_inputs += f"{input_var.varname}: T.Buffer([{', '.join(input_var.shape_idx)}], accum_dtype), \n"
-    online_func_inputs_list = ", ".join(
-        [input_var.varname for varname, input_var in input_vars_online.items()])
+    online_func_def = func_block(
+        "online_func", input_vars_online.values(), tl_code
+    )
+    call_online_func = call_op("online_func", input_vars_online.values())
     input_vars.update(input_vars_online)
-    # o_scale = o_scalevar.varname
+    
+    # 4. o_scale & online_rowscales update(TODO: too ad hoc)
     o_scale_varname = o_scalevar.varname
-    o_scale = IndentedCode()
-    o_scale.add_line(f"for i, j in T.Parallel(block_M, dimv):")
-    o_scale.more_indent()
-    o_scale.add_line(f"acc_o[i, j] *= {o_scalevar.varname}[i]")
+    o_scale = parallel_for_block(["block_M", "dimv"], ["i", "j"], f"acc_o[i, j] *= {o_scalevar.varname}[i]")
     o_scale = str(o_scale)
 
     online_rowscales_update = ""
     for k, v in new_online_rowscales.items():
         if v.varname == k:
             continue
+        # TODO: 
         online_rowscales_update += f"T.copy({v.varname}, {k})\n"
 
-    # final_rowscales
-    # final_rowscales_init = ""
-    # for k,v in online_func.final_rowscales.items():
-    #     final_rowscales_init += f"{k} = T.alloc_fragment([{v.shape_idx}], accum_dtype)\n"
+    # 5. final_rowscales block
     acco = SymbolicArray("acc_o", Var("acc_o"), shape_idx=["block_M", "dimv"])
     for k, v in online_rowscales.items():
         online_rowscales[k].clear_codegen()
@@ -190,44 +328,26 @@ def lower_online_func(online_func, lower_output: lowerOutput,
         [acco_new] + list(new_final_rowscales.values()))
     online_func_epilogue = str(tl_code)
     input_vars.update(input_vars_final)
-    final_rowscales_output = ""
-    for k, v in online_func.final_rowscales.items():
-        final_rowscales_output += f"g_{k}: T.Buffer([batch, heads, seq_len], accum_dtype), \n"
-    final_rowscales_save = ""
+    
+    # 6. add kernel output tensor & intermediate tensor
     for k, v in new_final_rowscales.items():
-        final_rowscales_save += f"T.copy({v.varname}, g_{k}[bz, by, bx * block_M : (bx + 1) * block_M])\n"
-
-    online_func_init = ""
-    # already in input_vars
-    # for k,v in online_rowscales.items():
-    #     online_func_init += f"{k} = T.alloc_fragment([{v.shape_idx}], accum_dtype)\n"
+        kernel_options.add_output_tensor(
+            v.varname, v.shape, False, 
+            ["batch", "heads", "seq_len"], v.dtype,
+            f"g_{k}",
+            [sp.simplify(ii) for ii in ["bz", "by", "bx * block_M"]],
+            [2,]
+        )
+            
     for _, input_var in input_vars.items():
         if input_var.varname == scores_name:
             continue
-        online_func_init += f"{input_var.varname} = T.alloc_fragment([{', '.join(input_var.shape_idx)}], accum_dtype)\n"
+        kernel_options.add_intermediate_tensor(
+            input_var.varname, input_var.shape_idx, False, input_var.dtype
+        )
 
-    # acco
-    # acco = SymbolicArray("acco", Var("acco"), shape_idx=["block_M", "dimv"])
-    # acco = acco * o_scale
-    # tl_code += generate_tl(acco, varname="acco")
 
-    # tmp_solution: mask_value
-    # mask_value = "0"
-    # for used in scores.use_list:
-    #     if used.code.type == "ReduceMax":
-    #         mask_value = "-inf"
-    #         break
-    # is_inf_mask = "True" if mask_value == "-inf" else "False"
-
-    # print(tl_code)
-    # print("o_scalevar:", o_scalevar.varname)
-    # for k,v in new_online_rowscales.items():
-    #     print(f"online_rowscale['{k}'] : {v.varname}")
-    # print(input_vars)
-    # print("mask_value:", mask_value)
-    # print("online_func_epilogue:", online_func_epilogue)
-
-    # bwd
+    # 7. bwd: TODO
     isused_doosum = False
     final_rowscales_bwd = {}
     for k, v in online_func.final_rowscales.items():
@@ -280,17 +400,12 @@ def lower_online_func(online_func, lower_output: lowerOutput,
     final_rowscales_length = len(final_rowscales_bwd)
 
     return lowerOnlineFuncOutput(
-        final_rowscales_output=final_rowscales_output,
         online_rowscales_initvalue=online_rowscales_initvalue,
-        online_func_init=online_func_init,
-        online_func_inputs=online_func_inputs,
-        online_func_body=online_func_body,
-        online_func_inputs_list=online_func_inputs_list,
+        online_func_def=online_func_def,
+        call_online_func=call_online_func,
         o_scale=o_scale,
         online_func_epilogue=online_func_epilogue,
-        final_rowscales_save=final_rowscales_save,
         online_rowscales_update=online_rowscales_update,
-        final_rowscales_init=None,
 
         isused_doosum=isused_doosum,
         final_rowscales_length=final_rowscales_length,
@@ -305,7 +420,8 @@ def lower_online_func(online_func, lower_output: lowerOutput,
     )
 
 
-def lower_score_mod(score_mod, custom_fwd_inputs, lower_output: lowerOutput):
+def lower_score_mod(score_mod, custom_fwd_inputs, lower_output: lowerOutput, kernel_options: AttnFwdKernelOption):
+    # 1. init input vars
     scores = SymbolScalar(
         "scores",
         Var("scores"),
@@ -317,16 +433,13 @@ def lower_score_mod(score_mod, custom_fwd_inputs, lower_output: lowerOutput):
     q_idx = SymbolScalar("q_idx", Var("q_idx"))
     kv_idx = SymbolScalar("kv_idx", Var("kv_idx"))
 
+    # 2. score_mod func op def&call
     scores_new = score_mod(scores, custom_fwd_inputs, b, h, q_idx, kv_idx)
     tl_code, input_vars = generate_tl_from_dag([scores_new])
-    score_mod_body = str(tl_code)
-    score_mod_inputs = ""
-    for varname, input_var in input_vars.items():
-        score_mod_inputs += f"{input_var.varname}: T.Buffer([{', '.join(input_var.shape_idx)}], accum_dtype), \n"
-    score_mod_inputs_list = ", ".join(
-        [input_var.varname for varname, input_var in input_vars.items()])
-    # print(tl_code)
-    # print(input_vars)
+    score_mod_func_def = func_block("score_mod", input_vars.values(), tl_code)
+    call_score_mod = call_op("score_mod", input_vars.values())
+    
+    # 3. score_mod bwd TODO
 
     # backward, block_M : k, block_N : q
     qkT = SymbolScalar("qkT", Var("qkT"), shape_idx=["block_M", "block_N"])
@@ -351,9 +464,9 @@ def lower_score_mod(score_mod, custom_fwd_inputs, lower_output: lowerOutput):
     tl_code, input_vars_fwd = generate_tl_from_dag([scores_new])
     score_mod_fwd_body = str(tl_code)
     score_mod_output_var = scores_new.varname
-    score_mod_fwd_inputs = ""
+    score_mod_fwd_inputs = IndentedCode()
     for varname, input_var in input_vars_fwd.items():
-        score_mod_fwd_inputs += f"{input_var.varname}: T.Buffer([{', '.join(input_var.shape_idx)}], accum_dtype), \n"
+        score_mod_fwd_inputs.add_line(arg_def(input_var))
     score_mod_inputs_bwd_list = ", ".join(
         [varname for varname, input_var in input_vars_fwd.items()])
     tl_code, input_vars = generate_tl_from_dag([qkT.grad])
@@ -363,34 +476,37 @@ def lower_score_mod(score_mod, custom_fwd_inputs, lower_output: lowerOutput):
         input_vars[k] = v
     score_mod_bwd_inputs_list = ", ".join(
         [input_var.varname for varname, input_var in input_vars.items()])
-    score_mod_bwd_inputs = ""
+    score_mod_bwd_inputs = IndentedCode()
     for varname, input_var in input_vars.items():
-        score_mod_bwd_inputs += f"{input_var.varname}: T.Buffer([{', '.join(input_var.shape_idx)}], accum_dtype), \n"
+        score_mod_bwd_inputs.add_line(arg_def(input_var))
 
-    score_mod_bwd_inputs_declare = ""
-    score_mod_bwd_inputs_declare_shared = ""
+    score_mod_bwd_inputs_declare = IndentedCode()
+    score_mod_bwd_inputs_declare_shared = IndentedCode()
     # TODO: dtype
     dtype = "accum_dtype"
     for varname, input_var in input_vars.items():
         if input_var.shape_idx == ["block_N", "block_M"]:
             dtype = "dtype"
-            score_mod_bwd_inputs_declare_shared += f"{input_var.varname} = T.alloc_shared([{', '.join(input_var.shape_idx)}], {dtype})\n"
+            input_var.dtype = "dtype"
+            score_mod_bwd_inputs_declare_shared.add_line(alloc_shared_op(input_var))
         else:
-            score_mod_bwd_inputs_declare += f"{input_var.varname} = T.alloc_fragment([{', '.join(input_var.shape_idx)}], accum_dtype)\n"
+            input_var.dtype = dtype
+            score_mod_bwd_inputs_declare.add_line(alloc_fragment_op(input_var))
+            
 
+    
     return lowerScoreModOutput(
-        score_mod_inputs=score_mod_inputs,
-        score_mod_body=score_mod_body,
-        score_mod_inputs_list=score_mod_inputs_list,
-        score_mod_backward=score_mod_backward,
-        score_mod_bwd_inputs_list=score_mod_bwd_inputs_list,
-        score_mod_bwd_inputs=score_mod_bwd_inputs,
-        score_mod_inputs_bwd_list=score_mod_inputs_bwd_list,
-        score_mod_fwd_inputs=score_mod_fwd_inputs,
-        score_mod_fwd_body=score_mod_fwd_body,
-        score_mod_output_var=score_mod_output_var,
-        score_mod_bwd_inputs_declare=score_mod_bwd_inputs_declare,
-        score_mod_bwd_inputs_declare_shared=score_mod_bwd_inputs_declare_shared
+        score_mod_func_def=str(score_mod_func_def),
+        call_score_mod=str(call_score_mod),
+        score_mod_backward=str(score_mod_backward),
+        score_mod_bwd_inputs_list=str(score_mod_bwd_inputs_list),
+        score_mod_bwd_inputs=str(score_mod_bwd_inputs),
+        score_mod_inputs_bwd_list=str(score_mod_inputs_bwd_list),
+        score_mod_fwd_inputs=str(score_mod_fwd_inputs),
+        score_mod_fwd_body=str(score_mod_fwd_body),
+        score_mod_output_var=str(score_mod_output_var),
+        score_mod_bwd_inputs_declare=str(score_mod_bwd_inputs_declare),
+        score_mod_bwd_inputs_declare_shared=str(score_mod_bwd_inputs_declare_shared)
     )
 
 
@@ -404,6 +520,7 @@ def lower_tl(score_mod, block_mask, online_func,
     # TODO: mask_value: 0 or -inf
     lower_output.is_inf_mask = "True" if block_mask is not None and mask_value == "-inf" else "False"
 
+    # 1. kernel performance configs
     # tune
     if tuned_config is None:
         tune_output = TunnerOutput()
@@ -429,6 +546,10 @@ def lower_tl(score_mod, block_mask, online_func,
         tune_output.block_N_bwd = "64"
         tune_output.thread_num_bwd = "256"
 
+    # 2. kernel config options 
+    kernel_options = AttnFwdKernelOption(tile_M=sp.simplify("block_M"), tile_N=sp.simplify("block_N"))
+    kernel_code_template = KernelBase("kernel")
+    
     custom_fwd_inputs_load_shared_bwd = ""
     # for k,v in custom_fwd_inputs.input_tensors.items():
     #     # modify shape
@@ -457,48 +578,67 @@ def lower_tl(score_mod, block_mask, online_func,
     #     custom_fwd_inputs_str += f"g_{k}: T.Buffer([{', '.join(v.shape_idx)}], {custom_input_dtype}), \n"
     #     custom_fwd_inputs.input_tensors[k].shape_idx = shape_idx_block
 
-    custom_fwd_inputs_str = ""
+    # deal with custom inputs tensors
+    # custom_fwd_inputs_str = ""
     # for k,v in custom_fwd_inputs.input_tensors.items():
     #     custom_fwd_inputs_str += f"g_{k}: T.Buffer([{', '.join(v.shape_idx)}], accum_dtype), \n"
-    custom_fwd_inputs_init = ""
-    custom_fwd_inputs_load_prolog = ""
     custom_fwd_inputs_load_shared = ""
     custom_fwd_inputs_load_s2r = ""
     for k, v in custom_fwd_inputs.input_tensors.items():
         # modify shape
         shape_idx_copy = [(shape_idx_map[shape] if shape in shape_idx_map.keys(
         ) else ":") for shape in v.shape_idx]
+        shape_idx_copy_sp = [(shape_idx_map_sp[shape] if shape in shape_idx_map_sp.keys(
+        ) else sp.simplify("0")) for shape in v.shape_idx]
         shape_idx_block = [(shape_idx_onchip_map[shape] if shape in shape_idx_onchip_map.keys(
         ) else shape) for shape in v.shape_idx]
         # remove "" in list
         # TODO:bug[block_N] -> [1,block_N]
         shape_idx_block = [shape for shape in shape_idx_block if shape != ""]
-        custom_input_dtype = "accum_dtype"
-        # load
-        # tl copy bug when "1"
         if shape_idx_block == []:
-            # shape_idx_copy = [idx_copy if idx_copy != ":" else "0" for idx_copy in shape_idx_copy]
             shape_idx_block = ["1"]
-            custom_fwd_inputs_load_prolog += f"{k}[0] = g_{k}[{', '.join(shape_idx_copy)}]\n"
-        elif not (RECURRENT_DIM in shape_idx_block):
-            custom_fwd_inputs_load_prolog += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k})\n"
+        shape_idx_block_step_sp = [(shape_idx_onchip_step_map_sp[shape] if shape in shape_idx_onchip_step_map_sp.keys(
+        ) else sp.simplify(shape)) for shape in v.shape_idx]
+        shape_idx_dim_map = [idx for idx, shape in enumerate(v.shape_idx) if shape in shape_idx_onchip_dim_map]
+        custom_input_dtype = "accum_dtype"
+        
+        kernel_options.fragment_tensors[k] = (SymbolScalar(k, Var(k), shape_idx=shape_idx_block, dtype=custom_input_dtype))
+        kernel_options.global_tensors_input[f"g_{k}"] = (SymbolScalar(f"g_{k}", Var(f"g_{k}"), shape_idx=v.shape_idx, dtype=custom_input_dtype))
+        
+        # tl copy bug when "1"
+        if not (RECURRENT_DIM in shape_idx_block):
+            kernel_options.copy_maps.append(
+                CopyMap(kernel_options.global_tensors_input[f"g_{k}"], kernel_options.fragment_tensors[k], shape_idx_copy_sp, shape_idx_dim_map)
+            )
         elif len(shape_idx_block) > 1 and shape_idx_block[0] != "1":
             custom_input_dtype = "dtype"
-            custom_fwd_inputs_init += f"{k}_shared = T.alloc_shared([{', '.join(shape_idx_block)}], {custom_input_dtype})\n"
-            custom_fwd_inputs_load_shared += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k}_shared)\n"
-            custom_fwd_inputs_load_s2r += f"T.copy({k}_shared, {k})\n"
+            kernel_options.shared_tensors[f"{k}_shared"] = (SymbolScalar(f"{k}_shared", Var(f"{k}_shared"), shape_idx=shape_idx_block, dtype=custom_input_dtype))
+            # custom_fwd_inputs_load_shared += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k}_shared)\n"
+            custom_fwd_inputs_load_shared += str(
+                load_op(kernel_options.global_tensors_input[f"g_{k}"], kernel_options.shared_tensors[f"{k}_shared"], shape_idx_dim_map, src_dim_list=list(range(len(shape_idx_copy_sp))), src_idx_list=shape_idx_copy_sp) + "\n"
+            )
+            # custom_fwd_inputs_load_s2r += f"T.copy({k}_shared, {k})\n"
+            custom_fwd_inputs_load_s2r += copy_op(kernel_options.shared_tensors[f"{k}_shared"], kernel_options.fragment_tensors[k]) + "\n"
             lower_output.swizzle_shared += f"{k}_shared: tl.layout.make_swizzled_layout({k}_shared), \n"
         else:
-            custom_fwd_inputs_load_shared += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k})\n"
+            # custom_fwd_inputs_load_shared += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k})\n"
+            custom_fwd_inputs_load_shared += str(
+                load_op(kernel_options.global_tensors_input[f"g_{k}"], kernel_options.fragment_tensors[k], shape_idx_dim_map, src_dim_list=list(range(len(shape_idx_copy_sp))), src_idx_list=shape_idx_copy_sp) + "\n"
+            )
         # TODO: dtype of custom_fwd_inputs
-        custom_fwd_inputs_init += f"{k} = T.alloc_fragment([{', '.join(shape_idx_block)}], {custom_input_dtype})\n"
-        custom_fwd_inputs_str += f"g_{k}: T.Buffer([{', '.join(v.shape_idx)}], {custom_input_dtype}), \n"
+        
+        # custom_fwd_inputs_init += f"{k} = T.alloc_fragment([{', '.join(shape_idx_block)}], {custom_input_dtype})\n"
+        kernel_options.fragment_tensors[k].dtype = custom_input_dtype
+        kernel_options.fragment_tensors[k].shape_idx = shape_idx_block
+        # custom_fwd_inputs_str += f"g_{k}: T.Buffer([{', '.join(v.shape_idx)}], {custom_input_dtype}), \n"
+        kernel_options.global_tensors_input[f"g_{k}"].dtype = custom_input_dtype
         custom_fwd_inputs.input_tensors[k].shape_idx = shape_idx_block
 
+    # 3.kernel template specific lower
     lower_score_mod_output = lower_score_mod(
-        score_mod, custom_fwd_inputs, lower_output)
+        score_mod, custom_fwd_inputs, lower_output, kernel_options)
     lower_online_func_output = lower_online_func(
-        online_func, lower_output, scores_name)
+        online_func, lower_output, scores_name, kernel_options)
     output_idx_list = [i for i in range(3 +
                                         len(custom_fwd_inputs.input_tensors), 3 +
                                         len(custom_fwd_inputs.input_tensors) +
@@ -515,6 +655,23 @@ def lower_tl(score_mod, block_mask, online_func,
                                             int(lower_online_func_output.isused_doosum) +
                                             3)]
     
+    # 4. general kernel lower
+    lower_kernel(kernel_options, kernel_code_template)
+    
+    # 5. mask mod
+    if block_mask is not None:
+        mask_graph = fx.symbolic_trace(block_mask)
+        # TODO: check input and output
+        node_list = [node for node in mask_graph.graph.nodes]
+        lower_output.batch_idx = node_list[0].name
+        lower_output.head_idx = node_list[1].name
+        lower_output.q_idx = node_list[2].name
+        lower_output.kv_idx = node_list[3].name
+        lower_output.mask_output = node_list[-1].args[0].name
+        lower_output.mask_mod_code = str(tl_codegen_from_torchfx(mask_graph))
+        lower_output.is_mask_mod_code = "True"
+    
+    # TODO: infer mask logic
     if infer_mask:
         block_M = int(tune_output.block_M)
         block_N = int(tune_output.block_N)
@@ -532,9 +689,9 @@ def lower_tl(score_mod, block_mask, online_func,
             tlattn_template = TlAttnTemplate
         
         return tlattn_template(
-            custom_fwd_inputs=custom_fwd_inputs_str,
-            custom_fwd_inputs_init=custom_fwd_inputs_init,
-            custom_fwd_inputs_load_prolog=custom_fwd_inputs_load_prolog,
+            custom_fwd_inputs=kernel_code_template.input_args,
+            custom_fwd_inputs_init=kernel_code_template.alloc,
+            custom_fwd_inputs_load_prolog=kernel_code_template.input_args_copy_prologue,
             custom_fwd_inputs_load_s2r=custom_fwd_inputs_load_s2r,
             custom_fwd_inputs_load_shared=custom_fwd_inputs_load_shared,
             custom_fwd_inputs_load_shared_bwd=custom_fwd_inputs_load_shared_bwd,
@@ -553,9 +710,11 @@ def lower_tl(score_mod, block_mask, online_func,
         lower_output.is_casual = "True" if block_mask is not None else "False"
 
         return tlattn_template(
-            custom_fwd_inputs=custom_fwd_inputs_str,
-            custom_fwd_inputs_init=custom_fwd_inputs_init,
-            custom_fwd_inputs_load_prolog=custom_fwd_inputs_load_prolog,
+            custom_fwd_inputs=kernel_code_template.input_args,
+            custom_fwd_inputs_init=kernel_code_template.alloc,
+            final_rowscales_output=kernel_code_template.output_args,
+            final_rowscales_save=kernel_code_template.output_args_copy_epilogue,
+            custom_fwd_inputs_load_prolog=kernel_code_template.input_args_copy_prologue,
             custom_fwd_inputs_load_s2r=custom_fwd_inputs_load_s2r,
             custom_fwd_inputs_load_shared=custom_fwd_inputs_load_shared,
             custom_fwd_inputs_load_shared_bwd=custom_fwd_inputs_load_shared_bwd,
@@ -569,25 +728,3 @@ def lower_tl(score_mod, block_mask, online_func,
             bwd_output_idx_list=str(bwd_output_idx_list)
         )()
 
-
-if __name__ == "__main__":
-    from mha import OnlineSoftmax
-    lower_online_func(OnlineSoftmax())
-    print("---------------------")
-    from mha import score_mod
-    custom_fwd_inputs = CustomIO({
-        "softmax_scale": (1,)
-    })
-    lower_score_mod(score_mod, custom_fwd_inputs)
-
-    aaa = SymbolScalar("aaa", Var("aaa"))
-    b = 5.4
-    a = 3
-    aaa = aaa * (b / a)
-    print(aaa.code)
-    print(generate_tl_from_dag([aaa]))
-
-    print("lower_tl:")
-    tl_code = lower_tl(score_mod, None, OnlineSoftmax(), custom_fwd_inputs)
-    with open("generated_tl_code.py", "w") as f:
-        f.write(tl_code)

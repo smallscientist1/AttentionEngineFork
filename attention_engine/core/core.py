@@ -9,6 +9,8 @@ from copy import copy, deepcopy
 from torch import Tensor
 from typing import Optional, Union, Any
 
+import sympy
+
 # TODO: support online_func extern_input_tensor
 
 
@@ -32,11 +34,11 @@ def plus_count(func):
 
 class SymbolScalar:
     def __init__(self, varname: str, value: Node, prev=[], shape_idx: list = ["block_M"],
-                 require_grad: bool = True):
+                 require_grad: bool = True, dtype="float"):
         self.varname = varname
         self.code = value
         self.prev = prev
-        self.shape_idx = shape_idx
+        self.shape_idx = [str(i) for i in shape_idx]
         self.require_grad = require_grad
 
         self.count = 0
@@ -46,10 +48,22 @@ class SymbolScalar:
         self.visit_count = 0
 
         self.grad = None  # SymbolicScalar
+        
+        self.dtype = dtype
     
     def __repr__(self):
         return f"SymbolScalar({self.varname}, {self.code}, {self.prev}, {self.shape_idx}, {self.require_grad})"
 
+    @property
+    def name(self):
+        return self.varname
+    
+    @property
+    def shape(self):
+        # cannot use sympy.symbols() because of constant
+        shapes = [sympy.simplify(sh_idx) for sh_idx in self.shape_idx]
+        return shapes
+    
     # @plus_count # TODO: plus count bug
     def op(self, code: Type[Node], others: list = [],
            shape_idx: list = None, varname_suffix: str = None):
@@ -254,7 +268,7 @@ class SymbolicTensor(SymbolScalar):
         super().__init__(
             varname, Var(varname), shape_idx=[
                 str(i) for i in shape])
-        self.shape = shape
+        # self.shape = shape
 
 
 class SymbolicConst(SymbolScalar):
@@ -278,7 +292,8 @@ class CustomIO:
     def __call__(self, tensor_name: str, tensor_shape: tuple):
         if tensor_name in self.input_tensors:
             raise ValueError(f"Tensor {tensor_name} already exists")
-        self.input_tensors[tensor_name].shape = tensor_shape
+        # self.input_tensors[tensor_name].shape = tensor_shape
+        self.input_tensors[tensor_name].shape_idx = [str(i) for i in tensor_shape]
 
         def decorator(func):
             def wrapper(*args, **kwargs):

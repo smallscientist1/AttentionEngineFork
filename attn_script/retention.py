@@ -115,8 +115,6 @@ if __name__ == "__main__":
         meta_tensor(B, H, S, DV, dtype=torch.float16),
     )
 
-    # mask on attention score
-    block_mask = create_block_mask(causal_mask, 1, 1, S, S, device="cuda")
 
     custom_fwd_inputs = CustomIO({
         "mask": (1, "heads", "seq_len", "seq_len_kv"), # (1, H, S, S),
@@ -125,7 +123,7 @@ if __name__ == "__main__":
     online = OnlineRetention()
     mod = AttentionEngine(
     qkv_meta,
-    custom_fwd_inputs, score_mod=score_mod, block_mask=block_mask,
+    custom_fwd_inputs, score_mod=score_mod, block_mask=causal_mask,
     online_func=online,
     mask_value="0"
     )
