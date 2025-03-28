@@ -96,7 +96,7 @@ class OnlineFunc:
 
 
 class AttentionEngine:
-    def __init__(self, qkv_meta, custom_fwd_inputs, score_mod, block_mask,
+    def __init__(self, qkv_meta, custom_fwd_inputs, score_mod, mask_mod,
                  online_func, mask_value="-inf", device=H100(), backend="tl", tune=False, tune_file="tuned_result.json", 
                  infer_mask=False):
         # tunner
@@ -108,7 +108,7 @@ class AttentionEngine:
                 qkv_meta,
                 custom_fwd_inputs,
                 score_mod,
-                block_mask,
+                mask_mod,
                 online_func,
                 mask_value, infer_mask=infer_mask and not tune)
 
@@ -149,7 +149,7 @@ class AttentionEngine:
                     qkv_meta,
                     custom_fwd_inputs,
                     score_mod,
-                    block_mask,
+                    mask_mod,
                     online_func,
                     mask_value,
                     tuned_config,
@@ -167,7 +167,7 @@ class AttentionEngine:
             }
             file_path = os.path.join(OUTPUT_DIR, "flash_attn_interface.py")
             lower_cute(score_mod,
-                       block_mask,
+                       mask_mod,
                        online_func,
                        custom_fwd_inputs,
                        qkv_meta[0].shape[3],
@@ -180,9 +180,9 @@ class AttentionEngine:
             # TODO: causal
             self.attention = partial(
                 cute_attn.flash_attn_func,
-                causal=True if block_mask is not None else False)
+                causal=True if mask_mod is not None else False)
 
-    def _compile_tl(self, qkv_meta, custom_fwd_inputs, score_mod, block_mask,
+    def _compile_tl(self, qkv_meta, custom_fwd_inputs, score_mod, mask_mod,
                     online_func, mask_value="-inf", tuned_config=None, infer_mask=False):
         tl_dtype_map = {
             torch.float16: "float16",
@@ -192,13 +192,14 @@ class AttentionEngine:
         kv_len = qkv_meta[2].shape[2]
         head = qkv_meta[0].shape[1]
         head_kv = qkv_meta[2].shape[1]
+        block_mask = None
         if q_seqlen != kv_len:
             assert (q_seqlen < kv_len)
             if head > head_kv:
                 assert q_seqlen == 1
                 infer_mask = True
                 tl_code, block_mask = lower_tl_decode_gqa(score_mod,
-                                      block_mask,
+                                      mask_mod,
                                       online_func,
                                       custom_fwd_inputs,
                                       qkv_meta[0].shape[0], # B
@@ -211,7 +212,7 @@ class AttentionEngine:
                                       tuned_config)
             else:
                 tl_code = lower_tl_decode(score_mod,
-                                      block_mask,
+                                      mask_mod,
                                       online_func,
                                       custom_fwd_inputs,
                                       qkv_meta[0].shape[3],
@@ -222,7 +223,7 @@ class AttentionEngine:
         else:
             if infer_mask:
                 tl_code, block_mask = lower_tl(score_mod,
-                                block_mask,
+                                mask_mod,
                                 online_func,
                                 custom_fwd_inputs,
                                 qkv_meta[0].shape[0], # B
@@ -235,7 +236,7 @@ class AttentionEngine:
                                 tuned_config, infer_mask)
             else:
                 tl_code = lower_tl(score_mod,
-                                block_mask,
+                                mask_mod,
                                 online_func,
                                 custom_fwd_inputs,
                                 qkv_meta[0].shape[0], # B

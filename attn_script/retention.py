@@ -3,7 +3,6 @@ import torch
 import math
 from attn_engine import OnlineFunc
 from core.core import CustomIO
-from core.core import create_block_mask
 from core.core import SymbolicArray, SymbolScalar, SymbolicTensor
 from core.core import Var
 from core.utils import meta_tensor
@@ -90,7 +89,6 @@ def eval():
             meta_tensor(B, H, S, DV, dtype=torch.float16),
         )
 
-        block_mask = create_block_mask(causal_mask, 1, 1, S, S, device="cuda")
 
         custom_fwd_inputs = CustomIO({
             "mask": (1, "heads", "seq_len", "seq_len_kv"), # (1, H, S, S),
@@ -99,7 +97,7 @@ def eval():
         online = OnlineRetention()
         mod = AttentionEngine(
         qkv_meta,
-        custom_fwd_inputs, score_mod=score_mod, block_mask=block_mask,
+        custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
         online_func=online,
         mask_value="0"
         )
@@ -123,7 +121,7 @@ if __name__ == "__main__":
     online = OnlineRetention()
     mod = AttentionEngine(
     qkv_meta,
-    custom_fwd_inputs, score_mod=score_mod, block_mask=causal_mask,
+    custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
     online_func=online,
     mask_value="0"
     )

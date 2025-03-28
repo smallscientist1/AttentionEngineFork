@@ -429,32 +429,6 @@ def lower_tl(score_mod, block_mask, online_func,
         scores_name = "scores_1"
 
     custom_fwd_inputs_load_shared_bwd = ""
-    # for k,v in custom_fwd_inputs.input_tensors.items():
-    #     # modify shape
-    #     shape_idx_copy = [(shape_idx_map_bwd[shape] if shape in shape_idx_map_bwd.keys() else ":") for shape in v.shape_idx]
-    #     shape_idx_block = [(shape_idx_onchip_map_bwd[shape] if shape in shape_idx_onchip_map_bwd.keys() else shape) for shape in v.shape_idx]
-    #     # remove "" in list
-    #     shape_idx_block = [shape for shape in shape_idx_block if shape != ""] # TODO:bug[block_M] -> [1,block_M]
-    #     custom_input_dtype = "accum_dtype"
-    #     # load
-    #     # tl copy bug when "1"
-    #     if shape_idx_block == ["1"]:
-    #         pass
-    #         # custom_fwd_inputs_load_prolog += f"{k}[0] = g_{k}[{', '.join(shape_idx_copy)}]\n"
-    #     elif not (RECURRENT_DIM in shape_idx_block):
-    #         pass
-    #         # custom_fwd_inputs_load_prolog += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k})\n"
-    #     elif len(shape_idx_block) > 1 and shape_idx_block[1] != "1": # [block_N, block_M]
-    #         custom_input_dtype = "dtype"
-    #         custom_fwd_inputs_init += f"{k}_shared = T.alloc_shared([{', '.join(shape_idx_block)}], {custom_input_dtype})\n"
-    #         custom_fwd_inputs_load_shared_bwd += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k}_shared)\n"
-    #         custom_fwd_inputs_load_s2r += f"T.copy({k}_shared, {k})\n"
-    #     else:# [block_N, 1]
-    #         custom_fwd_inputs_load_shared_bwd += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k})\n"
-    #     # TODO: dtype of custom_fwd_inputs
-    #     custom_fwd_inputs_init += f"{k} = T.alloc_fragment([{', '.join(shape_idx_block)}], {custom_input_dtype})\n"
-    #     custom_fwd_inputs_str += f"g_{k}: T.Buffer([{', '.join(v.shape_idx)}], {custom_input_dtype}), \n"
-    #     custom_fwd_inputs.input_tensors[k].shape_idx = shape_idx_block
 
     custom_fwd_inputs_str = ""
     custom_fwd_inputs_list = ""

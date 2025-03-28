@@ -3,7 +3,6 @@ import torch
 import math
 from attn_engine import OnlineFunc
 from core.core import CustomIO
-from core.core import create_block_mask
 from core.core import SymbolicArray, SymbolScalar, SymbolicTensor
 from core.core import Var
 from core.utils import meta_tensor
@@ -64,7 +63,7 @@ if __name__ == "__main__":
 
     mod = AttentionEngine(
         qkv_meta,
-        custom_fwd_inputs, score_mod=score_mod, block_mask=causal_mask,
+        custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
         online_func=OnlineIdentity(),
     )
     from benchmark.bench_utils import do_bench_sigmoidattn
