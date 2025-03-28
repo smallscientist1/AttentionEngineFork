@@ -14,7 +14,7 @@ mod = AttentionEngine(
     score_mod: Callable[[Tensor, CustomIO, int, int, int, int], Tensor],
     custom_fwd_inputs: CustomIO,
     online_func: OnlineFunc,
-    mask_mod: Callable[[Tensor, CustomIO, int, int, int, int], Tensor]
+    mask_mod: Callable[[int, int, int, int], Bool]
 )
 ```
 
@@ -32,8 +32,51 @@ output.backward(do)
 ### OnlineFunc
 
 OnlineFunc is a class that defines the online function for attention scores, such as online softmax and retention.
+```py
+class OnlineFunc:
+    def __init__(self):
+        pass
+    def online_fwd(scores, online_rowscales, b, h, q_idx) -> Tuple[Tensor, Dict[str, Tensor], Tensor]:
+        pass
+    def online_fwd_epilogue(o, online_rowscales, b, h, q_idx) -> Tuple[Tensor, Dict[str, Tensor]]:
+        pass
+    def forward(scores, online_rowscales, b, h, q_idx, kv_idx) -> Tensor:
+        pass
+    def backward(dp, scores, final_rowscales, doosum, b, h, q_idx, kv_idx) -> Tensor:
+        pass
+```
+Examples can be found in the [Getting-started Example](./getting_started_example.md).
 
-Details can be found in the [Getting-started Example](./getting_started_example.md).
+### score_mod
+`score_mod` takes the following inputs:
+- `score`: attention scores
+- `custom_fwd_inputs`: custom input tensors
+- `b`: batch index
+- `h`: head index
+- `q_idx`: query index
+- `kv_idx`: key index
+
+`score_mod` returns the modified attention scores.
+```
+def score_mod(score, custom_fwd_inputs, b, h, q_idx, kv_idx) -> Tensor:
+    return new_score
+```
+
+Examples can be found in the [Getting-started Example](./getting_started_example.md).
+
+### mask_mod
+`mask_mod` takes the following inputs:
+- `b`: batch index
+- `h`: head index
+- `q_idx`: query index
+- `kv_idx`: key index
+
+`mask_mod` returns Bool value to indicate whether the attention score should be masked.
+```
+def mask_mod(b, h, q_idx, kv_idx) -> Bool:
+    return True
+```
+
 
 ### Customized Linear Attention API
 
@@ -94,6 +137,21 @@ mod(
     block_num: torch.Tensor=None,
 )
 ```
-- Support for OnlineFunc with splitk decoding
+- Support OnlineFunc for decoding
+```py
+class OnlineFunc:
+    ...
+    def combine(final_rowscales)-> Tensor:
+        """Compute logic for the combine kernel"""
+        return o_scale
+
+```
+- Support mask_mod for decoding
+
+```py
+def mask_mod(b, h, q_idx, kv_idx, custom_fwd_inputs) -> Bool:
+    """The offset of q need to be passed by custom_fwd_inputs"""
+    return True
+```
 
 
