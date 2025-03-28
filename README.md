@@ -137,12 +137,11 @@ if __name__ == "__main__":
         meta_tensor(B, H, S, D, dtype=dtype),
         meta_tensor(B, H, S, DV, dtype=dtype),
     )
-    block_mask = create_block_mask(causal_mask, 1, 1, S, S, device="cuda")
 
     # generate runtime attention op
     mod = AttentionEngine(
         qkv_meta,
-        custom_fwd_inputs, score_mod=score_mod, block_mask=block_mask,
+        custom_fwd_inputs, score_mod=score_mod, block_mask=causal_mask,
         online_func=OnlineSoftmax(),
         tune=False, tune_file="mha_tune.json"
     )
