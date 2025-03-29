@@ -18,15 +18,6 @@ import torch.fx as fx
 
 accum_type = "float"
 
-# TODO: bwd map
-shape_idx_map = {
-    "batch": "bz",
-    "heads": "by",
-    "seq_len": "bx*block_M:(bx+1)*block_M",
-    "seq_len_kv": "k*block_N:(k+1)*block_N",
-    "1": "0"
-    # others: ":" -> ":"
-}
 shape_idx_map_sp = {
     "batch": sp.simplify("bz"),
     "heads": sp.simplify("by"),
@@ -334,8 +325,8 @@ def lower_online_func(online_func, lower_output: lowerOutput,
     scores_new, new_online_rowscales, o_scalevar = online_fwd(
         scores, online_rowscales, b, h, q_idx)
     for k, v in new_online_rowscales.items():
-        new_online_rowscales[k].count += 1
-    o_scalevar.count += 1
+        new_online_rowscales[k].set_allow_reuse(False)
+    o_scalevar.set_allow_reuse(False)
     tl_code, input_vars_online = generate_tl_from_dag(
         list(new_online_rowscales.values()) + [scores_new, o_scalevar])
     online_func_def = func_block(
@@ -536,8 +527,6 @@ def lower_custom_inputs(custom_fwd_inputs, lower_output: lowerOutput, kernel_opt
     custom_fwd_inputs_load_s2r = ""
     for k, v in custom_fwd_inputs.input_tensors.items():
         # modify shape
-        shape_idx_copy = [(shape_idx_map[shape] if shape in shape_idx_map.keys(
-        ) else ":") for shape in v.shape_idx]
         shape_idx_copy_sp = [(shape_idx_map_sp[shape] if shape in shape_idx_map_sp.keys(
         ) else sp.simplify("0")) for shape in v.shape_idx]
         shape_idx_block = [(shape_idx_onchip_map[shape] if shape in shape_idx_onchip_map.keys(
