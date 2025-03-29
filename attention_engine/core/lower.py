@@ -196,6 +196,9 @@ class lowerOutput:
     # online_func name&code
     scores_online: str = "scores"
     acc_o: str = "acc_o"
+    qkT: str = "qkT"
+    dsT: str = "dsT"
+    doosum_shared: str = "doosum_shared"
 
 
 
@@ -298,7 +301,8 @@ def lower_kernel(kernel_options: KernelOptionsBase, kernel_template:KernelBase):
 
 
 def lower_online_func(online_func, lower_output: lowerOutput,
-                      kernel_options: AttnFwdKernelOption=None):  
+                      kernel_options: AttnFwdKernelOption=None,
+                      bwd_kernel_options: AttnBwdKernelOption=None):  
     online_fwd = online_func.online_fwd
     # 1. init input vars
     scores = SymbolicArray(
@@ -381,6 +385,12 @@ def lower_online_func(online_func, lower_output: lowerOutput,
 
 
     # 7. bwd: TODO
+    qkT = SymbolScalar(lower_output.qkT, Var(lower_output.qkT), shape_idx=[str(bwd_kernel_options.tile_M), str(bwd_kernel_options.tile_N)])
+    kv_idx = SymbolScalar("kv_idx", Var("kv_idx"))
+    dsT = SymbolScalar(lower_output.dsT, Var(lower_output.dsT), shape_idx=[str(bwd_kernel_options.tile_M), str(bwd_kernel_options.tile_N)])
+    doosum_shared = SymbolScalar(lower_output.doosum_shared, Var(lower_output.doosum_shared), shape_idx=["1", str(bwd_kernel_options.tile_N)])
+        
+    
     isused_doosum = False
     final_rowscales_bwd = {}
     for k, v in online_func.final_rowscales.items():
@@ -388,37 +398,24 @@ def lower_online_func(online_func, lower_output: lowerOutput,
             f"{k}_shared", Var(f"{k}"), shape_idx=[
                 "1", "block_N"])
     scores_2 = online_func.forward(
-        SymbolScalar(
-            "qkT",
-            Var("qkT"),
-            shape_idx=[
-                "block_M",
-                "block_N"]),
+        qkT,
         final_rowscales_bwd,
         b,
         h,
         q_idx,
-        SymbolScalar(
-            "kv_idx",
-            Var("kv_idx")))
+        kv_idx)
 
     tl_code, input_vars_fwd = generate_tl_from_dag([scores_2])
     online_func_fwd = str(tl_code)
 
+    qkT.clear_codegen()
     dscores = online_func.backward(
-        SymbolScalar(
-            "dsT", Var("dsT"), shape_idx=[
-                "block_M", "block_N"]), SymbolScalar(
-            "qkT", Var("qkT"), shape_idx=[
-                "block_M", "block_N"]), final_rowscales_bwd, SymbolScalar(
-            "doosum_shared", Var("doosum_shared"), shape_idx=[
-                "1", "block_N"]), b, h, q_idx, SymbolScalar(
-            "kv_idx", Var("kv_idx")))
+        dsT, qkT, final_rowscales_bwd, doosum_shared, b, h, q_idx, kv_idx)
 
     tl_code, input_vars_bwd = generate_tl_from_dag([dscores])
     custom_bwd_body = str(tl_code)
 
-    if "doosum_shared" in input_vars_bwd:
+    if lower_output.doosum_shared in input_vars_bwd:
         isused_doosum = True
 
     custom_bwd_inputs = f"g_doosum: T.Buffer([batch, heads, seq_len], accum_dtype), \n" if isused_doosum else ""
@@ -452,7 +449,7 @@ def lower_online_func(online_func, lower_output: lowerOutput,
     )
 
 
-def lower_score_mod(score_mod, custom_fwd_inputs, lower_output: lowerOutput, kernel_options: AttnFwdKernelOption):
+def lower_score_mod(score_mod, custom_fwd_inputs, lower_output: lowerOutput, kernel_options: AttnFwdKernelOption, bwd_kernel_options: AttnBwdKernelOption):
     # 1. init input vars
     scores = SymbolScalar(
         lower_output.scores,
@@ -477,25 +474,12 @@ def lower_score_mod(score_mod, custom_fwd_inputs, lower_output: lowerOutput, ker
     # 3. score_mod bwd TODO
 
     # backward, block_M : k, block_N : q
-    qkT = SymbolScalar("qkT", Var("qkT"), shape_idx=["block_M", "block_N"])
-    # # modify shape idx for
-    # for k,v in custom_fwd_inputs.input_tensors.items():
-    #     custom_fwd_inputs.input_tensors[k].clear_codegen()
-    #     # TODO: not so ad hoc
-    #     if v.shape_idx == ["block_M", "block_N"]:
-    #         custom_fwd_inputs.input_tensors[k].shape_idx = ["block_N", "block_M"]
-    #     elif v.shape_idx == ["block_M"]:
-    #         custom_fwd_inputs.input_tensors[k].shape_idx = ["1", "block_N"]
+    qkT = SymbolScalar(lower_output.qkT, Var(lower_output.qkT), shape_idx=[bwd_kernel_options.tile_M, bwd_kernel_options.tile_N])
+    dsT = SymbolScalar(lower_output.dsT, Var(lower_output.dsT), shape_idx=[bwd_kernel_options.tile_M, bwd_kernel_options.tile_N])
+    
     scores_new = score_mod(qkT, custom_fwd_inputs, b, h, q_idx, kv_idx)
-    # tl_code, input_vars_fwd = generate_tl_from_dag([scores_new])
-    # score_mod_inputs_bwd_list = ", ".join([varname for varname, input_var in input_vars_fwd.items()])
     scores_new.backward(
-        SymbolScalar(
-            "dsT",
-            Var("dsT"),
-            shape_idx=[
-                "block_M",
-                "block_N"]))
+        dsT)
     tl_code, input_vars_fwd = generate_tl_from_dag([scores_new])
     score_mod_fwd_body = str(tl_code)
     score_mod_output_var = scores_new.varname
@@ -596,11 +580,11 @@ def lower_custom_inputs(custom_fwd_inputs, lower_output: lowerOutput, kernel_opt
         kernel_options.global_tensors_input[f"g_{k}"].dtype = custom_input_dtype
         custom_fwd_inputs.input_tensors[k].shape_idx = shape_idx_block
         
-        return customInputOutput(
-            custom_fwd_inputs_load_shared=custom_fwd_inputs_load_shared,
-            custom_fwd_inputs_load_s2r=custom_fwd_inputs_load_s2r,
-            custom_fwd_inputs_load_shared_bwd=custom_fwd_inputs_load_shared_bwd
-        )
+    return customInputOutput(
+        custom_fwd_inputs_load_shared=custom_fwd_inputs_load_shared,
+        custom_fwd_inputs_load_s2r=custom_fwd_inputs_load_s2r,
+        custom_fwd_inputs_load_shared_bwd=custom_fwd_inputs_load_shared_bwd
+    )
 
 
 def lower_tl(score_mod, block_mask, online_func,
@@ -659,10 +643,10 @@ def lower_tl(score_mod, block_mask, online_func,
         custom_fwd_inputs, lower_output, kernel_options)
     
     lower_score_mod_output = lower_score_mod(
-        score_mod, custom_fwd_inputs, lower_output, kernel_options)
+        score_mod, custom_fwd_inputs, lower_output, kernel_options, bwd_kernel_options)
     
     lower_online_func_output = lower_online_func(
-        online_func, lower_output, kernel_options)
+        online_func, lower_output, kernel_options, bwd_kernel_options)
     output_idx_list = [i for i in range(3 +
                                         len(custom_fwd_inputs.input_tensors), 3 +
                                         len(custom_fwd_inputs.input_tensors) +
