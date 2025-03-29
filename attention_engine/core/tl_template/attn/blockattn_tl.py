@@ -129,9 +129,8 @@ def kernel(batch, heads, seq_len, dim, dimv,
                         {{call_online_func | indent(24)}}
                         T.copy(scores, acc_s_cast)
 
-                    # for i, j in T.Parallel(block_M, dimv):
-                    #     acc_o[i, j] *= o_scale[i]
-                    {{o_scale | indent(20)}}
+                    for i, j in T.Parallel(block_M, dimv):
+                        acc_o[i, j] *= {{o_scale_varname}}[i]
                     
                     # update online_rowscales
                     {{online_rowscales_update | indent(20)}}
