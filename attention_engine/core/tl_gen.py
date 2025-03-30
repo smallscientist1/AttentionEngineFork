@@ -1,5 +1,5 @@
-from .core import SymbolScalar, SymbolicArray, CustomIO
-from .graph import Var, Const
+from .transform.core import SymbolScalar, SymbolicArray, CustomIO
+from .transform.graph import Var, Const
 from .utils import IndentedCode
 from typing import Tuple
 
@@ -304,7 +304,7 @@ def generate_tl_from_dag(x_list: list[SymbolScalar], to_tl: bool = True, to_cute
         # print("use_list:",[[usea.varname for usea in x.use_list] for x in x.prev])
         for i, input_item in enumerate(x.prev):
             if input_item.shape_idx == x.shape_idx:
-                if input_item.count == 1 or input_item.visit_count == input_item.count:
+                if (input_item.count == 1 or input_item.visit_count == input_item.count) and input_item.allow_reuse:
                     x.varname = input_item.varname
                     break
         if varname is not None:  # overwrite varname

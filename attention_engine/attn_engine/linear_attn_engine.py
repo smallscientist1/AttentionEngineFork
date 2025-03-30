@@ -1,4 +1,4 @@
-from core.lower_linear import lower_tl
+from core.lower.lower_linear import lower_tl
 
 
 import importlib.util

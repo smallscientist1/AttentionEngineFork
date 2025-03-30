@@ -2,11 +2,10 @@ from attn_engine import AttentionEngine
 import torch
 import math
 from attn_engine import OnlineFunc
-from core.core import CustomIO
-from core.core import create_block_mask
-from core.core import SymbolicArray, SymbolScalar, SymbolicTensor
-from core.core import Var
-from core.utils import meta_tensor
+from core import CustomIO
+from core import SymbolicArray, SymbolScalar, SymbolicTensor
+from core import Var
+from core import meta_tensor
 
 
 
@@ -69,7 +68,7 @@ def eval():
 
         mod = AttentionEngine(
             qkv_meta,
-            custom_fwd_inputs, score_mod=score_mod, block_mask=None,
+            custom_fwd_inputs, score_mod=score_mod, mask_mod=None,
             online_func=OnlineIdentity(),
             tune = True, tune_file = "reluattn_tune.json"
         )
@@ -87,7 +86,7 @@ if __name__ == "__main__":
 
     mod = AttentionEngine(
         qkv_meta,
-        custom_fwd_inputs, score_mod=score_mod, block_mask=None,
+        custom_fwd_inputs, score_mod=score_mod, mask_mod=None,
         online_func=OnlineIdentity(),
         tune = True, tune_file = "reluattn_tune.json"
     )

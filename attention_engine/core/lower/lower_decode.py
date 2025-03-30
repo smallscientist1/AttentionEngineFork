@@ -1,18 +1,17 @@
 # from ..attn_engine import OnlineFunc
-from .core import SymbolScalar, SymbolicArray, CustomIO, create_block_mask, create_mask
-from .graph import Var, Const
-from .utils import IndentedCode
-from .tl_gen import generate_tl_from_dag
-from .attn_template import TlAttnTemplate
+from ..transform.core import SymbolScalar, SymbolicArray, CustomIO
+from ..transform.graph import Var, Const
+from ..utils import IndentedCode
+from ..tl_gen import generate_tl_from_dag
+from ..template.attn_template import TlAttnTemplate
 from dataclasses import dataclass
 
-import torch
 import os
 import os.path as osp
 THIS_FILE_PATH = osp.dirname(osp.abspath(__file__))
 TEMPLATE_PATH = osp.join(
     THIS_FILE_PATH,
-    "tl_template/attn/attn_gqa_inference_tl.py")
+    "../template/tl_template/attn/attn_inference_tl.py")
 
 # TODO: bwd map
 shape_idx_map = {
@@ -57,8 +56,8 @@ class lowerOutput:
 
 @dataclass
 class TunnerOutput:
-    block_M: str = "64"
-    block_N: str = "128"
+    block_M: str = "128"
+    block_N: str = "64"
     stages: str = "2"
     thread_num: str = "256"
     shared_fuse: str = "False"
@@ -200,7 +199,7 @@ def lower_online_func(online_func, lower_output: lowerOutput,
     for k, v in online_func.final_rowscales.items():
         final_rowscales_output += f"g_{k}: T.Buffer([batch, heads, num_split, seq_len], accum_dtype), \n"
         final_rowscales_list += f"g_{k}, "
-        torch_alloc_final_rowscales += f"g_{k} = torch.empty([BATCH, H, num_split], dtype=q.dtype, device=q.device)\n"
+        torch_alloc_final_rowscales += f"g_{k} = torch.empty([BATCH, H, num_split, N_CTXQ], dtype=torch.float, device=q.device)\n"
     final_rowscales_save = ""
     for k, v in new_final_rowscales.items():
         final_rowscales_save += f"T.copy({v.varname}, g_{k}[bid, hid, sid, mid * block_M : (mid + 1) * block_M])\n"
@@ -406,7 +405,6 @@ def lower_score_mod(score_mod, custom_fwd_inputs, lower_output: lowerOutput):
 
 def lower_tl(score_mod, block_mask, online_func,
              custom_fwd_inputs,
-             Batch, head, seqlenkv,
              dimqk, dimv, tl_dtype, mask_value, tuned_config=None):
 
     lower_output = lowerOutput()
@@ -431,32 +429,6 @@ def lower_tl(score_mod, block_mask, online_func,
         scores_name = "scores_1"
 
     custom_fwd_inputs_load_shared_bwd = ""
-    # for k,v in custom_fwd_inputs.input_tensors.items():
-    #     # modify shape
-    #     shape_idx_copy = [(shape_idx_map_bwd[shape] if shape in shape_idx_map_bwd.keys() else ":") for shape in v.shape_idx]
-    #     shape_idx_block = [(shape_idx_onchip_map_bwd[shape] if shape in shape_idx_onchip_map_bwd.keys() else shape) for shape in v.shape_idx]
-    #     # remove "" in list
-    #     shape_idx_block = [shape for shape in shape_idx_block if shape != ""] # TODO:bug[block_M] -> [1,block_M]
-    #     custom_input_dtype = "accum_dtype"
-    #     # load
-    #     # tl copy bug when "1"
-    #     if shape_idx_block == ["1"]:
-    #         pass
-    #         # custom_fwd_inputs_load_prolog += f"{k}[0] = g_{k}[{', '.join(shape_idx_copy)}]\n"
-    #     elif not (RECURRENT_DIM in shape_idx_block):
-    #         pass
-    #         # custom_fwd_inputs_load_prolog += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k})\n"
-    #     elif len(shape_idx_block) > 1 and shape_idx_block[1] != "1": # [block_N, block_M]
-    #         custom_input_dtype = "dtype"
-    #         custom_fwd_inputs_init += f"{k}_shared = T.alloc_shared([{', '.join(shape_idx_block)}], {custom_input_dtype})\n"
-    #         custom_fwd_inputs_load_shared_bwd += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k}_shared)\n"
-    #         custom_fwd_inputs_load_s2r += f"T.copy({k}_shared, {k})\n"
-    #     else:# [block_N, 1]
-    #         custom_fwd_inputs_load_shared_bwd += f"T.copy(g_{k}[{', '.join(shape_idx_copy)}], {k})\n"
-    #     # TODO: dtype of custom_fwd_inputs
-    #     custom_fwd_inputs_init += f"{k} = T.alloc_fragment([{', '.join(shape_idx_block)}], {custom_input_dtype})\n"
-    #     custom_fwd_inputs_str += f"g_{k}: T.Buffer([{', '.join(v.shape_idx)}], {custom_input_dtype}), \n"
-    #     custom_fwd_inputs.input_tensors[k].shape_idx = shape_idx_block
 
     custom_fwd_inputs_str = ""
     custom_fwd_inputs_list = ""
@@ -518,14 +490,7 @@ def lower_tl(score_mod, block_mask, online_func,
                                             len(online_func.final_rowscales) +
                                             int(lower_online_func_output.isused_doosum) +
                                             3)]
-    if block_mask is not None:
-        block_M = int(tune_output.block_M)
-        block_N = int(tune_output.block_N)
-        # block_mask = create_block_mask(block_mask, Batch, head, 1, seqlenkv, "cuda" if torch.cuda.is_available() else "cpu", block_M, block_N)
-        block_mask = create_mask(block_mask, Batch, head, 1, seqlenkv, "cuda" if torch.cuda.is_available() else "cpu", block_M, block_N)
-    else:
-        block_mask = torch.ones((Batch, head, 1, seqlenkv), dtype=torch.uint8, device="cuda" if torch.cuda.is_available() else "cpu")
-        
+
     return TlAttnTemplate(
         TEMPLATE_PATH,
         custom_fwd_inputs=custom_fwd_inputs_str,
@@ -543,7 +508,7 @@ def lower_tl(score_mod, block_mask, online_func,
 
         output_idx_list=str(output_idx_list),
         bwd_output_idx_list=str(bwd_output_idx_list)
-    )(), block_mask
+    )()
 
 
 if __name__ == "__main__":

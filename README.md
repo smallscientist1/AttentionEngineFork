@@ -53,8 +53,8 @@ In this section, you'll learn how to write and execute softmax attention using A
 from attn_engine import AttentionEngine
 import torch
 from attn_engine import OnlineFunc
-from core.core import CustomIO
-from core.core import create_block_mask
+from core import CustomIO
+from core import create_block_mask
 from core.utils import meta_tensor
 
 D = 128
@@ -141,7 +141,7 @@ if __name__ == "__main__":
     # generate runtime attention op
     mod = AttentionEngine(
         qkv_meta,
-        custom_fwd_inputs, score_mod=score_mod, block_mask=causal_mask,
+        custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
         online_func=OnlineSoftmax(),
         tune=False, tune_file="mha_tune.json"
     )

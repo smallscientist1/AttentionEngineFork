@@ -1,7 +1,7 @@
 from attn_engine import LinearAttentionEngine
-from core.core import SymbolicTensor
-from core.core import CustomIO
-from core.utils import meta_tensor
+from core import SymbolicTensor
+from core import CustomIO
+from core import meta_tensor
 
 import torch
 import torch.nn.functional as F 

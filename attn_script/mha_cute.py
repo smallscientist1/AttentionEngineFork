@@ -2,11 +2,10 @@ from attn_engine import AttentionEngine
 import torch
 import math
 from attn_engine import OnlineFunc
-from core.core import CustomIO
-from core.core import create_block_mask
-from core.core import SymbolicArray, SymbolScalar, SymbolicTensor
-from core.core import Var
-from core.utils import meta_tensor
+from core import CustomIO
+from core import SymbolicArray, SymbolScalar, SymbolicTensor
+from core import Var
+from core import meta_tensor
 
 """
 Example of causal attention with online softmax
@@ -99,11 +98,10 @@ if __name__ == "__main__":
     })
 
     online = OnlineSoftmax()
-    block_mask = create_block_mask(causal_mask, 1, 1, S, S, device="cuda")
 
     mod = AttentionEngine(
         qkv_meta,
-        custom_fwd_inputs, score_mod=score_mod, block_mask=block_mask,
+        custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
         online_func=online,
         backend="cute"
     )

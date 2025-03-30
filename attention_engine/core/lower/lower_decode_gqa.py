@@ -1,17 +1,18 @@
 # from ..attn_engine import OnlineFunc
-from .core import SymbolScalar, SymbolicArray, CustomIO
-from .graph import Var, Const
-from .utils import IndentedCode
-from .tl_gen import generate_tl_from_dag
-from .attn_template import TlAttnTemplate
+from ..transform.core import SymbolScalar, SymbolicArray, CustomIO, create_block_mask, create_mask
+from ..transform.graph import Var, Const
+from ..utils import IndentedCode
+from ..tl_gen import generate_tl_from_dag
+from ..template.attn_template import TlAttnTemplate
 from dataclasses import dataclass
 
+import torch
 import os
 import os.path as osp
 THIS_FILE_PATH = osp.dirname(osp.abspath(__file__))
 TEMPLATE_PATH = osp.join(
     THIS_FILE_PATH,
-    "tl_template/attn/attn_inference_tl.py")
+    "../template/tl_template/attn/attn_gqa_inference_tl.py")
 
 # TODO: bwd map
 shape_idx_map = {
@@ -56,8 +57,8 @@ class lowerOutput:
 
 @dataclass
 class TunnerOutput:
-    block_M: str = "128"
-    block_N: str = "64"
+    block_M: str = "64"
+    block_N: str = "128"
     stages: str = "2"
     thread_num: str = "256"
     shared_fuse: str = "False"
@@ -199,7 +200,7 @@ def lower_online_func(online_func, lower_output: lowerOutput,
     for k, v in online_func.final_rowscales.items():
         final_rowscales_output += f"g_{k}: T.Buffer([batch, heads, num_split, seq_len], accum_dtype), \n"
         final_rowscales_list += f"g_{k}, "
-        torch_alloc_final_rowscales += f"g_{k} = torch.empty([BATCH, H, num_split, N_CTXQ], dtype=torch.float, device=q.device)\n"
+        torch_alloc_final_rowscales += f"g_{k} = torch.empty([BATCH, H, num_split], dtype=q.dtype, device=q.device)\n"
     final_rowscales_save = ""
     for k, v in new_final_rowscales.items():
         final_rowscales_save += f"T.copy({v.varname}, g_{k}[bid, hid, sid, mid * block_M : (mid + 1) * block_M])\n"
@@ -405,6 +406,7 @@ def lower_score_mod(score_mod, custom_fwd_inputs, lower_output: lowerOutput):
 
 def lower_tl(score_mod, block_mask, online_func,
              custom_fwd_inputs,
+             Batch, head, seqlenkv,
              dimqk, dimv, tl_dtype, mask_value, tuned_config=None):
 
     lower_output = lowerOutput()
@@ -516,7 +518,14 @@ def lower_tl(score_mod, block_mask, online_func,
                                             len(online_func.final_rowscales) +
                                             int(lower_online_func_output.isused_doosum) +
                                             3)]
-
+    if block_mask is not None:
+        block_M = int(tune_output.block_M)
+        block_N = int(tune_output.block_N)
+        # block_mask = create_block_mask(block_mask, Batch, head, 1, seqlenkv, "cuda" if torch.cuda.is_available() else "cpu", block_M, block_N)
+        block_mask = create_mask(block_mask, Batch, head, 1, seqlenkv, "cuda" if torch.cuda.is_available() else "cpu", block_M, block_N)
+    else:
+        block_mask = torch.ones((Batch, head, 1, seqlenkv), dtype=torch.uint8, device="cuda" if torch.cuda.is_available() else "cpu")
+        
     return TlAttnTemplate(
         TEMPLATE_PATH,
         custom_fwd_inputs=custom_fwd_inputs_str,
@@ -534,7 +543,7 @@ def lower_tl(score_mod, block_mask, online_func,
 
         output_idx_list=str(output_idx_list),
         bwd_output_idx_list=str(bwd_output_idx_list)
-    )()
+    )(), block_mask
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@ import torch
 from typing import Literal, Type
 import functools
 from .graph import *
-from .utils import IndentedCode
+from ..utils import IndentedCode
 import functools
 from copy import copy, deepcopy
 
@@ -43,6 +43,8 @@ class SymbolScalar:
 
         self.count = 0
         self.use_list = []
+        # for reuse optimization
+        self.allow_reuse = True
         # for lower
         self.lowered = False
         self.visit_count = 0
@@ -51,6 +53,12 @@ class SymbolScalar:
         
         self.dtype = dtype
     
+    def set_allow_reuse(self, allow_reuse: bool):
+        """
+        set reuse optimization
+        """
+        self.allow_reuse = allow_reuse
+        
     def __repr__(self):
         return f"SymbolScalar({self.varname}, {self.code}, {self.prev}, {self.shape_idx}, {self.require_grad})"
 
