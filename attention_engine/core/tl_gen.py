@@ -1,5 +1,5 @@
-from .core import SymbolScalar, SymbolicArray, CustomIO
-from .graph import Var, Const
+from .transform.core import SymbolScalar, SymbolicArray, CustomIO
+from .transform.graph import Var, Const
 from .utils import IndentedCode
 from typing import Tuple
 

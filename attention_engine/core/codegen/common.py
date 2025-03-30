@@ -1,7 +1,7 @@
 from typing import List, Dict, Any, Tuple, Union
 from sympy import Symbol
 import sympy as sp
-from ..core import IndentedCode
+from ..transform.core import IndentedCode
 
 def dtype_map(dtype:str)->str:
     if "dtype" in dtype:

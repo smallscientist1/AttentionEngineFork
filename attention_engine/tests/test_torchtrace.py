@@ -1,7 +1,7 @@
 import torch
 import torch.fx as fx
 import operator
-from core.core import IndentedCode
+from core.transform.core import IndentedCode
 def sliding_window_mask(b, h, q_idx, kv_idx):
     return torch.logical_and(q_idx >= kv_idx, q_idx < kv_idx + 128)
 

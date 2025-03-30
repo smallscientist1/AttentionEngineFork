@@ -2,7 +2,7 @@ import torch
 from typing import Literal, Type
 import functools
 from .graph import *
-from .utils import IndentedCode
+from ..utils import IndentedCode
 import functools
 from copy import copy, deepcopy
 

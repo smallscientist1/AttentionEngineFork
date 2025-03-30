@@ -2,9 +2,9 @@ from attn_engine import AttentionEngine
 import torch
 import math
 from attn_engine import OnlineFunc
-from core.core import CustomIO
-from core.core import SymbolicArray, SymbolScalar, SymbolicTensor
-from core.core import Var
+from core import CustomIO
+from core import SymbolicArray, SymbolScalar, SymbolicTensor
+from core import Var
 from core.utils import meta_tensor
 
 """

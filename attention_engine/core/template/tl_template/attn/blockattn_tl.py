@@ -104,7 +104,7 @@ def kernel(batch, heads, seq_len, dim, dimv,
                             {{kv_idx}} = k * block_N + j
                             {{batch_idx}} = bz
                             {{head_idx}} = by
-                            {{mask_mod_code | indent(24)}}
+                            {{mask_mod_code | indent(28)}}
                             scores[i, j] = T.if_then_else(
                                 {{mask_output}}, 0, -T.infinity(scores.dtype)
                             )

@@ -1,4 +1,4 @@
-from core.core import create_block_mask, is_causal_mask, is_less_causal_mask
+from core.transform.core import create_block_mask, is_causal_mask, is_less_causal_mask
 # mask on attention score
 def causal_mask(b, h, q_idx, kv_idx):
     return q_idx >= kv_idx

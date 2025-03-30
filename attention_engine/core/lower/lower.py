@@ -1,13 +1,13 @@
 # from ..attn_engine import OnlineFunc
-from .core import SymbolScalar, SymbolicArray, CustomIO, is_causal_mask, is_less_causal_mask, create_block_mask
-from .graph import Var, Const
-from .utils import IndentedCode
-from .tl_gen import generate_tl_from_dag
-from .attn_template import TlAttnTemplate
-from .blockattn_template import TlBlockAttnTemplate
+from ..transform.core import SymbolScalar, SymbolicArray, CustomIO, is_causal_mask, is_less_causal_mask, create_block_mask
+from ..transform.graph import Var, Const
+from ..utils import IndentedCode
+from ..tl_gen import generate_tl_from_dag
+from ..template.attn_template import TlAttnTemplate
+from ..template.blockattn_template import TlBlockAttnTemplate
 from dataclasses import dataclass, field, InitVar
 
-from .codegen.common import *
+from ..codegen.common import *
 from copy import copy, deepcopy
 from sympy import symbols
 from typing import Callable
@@ -688,6 +688,8 @@ def lower_tl(score_mod, block_mask, online_func,
         return tlattn_template(
             custom_fwd_inputs=kernel_code_template.input_args,
             custom_fwd_inputs_init=kernel_code_template.alloc,
+            final_rowscales_output=kernel_code_template.output_args,
+            final_rowscales_save=kernel_code_template.output_args_copy_epilogue,
             custom_fwd_inputs_load_prolog=kernel_code_template.input_args_copy_prologue,
             **lower_custom_inputs_output.__dict__,
             **lower_online_func_output.__dict__,

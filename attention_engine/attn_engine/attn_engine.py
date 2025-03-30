@@ -1,9 +1,9 @@
 import torch
-from core.lower import lower_tl
-from core.lower_decode import lower_tl as lower_tl_decode
-from core.lower_decode_gqa import lower_tl as lower_tl_decode_gqa
-from core.lower_cute import lower_cute
-from core.core import CustomIO, SymbolicArray, SymbolScalar, Var
+from core.lower.lower import lower_tl
+from core.lower.lower_decode import lower_tl as lower_tl_decode
+from core.lower.lower_decode_gqa import lower_tl as lower_tl_decode_gqa
+from core.lower.lower_cute import lower_cute
+from core.transform.core import CustomIO, SymbolicArray, SymbolScalar, Var
 
 from autotuner.decider import decider
 from autotuner.arch import H100
@@ -160,7 +160,7 @@ class AttentionEngine:
             OUTPUT_DIR = osp.join(
                 osp.dirname(
                     osp.abspath(__file__)),
-                "../core/cute_template_output")
+                "../core/template/cute_template_output")
             cutlass_dtype_map = {
                 torch.float16: "cutlass::half_t",
                 torch.bfloat16: "cutlass::bfloat16_t",

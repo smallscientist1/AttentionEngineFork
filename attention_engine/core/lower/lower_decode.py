@@ -1,9 +1,9 @@
 # from ..attn_engine import OnlineFunc
-from .core import SymbolScalar, SymbolicArray, CustomIO
-from .graph import Var, Const
-from .utils import IndentedCode
-from .tl_gen import generate_tl_from_dag
-from .attn_template import TlAttnTemplate
+from ..transform.core import SymbolScalar, SymbolicArray, CustomIO
+from ..transform.graph import Var, Const
+from ..utils import IndentedCode
+from ..tl_gen import generate_tl_from_dag
+from ..template.attn_template import TlAttnTemplate
 from dataclasses import dataclass
 
 import os
@@ -11,7 +11,7 @@ import os.path as osp
 THIS_FILE_PATH = osp.dirname(osp.abspath(__file__))
 TEMPLATE_PATH = osp.join(
     THIS_FILE_PATH,
-    "tl_template/attn/attn_inference_tl.py")
+    "../template/tl_template/attn/attn_inference_tl.py")
 
 # TODO: bwd map
 shape_idx_map = {
