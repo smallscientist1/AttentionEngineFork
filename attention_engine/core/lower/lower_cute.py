@@ -1,7 +1,7 @@
 from ..transform.core import SymbolScalar, SymbolicArray, CustomIO
 from ..transform.graph import Var, Const
 from ..utils import IndentedCode
-from ..tl_gen import generate_tl_from_dag
+from ..codegen.tl_gen import generate_tl_from_dag
 from ..template.cute_template import CuteAttnTemplate
 from dataclasses import dataclass
 
