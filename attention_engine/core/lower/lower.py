@@ -2,7 +2,7 @@
 from ..transform.core import SymbolScalar, SymbolicArray, CustomIO, is_causal_mask, is_less_causal_mask, create_block_mask
 from ..transform.graph import Var, Const
 from ..utils import IndentedCode
-from ..tl_gen import generate_tl_from_dag
+from ..codegen.tl_gen import generate_tl_from_dag
 from ..template.attn_template import TlAttnTemplate
 from ..template.blockattn_template import TlBlockAttnTemplate
 from dataclasses import dataclass, field, InitVar
