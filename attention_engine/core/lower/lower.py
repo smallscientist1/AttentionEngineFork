@@ -144,6 +144,8 @@ class AttnFwdKernelOption(KernelOptionsBase):
 # AttnFwd tuned config number
 @dataclass
 class TunnerOutput:
+    TUNE: str = "False"
+    TUNE_FILE: str = ""
     block_M: str = "128"
     block_N: str = "128"
     stages: str = "2"
@@ -160,6 +162,8 @@ class AttnBwdKernelOption(KernelOptionsBase):
         
 @dataclass
 class TunnerOutputBwd:
+    TUNE_BWD: str = "False"
+    TUNE_FILE_BWD: str = ""
     block_M_bwd: str = "128"
     block_N_bwd: str = "64"
     thread_num_bwd: str = "256"
@@ -171,6 +175,13 @@ class lowerOutput:
     tl_dtype: str = "float16"
     is_inf_mask: str = "True"
     is_casual: str = "False"
+    
+    # problem shape
+    BATCH: str = "1"
+    HEADS: str = "1"
+    SEQ_LEN: str = "1"
+    DIM: str = "1"
+    DIMV: str = "1"
     
     # mask_mod name&code
     q_idx: str = "q_idx"
@@ -579,9 +590,15 @@ def lower_custom_inputs(custom_fwd_inputs, lower_output: lowerOutput, kernel_opt
 def lower_tl(score_mod, block_mask, online_func,
              custom_fwd_inputs,
              Batch, head, seqlen,
-             dimqk, dimv, tl_dtype, mask_value, tuned_config=None, infer_mask=False):
+             dimqk, dimv, tl_dtype, mask_value, tuned_config=None, infer_mask=False,
+             tune=False, tune_file="",
+             tune_bwd=False, tune_file_bwd=""):
 
-    lower_output = lowerOutput()
+    lower_output = lowerOutput(BATCH=str(Batch),
+                              HEADS=str(head),
+                              SEQ_LEN=str(seqlen),
+                              DIM=str(dimqk),
+                              DIMV=str(dimv))
     lower_output.tl_dtype = tl_dtype
     # TODO: mask_value: 0 or -inf
     lower_output.is_inf_mask = "True" if block_mask is not None and mask_value == "-inf" else "False"
@@ -590,7 +607,7 @@ def lower_tl(score_mod, block_mask, online_func,
     # 1. kernel performance configs
     # tune
     if tuned_config is None:
-        tune_output = TunnerOutput()
+        tune_output = TunnerOutput(TUNE=str(tune), TUNE_FILE=str(tune_file))
     else:
         tune_output = TunnerOutput(**tuned_config)
     # Fwd config
@@ -612,7 +629,7 @@ def lower_tl(score_mod, block_mask, online_func,
         
     # ------------ATTN BWD----------------
     # Bwd config(TODO: autotuner bwd)
-    tune_output_bwd = TunnerOutputBwd()
+    tune_output_bwd = TunnerOutputBwd(TUNE_BWD=str(tune_bwd), TUNE_FILE_BWD=str(tune_file_bwd))
     if max(dimqk, dimv) <= 64:
         tune_output_bwd.block_M_bwd = "128"
         tune_output_bwd.block_N_bwd = "128"

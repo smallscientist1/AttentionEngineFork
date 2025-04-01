@@ -14,6 +14,7 @@ import os
 import os.path as osp
 import hashlib
 from functools import partial
+from typing import Optional, Callable, Union
 
 
 class OnlineFunc:
@@ -97,10 +98,15 @@ class OnlineFunc:
 
 class AttentionEngine:
     def __init__(self, qkv_meta, custom_fwd_inputs, score_mod, mask_mod,
-                 online_func, mask_value="-inf", device=H100(), backend="tl", tune=False, tune_file="tuned_result.json", 
+                 online_func, mask_value="-inf", device=H100(), backend="tl", 
+                 tune=False, tune_file="", 
+                 tune_bwd=False, tune_file_bwd="",
                  infer_mask=False):
         # tunner
         need_engine_fuse, fuse_config = decider(qkv_meta, device)
+        
+        # if dynamic shape
+        # TODO: 111
 
         # backend
         if backend == "tl":
@@ -110,50 +116,11 @@ class AttentionEngine:
                 score_mod,
                 mask_mod,
                 online_func,
-                mask_value, infer_mask=infer_mask and not tune)
-
-            if tune:
-                from autotuner.attnfwd_tunner_engine2 import AttnFwdTunner
-                TUNE_SPACE = {
-                    "block_M": [64, 128, 256],
-                    "block_N": [32, 64, 128, 256],
-                    "stages": [1, 2],  # ,3],
-                    "num_threads": [128, 256],
-                    "shared_fuse": [True, False],
-                }
-                B, H, S, DK = qkv_meta[0].shape
-                DV = qkv_meta[2].shape[3]
-                output_idx_list = [i for i in range(3 +
-                                                    len(custom_fwd_inputs.input_tensors), 3 +
-                                                    len(custom_fwd_inputs.input_tensors) +
-                                                    1 +
-                                                    len(online_func.final_rowscales))]
-                tl_kernel = self.kernel
-
-                st = AttnFwdTunner(DK, DV, **TUNE_SPACE)
-                configs = st.generate_config()
-                print(configs)
-                # program = tl_kernel(B, H, S, DK, DV, *configs[0].values())
-                # import tilelang as tl
-                # mod, params = tl.lower(program)
-                problem_keys = {
-                    "B": B, "H": H, "N_CTX": S, "D_HEAD": DK, "D_HEADV": DV  # , "causal":True
-                }
-                tuned_config = st.tl_tune(
-                    tl_kernel,
-                    problem_keys,
-                    configs,
-                    output_idx_list,
-                    file_path=tune_file)
-                self._compile_tl(
-                    qkv_meta,
-                    custom_fwd_inputs,
-                    score_mod,
-                    mask_mod,
-                    online_func,
-                    mask_value,
-                    tuned_config,
-                    infer_mask=infer_mask)
+                mask_value, infer_mask=infer_mask, 
+                tune=tune,
+                tune_file=tune_file,
+                tune_bwd=tune_bwd,
+                tune_file_bwd=tune_file_bwd)
 
         elif backend == "cute":
             # must be same with cute_template.py
@@ -183,7 +150,9 @@ class AttentionEngine:
                 causal=True if mask_mod is not None else False)
 
     def _compile_tl(self, qkv_meta, custom_fwd_inputs, score_mod, mask_mod,
-                    online_func, mask_value="-inf", tuned_config=None, infer_mask=False):
+                    online_func, mask_value="-inf", tuned_config=None, infer_mask=False,
+                    tune=False, tune_file="",
+                    tune_bwd=False, tune_file_bwd=""):
         tl_dtype_map = {
             torch.float16: "float16",
             torch.bfloat16: "bfloat16",
@@ -203,6 +172,7 @@ class AttentionEngine:
                                       online_func,
                                       custom_fwd_inputs,
                                       qkv_meta[0].shape[0], # B
+                                      head, # headq
                                         head_kv, # H
                                         kv_len, # S
                                       qkv_meta[0].shape[3],
@@ -233,7 +203,9 @@ class AttentionEngine:
                                 qkv_meta[2].shape[3],
                                 tl_dtype_map[qkv_meta[0].dtype],
                                 mask_value,
-                                tuned_config, infer_mask)
+                                tuned_config, infer_mask, 
+                                tune=tune, tune_file=tune_file,
+                                tune_bwd=tune_bwd, tune_file_bwd=tune_file_bwd)
             else:
                 tl_code = lower_tl(score_mod,
                                 mask_mod,
@@ -246,7 +218,9 @@ class AttentionEngine:
                                 qkv_meta[2].shape[3],
                                 tl_dtype_map[qkv_meta[0].dtype],
                                 mask_value,
-                                tuned_config)
+                                tuned_config,
+                                tune=tune, tune_file=tune_file,
+                                tune_bwd=tune_bwd, tune_file_bwd=tune_file_bwd)
         self.tl_code = tl_code  
         # for debug
         # with open("generated_tl.py","w") as f:

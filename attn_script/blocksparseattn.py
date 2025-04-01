@@ -115,7 +115,7 @@ if __name__ == "__main__":
     k = torch.ones(B, S, H, D, dtype=dtype, device="cuda")
     v = torch.randn(B, S, H, DV, dtype=dtype, device="cuda")
     o = mod(q,k,v)
-    from core.core import create_mask
+    from core.transform.core import create_mask
     mask = create_mask(block_sparse_mask, B, H, S, S, device="cuda")
     def ref_attn(q,k,v):
         attn = torch.einsum("bqhd,bkhd->bhqk", q, k)

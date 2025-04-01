@@ -84,7 +84,7 @@ class OnlineSoftmax(OnlineFunc):
         return dscores
 
 if __name__ == "__main__":
-    B, H ,S, D, DV = 1,128,32768,D, 128
+    B, H ,S, D, DV = 1,128,2048,D, 128
     dtype = torch.float16 # performance regression for bfloat16
     qkv_meta = (
         meta_tensor(B, H, S, D, dtype=dtype),
@@ -102,7 +102,9 @@ if __name__ == "__main__":
         qkv_meta,
         custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
         online_func=online,
-        tune=False, tune_file="mha_tune.json"
+        tune=True, tune_file="attn_tl.json",
+        tune_bwd=True,
+        tune_file_bwd="attn_tl_bwd.json",
     )
 
     from benchmark.bench_utils import do_bench_attention
