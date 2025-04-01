@@ -53,12 +53,16 @@ class lowerOutput:
     swizzle_shared: str = ""
     tl_dtype: str = "float16"
     is_inf_mask: str = "True"
+    D_HEAD: str = "128"
+    D_HEADV: str = "128"
+    GROUPS: str = "1"
+    HEADS: str = "1"
 
 
 @dataclass
 class TunnerOutput:
     block_M: str = "64"
-    block_N: str = "128"
+    block_N: str = "64"
     stages: str = "2"
     thread_num: str = "256"
     shared_fuse: str = "False"
@@ -406,10 +410,10 @@ def lower_score_mod(score_mod, custom_fwd_inputs, lower_output: lowerOutput):
 
 def lower_tl(score_mod, block_mask, online_func,
              custom_fwd_inputs,
-             Batch, head, seqlenkv,
+             Batch, headq, head, seqlenkv,
              dimqk, dimv, tl_dtype, mask_value, tuned_config=None):
 
-    lower_output = lowerOutput()
+    lower_output = lowerOutput(D_HEAD=str(dimqk), D_HEADV=str(dimv), GROUPS=str(head), HEADS=str(headq))
     lower_output.tl_dtype = tl_dtype
     # TODO: mask_value: 0 or -inf
     lower_output.is_inf_mask = "True" if block_mask is not None and mask_value == "-inf" else "False"
