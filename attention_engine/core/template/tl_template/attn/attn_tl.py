@@ -456,9 +456,9 @@ TUNE_FILE_BWD = "{{TUNE_FILE_BWD}}"
 
 def get_problem_keys():
     return {
-        "batch": {{BATCH}},
-        "heads": {{HEADS}},
-        "seq_len": {{SEQ_LEN}},
+        "batch": 4 if isinstance({{BATCH}}, T.Var) else {{BATCH}},
+        "heads": 32 if isinstance({{HEADS}}, T.Var) else {{HEADS}},
+        "seq_len": 2048 if isinstance({{SEQ_LEN}}, T.Var) else {{SEQ_LEN}},
         "dim": {{DIM}},
         "dimv": {{DIMV}},
     }

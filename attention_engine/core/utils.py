@@ -34,5 +34,15 @@ class IndentedCode:
 # tensor subclass for meta analysis
 
 
-def meta_tensor(*args, **kargs):
-    return torch.empty(*args, **kargs, device="meta")
+# def meta_tensor(*args, **kargs):
+#     return torch.empty(*args, **kargs, device="meta")
+
+class meta_tensor:
+    def __init__(self, *args, **kargs):
+        self.shape = args
+        self.kargs = kargs
+        
+    @property
+    def dtype(self):
+        return self.kargs["dtype"]
+    

@@ -594,6 +594,10 @@ def lower_tl(score_mod, block_mask, online_func,
              tune=False, tune_file="",
              tune_bwd=False, tune_file_bwd=""):
 
+    # convert 0 to symbolic
+    Batch = f"T.symbolic('{Batch}')" if isinstance(Batch, str) else Batch
+    head = f"T.symbolic('{head}')" if isinstance(head, str) else head
+    seqlen = f"T.symbolic('{seqlen}')" if isinstance(seqlen, str) else seqlen
     lower_output = lowerOutput(BATCH=str(Batch),
                               HEADS=str(head),
                               SEQ_LEN=str(seqlen),
