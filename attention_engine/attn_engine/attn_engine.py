@@ -103,7 +103,7 @@ class AttentionEngine:
                  tune_bwd=False, tune_file_bwd="",
                  infer_mask=False):
         # tunner
-        need_engine_fuse, fuse_config = decider(qkv_meta, device)
+        # need_engine_fuse, fuse_config = decider(qkv_meta, device)
         
         # if dynamic shape
         # TODO: 111

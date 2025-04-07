@@ -85,12 +85,20 @@ class OnlineSoftmax(OnlineFunc):
 
 if __name__ == "__main__":
     B, H ,S, D, DV = 1,128,2048,D, 128
-    dtype = torch.float16 # performance regression for bfloat16
-    qkv_meta = (
-        meta_tensor(B, H, S, D, dtype=dtype),
-        meta_tensor(B, H, S, D, dtype=dtype),
-        meta_tensor(B, H, S, DV, dtype=dtype),
-    )
+    dynamic_shape = True
+    dtype = torch.float16
+    if dynamic_shape:
+        qkv_meta = (
+            meta_tensor("B", "H", "S", D, dtype=dtype),
+            meta_tensor("B", "H", "S", D, dtype=dtype),
+            meta_tensor("B", "H", "S", DV, dtype=dtype),
+        )
+    else:
+        qkv_meta = (
+            meta_tensor(B, H, S, D, dtype=dtype),
+            meta_tensor(B, H, S, D, dtype=dtype),
+            meta_tensor(B, H, S, DV, dtype=dtype),
+        )
 
     custom_fwd_inputs = CustomIO({
         # "softmax_scale": (1,),
