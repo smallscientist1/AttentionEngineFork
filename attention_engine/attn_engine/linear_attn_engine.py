@@ -10,27 +10,27 @@ import hashlib
 class LinearAttentionEngine:
     def __init__(self, qkv_meta, q_mod=None, k_mod=None, v_mod=None, decay_mod=None, custom_io=None,
                  tune=False, tune_filename="tune_result", tune_bwd=False):
-        self._compile_tl(qkv_meta, q_mod, k_mod, v_mod, decay_mod, custom_io)
+        self._compile_tl(qkv_meta, q_mod, k_mod, v_mod, decay_mod, custom_io, tune=tune, tune_filename=tune_filename)
         if tune:
             B, HQ, S, DK = qkv_meta[0].shape
             DV = qkv_meta[2].shape[3]
             HK = qkv_meta[1].shape[1]
             H = qkv_meta[2].shape[1]
 
-            best_config, best_latency = self.autotune(
-                B, HQ, HK, H, S, DK, DV, file_path=tune_filename)
-            if tune_bwd:
-                best_config_bwd, best_latency_bwd = self.autotune_bwd(
-                    B, HQ, HK, H, S, DK, DV, file_path=tune_filename)
-                best_config.update(best_config_bwd)
-            self._compile_tl(
-                qkv_meta,
-                q_mod,
-                k_mod,
-                v_mod,
-                decay_mod,
-                custom_io,
-                best_config)
+            # best_config, best_latency = self.autotune(
+            #     B, HQ, HK, H, S, DK, DV, file_path=tune_filename)
+            # if tune_bwd:
+            #     best_config_bwd, best_latency_bwd = self.autotune_bwd(
+            #         B, HQ, HK, H, S, DK, DV, file_path=tune_filename)
+            #     best_config.update(best_config_bwd)
+            # self._compile_tl(
+            #     qkv_meta,
+            #     q_mod,
+            #     k_mod,
+            #     v_mod,
+            #     decay_mod,
+            #     custom_io,
+            #     best_config)
 
     def __call__(self, *args, **kargs):
 
@@ -38,7 +38,8 @@ class LinearAttentionEngine:
         return o
 
     def _compile_tl(self, qkv_meta, q_mod, k_mod, v_mod, decay_mod,
-                    custom_io, tuned_config=None):
+                    custom_io, tuned_config=None,
+                    tune=False, tune_filename=""):
         tl_code = lower_tl(
             qkv_meta,
             q_mod,
@@ -46,7 +47,9 @@ class LinearAttentionEngine:
             v_mod,
             decay_mod,
             custom_io,
-            tuned_config)
+            tuned_config,
+            tune=tune,
+            tune_filename=tune_filename)
         self.tl_code = tl_code  # for debug
         # local_vars = {}
         # exec(tl_code, globals(), local_vars)

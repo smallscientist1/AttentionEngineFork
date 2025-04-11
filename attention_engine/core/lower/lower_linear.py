@@ -102,6 +102,11 @@ class lowerOutput:
 
 @dataclass
 class TunnerOutput:
+    TUNE:str = "False"
+    TUNE_FILE:str=""
+    TUNE_BWD:str = "False"
+    TUNE_FILE_BWD:str = ""
+    
     BT: str = "64"
     BK_h: str = "64"
     BV_h: str = "64"
@@ -358,9 +363,13 @@ def lowerQmodFused(q_mod, custom_io, lower_output: lowerOutput):
     lower_output.q_mod_expr = str(tl_code)
 
 
-def lower_tl(qkv_meta, q_mod, k_mod, v_mod, decay_mod, custom_io, tuned_config=None):
+def lower_tl(qkv_meta, q_mod, k_mod, v_mod, decay_mod, custom_io, tuned_config=None,
+             tune=False, tune_filename=""):
 
-    tune_output = TunnerOutput() if tuned_config is None else TunnerOutput(**tuned_config)
+    if tuned_config is None:
+        tune_output = TunnerOutput(TUNE=tune, TUNE_FILE=tune_filename) 
+    else:
+        tune_output = TunnerOutput(**tuned_config)
 
     BATCH, HQ, N_CTX, D_HEAD = qkv_meta[0].shape
     DV = qkv_meta[2].shape[3]

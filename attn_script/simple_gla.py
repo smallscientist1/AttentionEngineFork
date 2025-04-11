@@ -94,9 +94,9 @@ if __name__ == "__main__":
     )
     mod = LinearAttentionEngine(qkv_meta, q_mod=q_mod,
                             custom_io = custom_io,
-                            tune=False, tune_filename="simple_gla",
+                            tune=True, tune_filename="simple_gla",
                             tune_bwd=False)
 
     from benchmark.bench_utils import do_bench_simple_gla
-    do_bench_simple_gla(mod, B, H, S, D, DV, BT=64, requires_grad=False)
+    do_bench_simple_gla(mod, B, H, S, D, DV, BT=64, requires_grad=True)
     # eval()

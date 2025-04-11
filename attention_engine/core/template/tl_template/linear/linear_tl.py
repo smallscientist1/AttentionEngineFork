@@ -2,10 +2,16 @@ import torch
 import tilelang as tl
 import tilelang.language as T
 
+from tilelang.autotuner import *
+
 import triton.language as triton_lang
 import triton
 
 import itertools
+import os
+import json
+from typing import Tuple
+from functools import partial
 
 import einops
 
@@ -53,20 +59,60 @@ def compute_final_dg(
     triton_lang.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0,))
 
 
+from autotuner.arch.H100 import H100
+
+def generate_config_h(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100()):
+    # BTs = [32,64,128,192,256]
+    BK_hs = [32,64,128,192,256]
+    BV_hs = [32,64,128,192,256]
+    num_stages_hs = [1,2,3,4]
+    num_threads_hs = [128,256]
+    
+    # H100
+    MMA_ATOM_M = device.mma_primitive[0]# 64
+    MMA_ATOM_TRHEADS = device.threads_per_mma # 128
+    smem_cap = device.smem_cap # 232448
+    reg_cap = device.reg_cap * 4 # 65536 * 4
+    reg_cap_per_thread = device.register_per_thread * 4 # 255 * 4
+    
+    # input shape
+    # BTs = [bt for bt in BTs if N_CTX % bt == 0]
+    BK_hs = [bk for bk in BK_hs if D_HEAD % bk == 0]
+    BV_hs = [bv for bv in BV_hs if D_HEADV % bv == 0]
+       
+    config_h = []
+    for BK_h, BV_h, num_stages_h, num_threads_h in itertools.product(BK_hs, BV_hs, num_stages_hs, num_threads_hs):
+        sharedmem_chunk_h = 2 * (
+            BK_h * BV_h + (BT * BK_h + BT * BV_h + BT ) 
+            * num_stages_h)
+        reg_chunk_h = 4 * (
+            BK_h * BV_h
+        )
+        conditions_h = [
+            num_stages_h > N_CTX // BT,
+            BK_h % (MMA_ATOM_M) != 0,
+            sharedmem_chunk_h > smem_cap,
+            reg_chunk_h > reg_cap and reg_chunk_h > reg_cap_per_thread * num_threads_h,
+        ]
+        if any(conditions_h):
+            continue
+        config_h.append( {
+        # "BT": BT,
+        "BK": BK_h,
+        "BV": BV_h,
+        "num_stages": num_stages_h,
+        "num_threads": num_threads_h,
+        })
+    return config_h
+
 # --------------- TL_KERNEL_H
 def chunk_fwd_h(
-        batch, headq, headk, head, seqlen, dim, dimv,
-        BT, BK, BV, num_stages, num_threads
-):
+        batch, headq, headk, head, seqlen, dim, dimv, BT, tune=False):
     # BT = 64
     # BK = 64
     # BV = 64
-    NT = seqlen // BT
-    NK = dim // BK
-    NV = dimv // BV
     dtype = "bfloat16"
     accum_dtype = "float"
-    num_stages = num_stages
     LOG2E = 1.44269504
     
     seq_len = seqlen
@@ -75,101 +121,169 @@ def chunk_fwd_h(
 
     assert(head % headk == 0)
     head_headk_ratio = head // headk
-
-    @T.prim_func
-    def main(
-        k: T.Buffer((batch, headk, seqlen, dim), dtype), # type: ignore
-        v: T.Buffer((batch, head, seqlen, dimv), dtype), # type: ignore
-        g: T.Buffer((batch, head, seqlen), accum_dtype), # type: ignore
-        {{chunk_h_custom_inputs_list | indent(8)}}
-        h: T.Buffer((batch, head, NT*dim, dimv), dtype), # type: ignore
-    ):
-        with T.Kernel(NK, NV, batch * head, threads=num_threads) as (bx, by, bz):
-
-            b_h = T.alloc_fragment((BK, BV), accum_dtype)
-            # b_h_cast = T.alloc_fragment((BK, BV), dtype)
-            b_h_shared = T.alloc_shared((BK, BV), dtype)
-            b_k = T.alloc_fragment((BT, BK), dtype)
-            b_k_shared = T.alloc_shared((BT, BK), dtype)
-            b_kt = T.alloc_fragment((BK, BT), dtype)
-            b_v_shared = T.alloc_shared((BT, BV), dtype)
-            b_v = T.alloc_fragment((BT, BV), dtype)
-            b_g = T.alloc_fragment((BT), accum_dtype)
-            b_g_shared = T.alloc_shared((BT), accum_dtype, scope="shared")
-            b_glast = T.alloc_fragment((1), accum_dtype)
-            {{h_alloc_buffer_list | indent(12)}}
-
-            bhead = bz % head
-            bb = bz // head
-
-            bheadk = bhead // head_headk_ratio
-            
-            T.annotate_layout({
-                # b_v_shared: tl.layout.make_swizzled_layout(b_v_shared),
-                b_k_shared: tl.layout.make_swizzled_layout(b_k_shared),
-                b_h_shared: tl.layout.make_swizzled_layout(b_h_shared),
-            }
-            )
-            T.clear(b_h)
-
-            for i_t in T.Pipelined(NT, num_stages=num_stages):
-                # T.copy(b_h, b_h_shared)
-                # T.copy(h[bb,bhead,(i_t*dim+bx*BK):(i_t*dim+(bx+1)*BK), by*BV:(by+1)*BV], b_h)
-                # T.copy(k[bb,bhead,i_t*BT:(i_t+1)*BT,bx*BK:(bx+1)*BK], b_k)
-                T.copy(k[bb,bheadk,i_t*BT:(i_t+1)*BT,bx*BK:(bx+1)*BK], b_k_shared)
-                T.copy(v[bb,bhead,i_t*BT:(i_t+1)*BT,by*BV:(by+1)*BV], b_v_shared)
-                T.copy(g[bb,bhead,i_t*BT:(i_t+1)*BT], b_g_shared)
-                # T.copy(v[bb,bhead,i_t*BT:(i_t+1)*BT,by*BV:(by+1)*BV], b_v)
-                # T.copy(b_v, b_v_shared)
-                # T.copy(g[bb,bhead,i_t*BT:(i_t+1)*BT], b_g)
-                # T.copy(g[bb,bhead,(i_t+1)*BT-1:(i_t+1)*BT], b_glast)
-                b_glast[0] = g[bb,bhead,(i_t+1)*BT-1]
-
-                T.copy(b_h, b_h_shared) # implicit cast
-                T.copy(b_h_shared, h[bb,bhead,i_t*dim+bx*BK:(i_t)*dim+(bx+1)*BK,by*BV:(by+1)*BV])
-                # T.copy(b_h, h[bb,bhead,i_t*dim+bx*BK:(i_t)*dim+(bx+1)*BK,by*BV:(by+1)*BV])
-
-                # scalar_decay
-                # for i0 in T.Parallel(BT):
-                #     b_g[i0] = T.exp(b_g[i0])
-
-                for i0, i1 in T.Parallel(BK, BV):
-                    b_h[i0, i1] = b_h[i0, i1] * T.exp2(b_glast[0] * LOG2E)
-                
-                # for i0,i1 in T.Parallel(BT, BV):
-                #     b_v_shared[i0,i1] *= T.exp2((b_glast[0] - b_g[i0]) * 1.44269504)
-
-                T.copy(b_k_shared, b_k)
-                
-                {{k_mod_expr_fused_h | indent(16)}}
-                
-                T.copy(b_g_shared, b_g)
-                for i0, i1 in T.Parallel(BK, BT):
-                    b_kt[i0, i1] = b_k[i1, i0]*T.exp2((b_glast[0] - b_g[i1]) * LOG2E)
-
-                T.gemm(b_kt, b_v_shared, b_h, transpose_B=False)
-                # T.copy(b_h, b_h_shared)
-                
-                # TODO
-                # T.copy(b_h, h[bb,bhead,i_t*dim+bx*BK:(i_t)*dim+(bx+1)*BK,by*BV:(by+1)*BV])
     
-    return main
+    def kernel_func(BK, BV, num_stages, num_threads):
+        NT = seqlen // BT
+        NK = dim // BK
+        NV = dimv // BV
+        num_stages = num_stages
 
+        @T.prim_func
+        def main(
+            k: T.Buffer((batch, headk, seqlen, dim), dtype), # type: ignore
+            v: T.Buffer((batch, head, seqlen, dimv), dtype), # type: ignore
+            g: T.Buffer((batch, head, seqlen), accum_dtype), # type: ignore
+            {{chunk_h_custom_inputs_list | indent(12)}}
+            h: T.Buffer((batch, head, NT*dim, dimv), dtype), # type: ignore
+        ):
+            with T.Kernel(NK, NV, batch * head, threads=num_threads) as (bx, by, bz):
+
+                b_h = T.alloc_fragment((BK, BV), accum_dtype)
+                # b_h_cast = T.alloc_fragment((BK, BV), dtype)
+                b_h_shared = T.alloc_shared((BK, BV), dtype)
+                b_k = T.alloc_fragment((BT, BK), dtype)
+                b_k_shared = T.alloc_shared((BT, BK), dtype)
+                b_kt = T.alloc_fragment((BK, BT), dtype)
+                b_v_shared = T.alloc_shared((BT, BV), dtype)
+                b_v = T.alloc_fragment((BT, BV), dtype)
+                b_g = T.alloc_fragment((BT), accum_dtype)
+                b_g_shared = T.alloc_shared((BT), accum_dtype, scope="shared")
+                b_glast = T.alloc_fragment((1), accum_dtype)
+                {{h_alloc_buffer_list | indent(16)}}
+
+                bhead = bz % head
+                bb = bz // head
+
+                bheadk = bhead // head_headk_ratio
+                
+                T.annotate_layout({
+                    # b_v_shared: tl.layout.make_swizzled_layout(b_v_shared),
+                    b_k_shared: tl.layout.make_swizzled_layout(b_k_shared),
+                    b_h_shared: tl.layout.make_swizzled_layout(b_h_shared),
+                }
+                )
+                T.clear(b_h)
+
+                for i_t in T.Pipelined(NT, num_stages=num_stages):
+                    # T.copy(b_h, b_h_shared)
+                    # T.copy(h[bb,bhead,(i_t*dim+bx*BK):(i_t*dim+(bx+1)*BK), by*BV:(by+1)*BV], b_h)
+                    # T.copy(k[bb,bhead,i_t*BT:(i_t+1)*BT,bx*BK:(bx+1)*BK], b_k)
+                    T.copy(k[bb,bheadk,i_t*BT:(i_t+1)*BT,bx*BK:(bx+1)*BK], b_k_shared)
+                    T.copy(v[bb,bhead,i_t*BT:(i_t+1)*BT,by*BV:(by+1)*BV], b_v_shared)
+                    T.copy(g[bb,bhead,i_t*BT:(i_t+1)*BT], b_g_shared)
+                    # T.copy(v[bb,bhead,i_t*BT:(i_t+1)*BT,by*BV:(by+1)*BV], b_v)
+                    # T.copy(b_v, b_v_shared)
+                    # T.copy(g[bb,bhead,i_t*BT:(i_t+1)*BT], b_g)
+                    # T.copy(g[bb,bhead,(i_t+1)*BT-1:(i_t+1)*BT], b_glast)
+                    b_glast[0] = g[bb,bhead,(i_t+1)*BT-1]
+
+                    T.copy(b_h, b_h_shared) # implicit cast
+                    T.copy(b_h_shared, h[bb,bhead,i_t*dim+bx*BK:(i_t)*dim+(bx+1)*BK,by*BV:(by+1)*BV])
+                    # T.copy(b_h, h[bb,bhead,i_t*dim+bx*BK:(i_t)*dim+(bx+1)*BK,by*BV:(by+1)*BV])
+
+                    # scalar_decay
+                    # for i0 in T.Parallel(BT):
+                    #     b_g[i0] = T.exp(b_g[i0])
+
+                    for i0, i1 in T.Parallel(BK, BV):
+                        b_h[i0, i1] = b_h[i0, i1] * T.exp2(b_glast[0] * LOG2E)
+                    
+                    # for i0,i1 in T.Parallel(BT, BV):
+                    #     b_v_shared[i0,i1] *= T.exp2((b_glast[0] - b_g[i0]) * 1.44269504)
+
+                    T.copy(b_k_shared, b_k)
+                    
+                    {{k_mod_expr_fused_h | indent(20)}}
+                    
+                    T.copy(b_g_shared, b_g)
+                    for i0, i1 in T.Parallel(BK, BT):
+                        b_kt[i0, i1] = b_k[i1, i0]*T.exp2((b_glast[0] - b_g[i1]) * LOG2E)
+
+                    T.gemm(b_kt, b_v_shared, b_h, transpose_B=False)
+                    # T.copy(b_h, b_h_shared)
+                    
+                    # TODO
+                    # T.copy(b_h, h[bb,bhead,i_t*dim+bx*BK:(i_t)*dim+(bx+1)*BK,by*BV:(by+1)*BV])
+        
+        return main
+    
+    if tune:
+        configs = generate_config_h(batch,headq,headk,head,seqlen,dim,dimv,BT)
+        if len(configs) == 0:
+            return None
+        @autotune(
+            configs=configs,
+            warmup=10,
+            rep=10,
+        )
+        @jit(out_idx={{output_idx_list_h}}, ref_prog=None)
+        def kernel(BK=None, BV=None, num_stages=None, num_threads=None):
+            return kernel_func(BK,BV,num_stages,num_threads)
+        
+        return kernel()
+    else:
+        def kernel(BK=None, BV=None, num_stages=None, num_threads=None):
+            return kernel_func(BK,BV,num_stages,num_threads)
+        
+        return kernel
+        
+
+def generate_config_o(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100()):
+    # BTs = [32,64,128,192,256]
+    BK_os = [32,64,128,256]
+    BV_os = [32,64,128,256]
+    num_stages_os = [1,2,3,4]
+    num_threads_os = [128,256]
+    
+    # H100
+    MMA_ATOM_M = device.mma_primitive[0]# 64
+    MMA_ATOM_TRHEADS = device.threads_per_mma # 128
+    smem_cap = device.smem_cap # 232448
+    reg_cap = device.reg_cap * 4 # 65536 * 4
+    reg_cap_per_thread = device.register_per_thread * 4 # 255 * 4
+    
+    # input shape
+    # BTs = [bt for bt in BTs if N_CTX % bt == 0]
+    BK_os = [bk for bk in BK_os if D_HEAD % bk == 0]
+    BV_os = [bv for bv in BV_os if D_HEADV % bv == 0]
+    
+    config_o = []
+    for BK_o, BV_o, num_stages_o, num_threads_o in itertools.product(BK_os, BV_os, num_stages_os, num_threads_os):
+        sharedmem_chunk_o = 2 * (
+            BT * BK_o * num_stages_o + BT * BK_o * num_stages_o + BK_o * BV_o* num_stages_o +
+            BT * BV_o 
+        )
+        reg_chunk_o = 4 * (
+            BT * BT + BT * BV_o
+        )
+        conditions_o = [
+            num_stages_o > D_HEAD // BK_o,
+            BT % (MMA_ATOM_M*(num_threads_o//MMA_ATOM_TRHEADS)) != 0,
+            sharedmem_chunk_o > smem_cap,
+            reg_chunk_o > reg_cap and reg_chunk_o > reg_cap_per_thread * num_threads_o,
+        ]
+        if any(conditions_o):
+            continue
+        config_o.append( {
+        # "BT": BT,
+        "BK": BK_o,
+        "BV": BV_o,
+        "num_stages": num_stages_o,
+        "num_threads": num_threads_o,
+        })
+    return config_o
+        
 
 # --------------- TL_KERNEL_O 
 def chunk_o(
-        batch, headq,headk, head, seqlen, dim, dimv,
-        BT, BK, BV, num_stages, num_threads
-):
+        batch, headq,headk, head, seqlen, dim, dimv, BT, tune=False):
+
     # BT = 64
     # BK = 64
     # BV = 64
     NT = seqlen // BT
-    NK = dim // BK
-    NV = dimv // BV
     dtype = "bfloat16"
     accum_dtype = "float"
-    num_stages = num_stages
     LOG2E = 1.44269504
 
     scale = 1.0
@@ -182,87 +296,112 @@ def chunk_o(
     assert(head % headq == 0)
     head_headq_ratio = head // headq
 
-    @T.prim_func
-    def main(
-        h: T.Buffer((batch,head,NT*dim,dimv), dtype), # type: ignore
-        q: T.Buffer((batch,headq,seqlen,dim), dtype), # type: ignore
-        k: T.Buffer((batch,headk,seqlen,dim), dtype), # type: ignore
-        v: T.Buffer((batch,head,seqlen,dimv), dtype), # type: ignore
-        g: T.Buffer((batch,head,seqlen), accum_dtype), # type: ignore
-        {{chunk_o_custom_inputs_list | indent(8)}}
-        o: T.Buffer((batch,head,seqlen,dimv), dtype), # type: ignore
-        # custom fwd inputs
-    ):
-        with T.Kernel(NV, NT, batch * head, threads=num_threads) as (bx, by, bz):
-            bo = T.alloc_fragment((BT, BV), dtype=accum_dtype)
-            bo_shared = T.alloc_shared((BT, BV), dtype=dtype)
-            bs = T.alloc_fragment((BT, BT), dtype=accum_dtype)
-            bs_cast = T.alloc_fragment((BT, BT), dtype=dtype)
-            bq = T.alloc_fragment((BT, BK), dtype=dtype)
-            bq_shared = T.alloc_shared((BT,BK), dtype=dtype)
-            bk_shared = T.alloc_shared((BT,BK), dtype=dtype)
-            bv_shared = T.alloc_shared((BT,BV), dtype=dtype)
-            b_state_shared = T.alloc_shared((BK, BV), dtype=dtype)
-            bg_shared = T.alloc_shared((BT,), dtype=accum_dtype, scope = "shared")
-            bg = T.alloc_fragment((BT,), dtype=accum_dtype)
-            bg1 = T.alloc_fragment((BT,), dtype=accum_dtype)
-            {{o_alloc_buffer_list | indent(12)}}
-            # custom fwd inputs init
+    def kernel_func(BK, BV, num_stages, num_threads):
+        NK = dim // BK
+        NV = dimv // BV
+        
+        @T.prim_func
+        def main(
+            h: T.Buffer((batch,head,NT*dim,dimv), dtype), # type: ignore
+            q: T.Buffer((batch,headq,seqlen,dim), dtype), # type: ignore
+            k: T.Buffer((batch,headk,seqlen,dim), dtype), # type: ignore
+            v: T.Buffer((batch,head,seqlen,dimv), dtype), # type: ignore
+            g: T.Buffer((batch,head,seqlen), accum_dtype), # type: ignore
+            {{chunk_o_custom_inputs_list | indent(12)}}
+            o: T.Buffer((batch,head,seqlen,dimv), dtype), # type: ignore
+            # custom fwd inputs
+        ):
+            with T.Kernel(NV, NT, batch * head, threads=num_threads) as (bx, by, bz):
+                bo = T.alloc_fragment((BT, BV), dtype=accum_dtype)
+                bo_shared = T.alloc_shared((BT, BV), dtype=dtype)
+                bs = T.alloc_fragment((BT, BT), dtype=accum_dtype)
+                bs_cast = T.alloc_fragment((BT, BT), dtype=dtype)
+                bq = T.alloc_fragment((BT, BK), dtype=dtype)
+                bq_shared = T.alloc_shared((BT,BK), dtype=dtype)
+                bk_shared = T.alloc_shared((BT,BK), dtype=dtype)
+                bv_shared = T.alloc_shared((BT,BV), dtype=dtype)
+                b_state_shared = T.alloc_shared((BK, BV), dtype=dtype)
+                bg_shared = T.alloc_shared((BT,), dtype=accum_dtype, scope = "shared")
+                bg = T.alloc_fragment((BT,), dtype=accum_dtype)
+                bg1 = T.alloc_fragment((BT,), dtype=accum_dtype)
+                {{o_alloc_buffer_list | indent(16)}}
+                # custom fwd inputs init
 
-            bb = bz // head
-            bh = bz % head
+                bb = bz // head
+                bh = bz % head
 
-            bhk = bh // head_headk_ratio
-            bhq = bh // head_headq_ratio
+                bhk = bh // head_headk_ratio
+                bhq = bh // head_headq_ratio
 
-            T.annotate_layout({
-                bq_shared: tl.layout.make_swizzled_layout(bq_shared),
-                bo_shared: tl.layout.make_swizzled_layout(bo_shared),
-            })
-            T.clear(bo)
-            T.clear(bs)
-            for ik in T.Pipelined(NK, num_stages=num_stages):
-                # pipeline here
-                T.copy(q[bb, bhq, by*BT:(by+1)*BT, ik*BK:(ik+1)*BK], bq_shared)
-                # T.copy(q[bb, bh, by*BT:(by+1)*BT, ik*BK:(ik+1)*BK], bq)
-                T.copy(k[bb, bhk, by*BT:(by+1)*BT, ik*BK:(ik+1)*BK], bk_shared)
+                T.annotate_layout({
+                    bq_shared: tl.layout.make_swizzled_layout(bq_shared),
+                    bo_shared: tl.layout.make_swizzled_layout(bo_shared),
+                })
+                T.clear(bo)
+                T.clear(bs)
+                for ik in T.Pipelined(NK, num_stages=num_stages):
+                    # pipeline here
+                    T.copy(q[bb, bhq, by*BT:(by+1)*BT, ik*BK:(ik+1)*BK], bq_shared)
+                    # T.copy(q[bb, bh, by*BT:(by+1)*BT, ik*BK:(ik+1)*BK], bq)
+                    T.copy(k[bb, bhk, by*BT:(by+1)*BT, ik*BK:(ik+1)*BK], bk_shared)
 
-                T.copy(h[bb, bh, by*dim+ik*BK:by*dim+(ik+1)*BK, bx*BV:(bx+1)*BV], b_state_shared)
+                    T.copy(h[bb, bh, by*dim+ik*BK:by*dim+(ik+1)*BK, bx*BV:(bx+1)*BV], b_state_shared)
+                    
+                    T.copy(bq_shared, bq)
+                    # q_mod here (fused)
+                    {{q_mod_expr | indent(20)}}
+
+                    T.gemm(bq, bk_shared, bs, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                    T.gemm(bq, b_state_shared, bo, transpose_B=False, policy=T.GemmWarpPolicy.FullRow)
                 
-                T.copy(bq_shared, bq)
-                # q_mod here (fused)
-                {{q_mod_expr | indent(16)}}
+                # T.copy(g[bb, bh, by*BT:(by+1)*BT], bg)
+                # T.copy(g[bb, bh, by*BT:(by+1)*BT], bg1)
+                T.copy(g[bb, bh, by*BT:(by+1)*BT], bg_shared)
+                T.copy(bg_shared, bg)
+                T.copy(bg_shared, bg1)
+                for i0,i1 in T.Parallel(BT,BV):
+                    bo[i0,i1] *= T.exp2(bg[i0] * LOG2E)
+                
+                for i0,i1 in T.Parallel(BT,BT):
+                    bs[i0,i1] *= T.exp2((bg[i0]-bg1[i1]) * LOG2E)
+                # fix nan bug
+                for i0,i1 in T.Parallel(BT,BT):
+                    bs[i0,i1] = T.if_then_else(
+                        i0 >= i1, bs[i0,i1], 0.0
+                    )
 
-                T.gemm(bq, bk_shared, bs, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
-                T.gemm(bq, b_state_shared, bo, transpose_B=False, policy=T.GemmWarpPolicy.FullRow)
-            
-            # T.copy(g[bb, bh, by*BT:(by+1)*BT], bg)
-            # T.copy(g[bb, bh, by*BT:(by+1)*BT], bg1)
-            T.copy(g[bb, bh, by*BT:(by+1)*BT], bg_shared)
-            T.copy(bg_shared, bg)
-            T.copy(bg_shared, bg1)
-            for i0,i1 in T.Parallel(BT,BV):
-                bo[i0,i1] *= T.exp2(bg[i0] * LOG2E)
-            
-            for i0,i1 in T.Parallel(BT,BT):
-                bs[i0,i1] *= T.exp2((bg[i0]-bg1[i1]) * LOG2E)
-            # fix nan bug
-            for i0,i1 in T.Parallel(BT,BT):
-                bs[i0,i1] = T.if_then_else(
-                    i0 >= i1, bs[i0,i1], 0.0
-                )
-
-            # v_mod here (fused)
-            {{v_mod_expr_fused_o | indent(12)}}
-            
-            T.copy(v[bb, bh, by*BT:(by+1)*BT, bx*BV:(bx+1)*BV], bv_shared)
-            T.copy(bs, bs_cast)
-            T.gemm(bs_cast, bv_shared, bo, policy=T.GemmWarpPolicy.FullRow)
-            # T.copy(bo, o[bb, bh, by*BT:(by+1)*BT, bx*BV:(bx+1)*BV]) # slow for stride between thread
-            T.copy(bo, bo_shared) # implicit type convert
-            T.copy(bo_shared, o[bb, bh, by*BT:(by+1)*BT, bx*BV:(bx+1)*BV])
+                # v_mod here (fused)
+                {{v_mod_expr_fused_o | indent(16)}}
+                
+                T.copy(v[bb, bh, by*BT:(by+1)*BT, bx*BV:(bx+1)*BV], bv_shared)
+                T.copy(bs, bs_cast)
+                T.gemm(bs_cast, bv_shared, bo, policy=T.GemmWarpPolicy.FullRow)
+                # T.copy(bo, o[bb, bh, by*BT:(by+1)*BT, bx*BV:(bx+1)*BV]) # slow for stride between thread
+                T.copy(bo, bo_shared) # implicit type convert
+                T.copy(bo_shared, o[bb, bh, by*BT:(by+1)*BT, bx*BV:(bx+1)*BV])
+        
+        return main
     
-    return main
+    if tune:
+        configs = generate_config_o(batch,headq,headk,head,seqlen,dim,dimv,BT)
+        if len(configs) == 0:
+            return None
+        @autotune(
+            configs=configs,
+            warmup=10,
+            rep=10,
+        )
+        @jit(out_idx={{output_idx_list_o}}, ref_prog=None)
+        def kernel(BK=None, BV=None, num_stages=None, num_threads=None):
+            return kernel_func(BK,BV,num_stages,num_threads)
+        
+        return kernel()
+    else:
+        def kernel(BK=None, BV=None, num_stages=None, num_threads=None):
+            return kernel_func(BK,BV,num_stages,num_threads)
+        
+        return kernel
+        
 
 # --------------- TL_KERNEL_BWD_dh
 def chunk_bwd_kernel_dh(
@@ -614,20 +753,124 @@ def chunk_bwd_kernel_dv(
     return main
 
 # # compile tilelang program
+
+TUNE = {{TUNE}}
+TUNE_FILE = "{{TUNE_FILE}}"
+TUNE_BWD = {{TUNE_BWD}}
+TUNE_FILE_BWD = "{{TUNE_FILE_BWD}}"
+
+    
+def tune(tune_file, kernel_profiler, problem_keys)->Tuple:
+    tuned_config = None
+    tuned_latency = -1
+    pk = problem_keys
+    if not os.path.exists(tune_file):
+        with open(tune_file, "w") as f:
+            json.dump([], f, indent=4)
+        configs = []
+    else:
+        with open(tune_file, "r") as f:
+            configs = json.load(f)
+        # find the config with the same problem size
+        for config in configs:
+            if all(config[k] == v for k, v in pk.items()):
+                tuned_config = config['tuned_config']
+                tuned_latency = config['tuned_latency']
+                return tuned_config, tuned_latency
+    if tuned_config is None:
+        result = kernel_profiler(
+            **problem_keys
+        )
+        if result is not None:
+            tuned_config = result.config
+            tuned_latency = result.latency
+        with open(tune_file, "w") as f:
+            configs.append({
+                **pk,
+                'tuned_config': tuned_config,
+                'tuned_latency': tuned_latency
+            })
+            json.dump(configs, f, indent=4)
+    return tuned_config, tuned_latency
+    
+def get_problem_keys_ho(BT):
+    return {
+        "batch": {{BATCH}},
+        "headq": {{HQ}},
+        "headk": {{HK}},
+        "head": {{H}},
+        "seqlen": {{N_CTX}},
+        "dim": {{D_HEAD}},
+        "dimv": {{D_HEADV}},
+        "BT": BT,
+    }
+    
+def autotune_linearattn(file_path="mamba2"):
+            
+    BTs = [32,64,128,192,256]
+ 
+    best_config_h, best_config_o = {}, {}
+    best_latency = 1e6
+    best_BT = None
+    for BT in BTs:
+        config_h, latency_h = tune(f"{file_path}_h.json", partial(chunk_fwd_h, tune=True), get_problem_keys_ho(BT))
+        config_o, latency_o = tune(f"{file_path}_o.json", partial(chunk_o, tune=True), get_problem_keys_ho(BT))
+        
+        if latency_h == -1 or latency_o == -1:
+            continue
+        if latency_h + latency_o < best_latency:
+            best_BT = BT
+            best_latency = latency_h + latency_o
+            best_config_h = {
+                "BK": config_h[0],
+                "BV": config_h[1],
+                "num_stages": config_h[2],
+                "num_threads": config_h[3],
+            }
+            best_config_o = {
+                "BK": config_o[0],
+                "BV": config_o[1],
+                "num_stages": config_o[2],
+                "num_threads": config_o[3],
+            }
+    
+    return best_BT, best_config_h, best_config_o, best_latency
+   
+tuned_config_h = None
+tuned_config_o = None
+BT=None
+if TUNE:
+    BT, tuned_config_h, tuned_config_o, _ = autotune_linearattn(TUNE_FILE)
+else:
+    BT = {{BT}}
+    tuned_config_h = {
+        'BK': {{BK_h}},
+        'BV': {{BV_h}},
+        'num_stages': {{num_stages_h}},
+        'num_threads': {{num_threads_h}}
+    }
+    tuned_config_o = {
+        'BK': {{BK_o}},
+        'BV': {{BV_o}},
+        'num_stages': {{num_stages_o}},
+        'num_threads': {{num_threads_o}}
+    }
+    
+    
 BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV = {{BATCH}}, {{HQ}}, {{HK}}, {{H}}, {{N_CTX}}, {{D_HEAD}}, {{D_HEADV}}
 
-BT, BK_h, BV_h, num_stages_h, num_threads_h = {{BT}}, {{BK_h}}, {{BV_h}}, {{num_stages_h}}, {{num_threads_h}}
-BK_o, BV_o, num_stages_o, num_threads_o = {{BK_o}}, {{BV_o}}, {{num_stages_o}}, {{num_threads_o}}
-chunk_fwd_h_mod = tl.compile(chunk_fwd_h(BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_h, BV_h, num_stages_h, num_threads_h), {{output_idx_list_h}})
+chunk_fwd_h_mod = tl.compile(chunk_fwd_h(BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT)(**tuned_config_h), {{output_idx_list_h}})
 output_idx_list = {{output_idx_list_o}}# [5,]
-chunk_fwd_o_mod = tl.compile(chunk_o(BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_o, BV_o, num_stages_o, num_threads_o), output_idx_list, )
+chunk_fwd_o_mod = tl.compile(chunk_o(BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT)(**tuned_config_o), output_idx_list, )
 
 # bwd
+BT, BK_h, BV_h, num_stages_h, num_threads_h = {{BT}}, {{BK_h}}, {{BV_h}}, {{num_stages_h}}, {{num_threads_h}}
+BK_o, BV_o, num_stages_o, num_threads_o = {{BK_o}}, {{BV_o}}, {{num_stages_o}}, {{num_threads_o}}
 BT = {{BT_BWD}}
 BK_dh, BV_dh, num_stages_dh, num_threads_dh = {{BK_dh}}, {{BV_dh}}, {{num_stages_dh}}, {{num_threads_dh}}
 BK_dqkg, BV_dqkg, num_stages_dqkg, num_threads_dqkg = {{BK_dqkg}}, {{BV_dqkg}}, {{num_stages_dqkg}}, {{num_threads_dqkg}}
 BK_dv, BV_dv, num_stages_dv, num_threads_dv = {{BK_dv}}, {{BV_dv}}, {{num_stages_dv}}, {{num_threads_dv}}
-chunk_fwd_h_mod_2 = tl.compile(chunk_fwd_h(BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_h, BV_h, num_stages_h, num_threads_h), {{output_idx_list_h}})
+chunk_fwd_h_mod_2 = tl.compile(chunk_fwd_h(BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT)(BK_h, BV_h, num_stages_h, num_threads_h), {{output_idx_list_h}})
 chunk_bwd_dh_mod = tl.compile(chunk_bwd_kernel_dh(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_dh, BV_dh, num_stages_dh, num_threads_dh), [5,])
 chunk_bwd_dqkg_mod = tl.compile(chunk_bwd_dqkg(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_dqkg, BV_dqkg, num_stages_dqkg, num_threads_dqkg), [7,8,9,])
 chunk_bwd_dv_mod = tl.compile(chunk_bwd_kernel_dv(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT, BK_dv, BV_dv, num_stages_dv, num_threads_dv), [5,])

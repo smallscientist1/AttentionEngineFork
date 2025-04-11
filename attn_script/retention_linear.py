@@ -63,7 +63,7 @@ def eval():
             print("bench failed", e)
             
 if __name__ == "__main__":
-    B, H, T, D, DV = 8, 20, 1024, D, 512 # bug 16384
+    B, H, T, D, DV = 1, 20, 1024, D, 512 # bug 16384
     qkv_meta = (
         meta_tensor(B, H, T, D, dtype=torch.bfloat16),
         meta_tensor(B, H, T, D, dtype=torch.bfloat16),
@@ -77,8 +77,8 @@ if __name__ == "__main__":
         qkv_meta,
         q_mod=q_mod, decay_mod=decay_mod,
                             custom_io = custom_io,
-                            tune=True, tune_filename="retention_linear",
-                            tune_bwd=True)
+                            tune=False, tune_filename="retention_linear",
+                            tune_bwd=False)
 
     from benchmark.bench_utils import do_bench_retention_linear
     do_bench_retention_linear(mod, B, H, T, D, DV, requires_grad=True)
