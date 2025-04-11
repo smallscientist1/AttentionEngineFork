@@ -59,8 +59,8 @@ def eval():
         mod = LinearAttentionEngine(qkv_meta,
             decay_mod=decay_mod, v_mod=v_mod,
                                     custom_io = custom_io,
-                                    tune=True, tune_filename="mamba2",
-                                    tune_bwd=True)
+                                    tune=False, tune_filename="mamba2",
+                                    tune_bwd=False)
         print(f"B={B}, H={H}, T={T}, D={D}, DV={DV}")
         do_bench_mamba(mod, B, HQ,HK,H, T, D, DV, BT=256, requires_grad=True)
 
@@ -82,8 +82,8 @@ if __name__ == "__main__":
     mod = LinearAttentionEngine(qkv_meta,
         decay_mod=decay_mod, v_mod=v_mod,
                             custom_io = custom_io,
-                            tune=True, tune_filename="mamba2",
-                            tune_bwd=True)
+                            tune=False, tune_filename="mamba2",
+                            tune_bwd=False)
 
     from benchmark.bench_utils import do_bench_mamba
     do_bench_mamba(mod, B, HQ,HK,H, T, D, DV, BT=256, requires_grad=True)

@@ -63,7 +63,7 @@ def eval():
             print("bench failed", e)
             
 if __name__ == "__main__":
-    B, H, T, D, DV = 8, 20, 1024, D, 512 # bug 16384
+    B, H, T, D, DV = 1, 20, 1024, D, 512 # bug 16384
     qkv_meta = (
         meta_tensor(B, H, T, D, dtype=torch.bfloat16),
         meta_tensor(B, H, T, D, dtype=torch.bfloat16),
