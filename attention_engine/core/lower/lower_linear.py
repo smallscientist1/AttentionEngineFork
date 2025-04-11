@@ -48,6 +48,15 @@ shape_idx_onchip_map_h = {
 
 @dataclass
 class lowerOutput:
+    # problem shape
+    BATCH: str = ""
+    HQ: str = ""
+    HK: str = ""
+    H: str = ""
+    N_CTX: str = ""
+    D_HEAD: str = ""
+    D_HEADV: str = ""
+    
     k_mod_expr: str = ""
     v_mod_expr: str = ""
     decay_mod_expr: str = ""
@@ -349,11 +358,16 @@ def lowerQmodFused(q_mod, custom_io, lower_output: lowerOutput):
     lower_output.q_mod_expr = str(tl_code)
 
 
-def lower_tl(q_mod, k_mod, v_mod, decay_mod, custom_io, tuned_config=None):
+def lower_tl(qkv_meta, q_mod, k_mod, v_mod, decay_mod, custom_io, tuned_config=None):
 
     tune_output = TunnerOutput() if tuned_config is None else TunnerOutput(**tuned_config)
 
-    lower_output = lowerOutput()
+    BATCH, HQ, N_CTX, D_HEAD = qkv_meta[0].shape
+    DV = qkv_meta[2].shape[3]
+    HK = qkv_meta[1].shape[1]
+    H = qkv_meta[2].shape[1]
+    
+    lower_output = lowerOutput(BATCH=BATCH, HQ=HQ, HK=HK, H=H, N_CTX=N_CTX,D_HEAD=D_HEAD,D_HEADV=DV)
     if k_mod:
         lowerKmod(k_mod, custom_io, lower_output)
     if v_mod:

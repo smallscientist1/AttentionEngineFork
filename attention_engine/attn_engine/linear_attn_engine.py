@@ -10,7 +10,7 @@ import hashlib
 class LinearAttentionEngine:
     def __init__(self, qkv_meta, q_mod=None, k_mod=None, v_mod=None, decay_mod=None, custom_io=None,
                  tune=False, tune_filename="tune_result", tune_bwd=False):
-        self._compile_tl(q_mod, k_mod, v_mod, decay_mod, custom_io)
+        self._compile_tl(qkv_meta, q_mod, k_mod, v_mod, decay_mod, custom_io)
         if tune:
             B, HQ, S, DK = qkv_meta[0].shape
             DV = qkv_meta[2].shape[3]
@@ -24,6 +24,7 @@ class LinearAttentionEngine:
                     B, HQ, HK, H, S, DK, DV, file_path=tune_filename)
                 best_config.update(best_config_bwd)
             self._compile_tl(
+                qkv_meta,
                 q_mod,
                 k_mod,
                 v_mod,
@@ -36,9 +37,10 @@ class LinearAttentionEngine:
         o = self.attention(*args, **kargs)
         return o
 
-    def _compile_tl(self, q_mod, k_mod, v_mod, decay_mod,
+    def _compile_tl(self, qkv_meta, q_mod, k_mod, v_mod, decay_mod,
                     custom_io, tuned_config=None):
         tl_code = lower_tl(
+            qkv_meta,
             q_mod,
             k_mod,
             v_mod,
