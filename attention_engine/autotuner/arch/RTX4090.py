@@ -13,5 +13,8 @@ class RTX4090(Arch):
         self.bandwidth = [1008, 0]  # TODO: 1
         self.platform = "CUDA"
         self.compute_capability = "89"
-        self.cutlass_mma = [16, 8, 16]
         self.register_per_thread = 255
+        self.mma_primitive = [16, 8, 16]
+        self.threads_per_mma = 32
+        self.threads_cap = 1024
+        

@@ -364,10 +364,10 @@ def lowerQmodFused(q_mod, custom_io, lower_output: lowerOutput):
 
 
 def lower_tl(qkv_meta, q_mod, k_mod, v_mod, decay_mod, custom_io, tuned_config=None,
-             tune=False, tune_filename=""):
+             tune=False, tune_filename="", tune_bwd=False):
 
     if tuned_config is None:
-        tune_output = TunnerOutput(TUNE=tune, TUNE_FILE=tune_filename) 
+        tune_output = TunnerOutput(TUNE=tune, TUNE_FILE=tune_filename, TUNE_BWD=tune_bwd, TUNE_FILE_BWD=tune_filename)
     else:
         tune_output = TunnerOutput(**tuned_config)
 

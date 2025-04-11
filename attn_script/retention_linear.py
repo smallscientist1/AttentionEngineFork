@@ -77,8 +77,8 @@ if __name__ == "__main__":
         qkv_meta,
         q_mod=q_mod, decay_mod=decay_mod,
                             custom_io = custom_io,
-                            tune=False, tune_filename="retention_linear",
-                            tune_bwd=False)
+                            tune=True, tune_filename="retention_linear",
+                            tune_bwd=True)
 
     from benchmark.bench_utils import do_bench_retention_linear
     do_bench_retention_linear(mod, B, H, T, D, DV, requires_grad=True)
