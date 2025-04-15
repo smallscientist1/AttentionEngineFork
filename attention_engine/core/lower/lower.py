@@ -11,6 +11,7 @@ from ..codegen.common import *
 from copy import copy, deepcopy
 from sympy import symbols
 from typing import Callable
+import sympy as sp
 
 import logging
 
@@ -251,7 +252,7 @@ class customInputOutput:
     custom_fwd_inputs_load_shared_bwd: str = ""
 
 @dataclass
-class KernelBase:
+class lowerKernelBaseOutput:
     kernel_name: str
     input_args: str = ""
     output_args: str = ""
@@ -259,7 +260,7 @@ class KernelBase:
     output_args_copy_epilogue: str = ""
     input_args_copy_prologue: str = ""
 
-def lower_kernel(kernel_options: KernelOptionsBase, kernel_template:KernelBase):
+def lower_kernel(kernel_options: KernelOptionsBase, kernel_template:lowerKernelBaseOutput):
     # generate input args
     input_args_code = IndentedCode()
     for tensor in kernel_options.global_tensors_input.values():
@@ -387,49 +388,57 @@ def lower_online_func(online_func, lower_output: lowerOutput,
 
 
     # 7. bwd: TODO
-    qkT = SymbolScalar(lower_output.qkT, Var(lower_output.qkT), shape_idx=[str(bwd_kernel_options.tile_M), str(bwd_kernel_options.tile_N)])
-    kv_idx = SymbolScalar("kv_idx", Var("kv_idx"))
-    dsT = SymbolScalar(lower_output.dsT, Var(lower_output.dsT), shape_idx=[str(bwd_kernel_options.tile_M), str(bwd_kernel_options.tile_N)])
-    doosum_shared = SymbolScalar(lower_output.doosum_shared, Var(lower_output.doosum_shared), shape_idx=["1", str(bwd_kernel_options.tile_N)])
-        
-    
     isused_doosum = False
-    final_rowscales_bwd = {}
-    for k, v in online_func.final_rowscales.items():
-        final_rowscales_bwd[k] = SymbolScalar(
-            f"{k}_shared", Var(f"{k}"), shape_idx=[
-                "1", "block_N"])
-    scores_2 = online_func.forward(
-        qkT,
-        final_rowscales_bwd,
-        b,
-        h,
-        q_idx,
-        kv_idx)
-
-    tl_code, input_vars_fwd = generate_tl_from_dag([scores_2])
-    online_func_fwd = str(tl_code)
-
-    qkT.clear_codegen()
-    dscores = online_func.backward(
-        dsT, qkT, final_rowscales_bwd, doosum_shared, b, h, q_idx, kv_idx)
-
-    tl_code, input_vars_bwd = generate_tl_from_dag([dscores])
-    custom_bwd_body = str(tl_code)
-
-    if lower_output.doosum_shared in input_vars_bwd:
-        isused_doosum = True
-
-    custom_bwd_inputs = f"g_doosum: T.Buffer([batch, heads, seq_len], accum_dtype), \n" if isused_doosum else ""
-    final_rowscales_shared_init = ""
-    for k, v in final_rowscales_bwd.items():
-        final_rowscales_shared_init += f"{v.varname} = T.alloc_shared([{', '.join(v.shape_idx)}], accum_dtype, scope='shared')\n"
-    custom_bwd_inputs_init = "doosum_shared = T.alloc_shared([1, block_N], accum_dtype, scope='shared')" if isused_doosum else ""
+    online_func_fwd = ""
+    custom_bwd_inputs = ""
+    custom_bwd_inputs_load = ""
+    custom_bwd_inputs_init = ""
+    custom_bwd_body = ""
     final_rowscales_load = ""
-    for k, v in final_rowscales_bwd.items():
-        final_rowscales_load += f"T.copy(g_{k}[bz, bx, k * block_N : (k + 1) * block_N], {v.varname})\n"
-    custom_bwd_inputs_load = "T.copy(g_doosum[bz, bx, k * block_N : (k + 1) * block_N], doosum_shared)" if isused_doosum else ""
-    final_rowscales_length = len(final_rowscales_bwd)
+    final_rowscales_bwd = {}
+    final_rowscales_length = 0
+    final_rowscales_shared_init = ""
+    if bwd_kernel_options is not None:
+        qkT = SymbolScalar(lower_output.qkT, Var(lower_output.qkT), shape_idx=[str(bwd_kernel_options.tile_M), str(bwd_kernel_options.tile_N)])
+        kv_idx = SymbolScalar("kv_idx", Var("kv_idx"))
+        dsT = SymbolScalar(lower_output.dsT, Var(lower_output.dsT), shape_idx=[str(bwd_kernel_options.tile_M), str(bwd_kernel_options.tile_N)])
+        doosum_shared = SymbolScalar(lower_output.doosum_shared, Var(lower_output.doosum_shared), shape_idx=["1", str(bwd_kernel_options.tile_N)])
+            
+        
+        for k, v in online_func.final_rowscales.items():
+            final_rowscales_bwd[k] = SymbolScalar(
+                f"{k}_shared", Var(f"{k}"), shape_idx=[
+                    "1", "block_N"])
+        scores_2 = online_func.forward(
+            qkT,
+            final_rowscales_bwd,
+            b,
+            h,
+            q_idx,
+            kv_idx)
+
+        tl_code, input_vars_fwd = generate_tl_from_dag([scores_2])
+        online_func_fwd = str(tl_code)
+
+        qkT.clear_codegen()
+        dscores = online_func.backward(
+            dsT, qkT, final_rowscales_bwd, doosum_shared, b, h, q_idx, kv_idx)
+
+        tl_code, input_vars_bwd = generate_tl_from_dag([dscores])
+        custom_bwd_body = str(tl_code)
+
+        if lower_output.doosum_shared in input_vars_bwd:
+            isused_doosum = True
+
+        custom_bwd_inputs = f"g_doosum: T.Buffer([batch, heads, seq_len], accum_dtype), \n" if isused_doosum else ""
+        for k, v in final_rowscales_bwd.items():
+            final_rowscales_shared_init += f"{v.varname} = T.alloc_shared([{', '.join(v.shape_idx)}], accum_dtype, scope='shared')\n"
+        custom_bwd_inputs_init = "doosum_shared = T.alloc_shared([1, block_N], accum_dtype, scope='shared')" if isused_doosum else ""
+
+        for k, v in final_rowscales_bwd.items():
+            final_rowscales_load += f"T.copy(g_{k}[bz, bx, k * block_N : (k + 1) * block_N], {v.varname})\n"
+        custom_bwd_inputs_load = "T.copy(g_doosum[bz, bx, k * block_N : (k + 1) * block_N], doosum_shared)" if isused_doosum else ""
+        final_rowscales_length = len(final_rowscales_bwd)
 
     return lowerOnlineFuncOutput(
         online_rowscales_initvalue=online_rowscales_initvalue,
@@ -474,46 +483,52 @@ def lower_score_mod(score_mod, custom_fwd_inputs, lower_output: lowerOutput, ker
     call_score_mod = call_op(func_name, input_vars.values())
     
     # 3. score_mod bwd TODO
-
-    # backward, block_M : k, block_N : q
-    qkT = SymbolScalar(lower_output.qkT, Var(lower_output.qkT), shape_idx=[bwd_kernel_options.tile_M, bwd_kernel_options.tile_N])
-    dsT = SymbolScalar(lower_output.dsT, Var(lower_output.dsT), shape_idx=[bwd_kernel_options.tile_M, bwd_kernel_options.tile_N])
-    
-    scores_new = score_mod(qkT, custom_fwd_inputs, b, h, q_idx, kv_idx)
-    scores_new.backward(
-        dsT)
-    tl_code, input_vars_fwd = generate_tl_from_dag([scores_new])
-    score_mod_fwd_body = str(tl_code)
-    score_mod_output_var = scores_new.varname
-    score_mod_fwd_inputs = IndentedCode()
-    for varname, input_var in input_vars_fwd.items():
-        score_mod_fwd_inputs.add_line(arg_def(input_var))
-    score_mod_inputs_bwd_list = ", ".join(
-        [varname for varname, input_var in input_vars_fwd.items()])
-    tl_code, input_vars = generate_tl_from_dag([qkT.grad])
-    score_mod_backward = str(tl_code)
-    # add forward input_vars
-    for k, v in input_vars_fwd.items():
-        input_vars[k] = v
-    score_mod_bwd_inputs_list = ", ".join(
-        [input_var.varname for varname, input_var in input_vars.items()])
+    score_mod_backward = ""
+    score_mod_inputs_bwd_list = ""
+    score_mod_fwd_body = ""
+    score_mod_output_var = ""
+    score_mod_bwd_inputs_list = ""
     score_mod_bwd_inputs = IndentedCode()
-    for varname, input_var in input_vars.items():
-        score_mod_bwd_inputs.add_line(arg_def(input_var))
-
+    score_mod_fwd_inputs = IndentedCode()
     score_mod_bwd_inputs_declare = IndentedCode()
     score_mod_bwd_inputs_declare_shared = IndentedCode()
-    # TODO: dtype
-    dtype = "accum_dtype"
-    for varname, input_var in input_vars.items():
-        if input_var.shape_idx == ["block_N", "block_M"]:
-            dtype = "dtype"
-            input_var.dtype = "dtype"
-            score_mod_bwd_inputs_declare_shared.add_line(alloc_shared_op(input_var))
-        else:
-            input_var.dtype = dtype
-            score_mod_bwd_inputs_declare.add_line(alloc_fragment_op(input_var))
-            
+    if bwd_kernel_options is not None:
+
+        # backward, block_M : k, block_N : q
+        qkT = SymbolScalar(lower_output.qkT, Var(lower_output.qkT), shape_idx=[bwd_kernel_options.tile_M, bwd_kernel_options.tile_N])
+        dsT = SymbolScalar(lower_output.dsT, Var(lower_output.dsT), shape_idx=[bwd_kernel_options.tile_M, bwd_kernel_options.tile_N])
+        
+        scores_new = score_mod(qkT, custom_fwd_inputs, b, h, q_idx, kv_idx)
+        scores_new.backward(
+            dsT)
+        tl_code, input_vars_fwd = generate_tl_from_dag([scores_new])
+        score_mod_fwd_body = str(tl_code)
+        score_mod_output_var = scores_new.varname
+        for varname, input_var in input_vars_fwd.items():
+            score_mod_fwd_inputs.add_line(arg_def(input_var))
+        score_mod_inputs_bwd_list = ", ".join(
+            [varname for varname, input_var in input_vars_fwd.items()])
+        tl_code, input_vars = generate_tl_from_dag([qkT.grad])
+        score_mod_backward = str(tl_code)
+        # add forward input_vars
+        for k, v in input_vars_fwd.items():
+            input_vars[k] = v
+        score_mod_bwd_inputs_list = ", ".join(
+            [input_var.varname for varname, input_var in input_vars.items()])
+        for varname, input_var in input_vars.items():
+            score_mod_bwd_inputs.add_line(arg_def(input_var))
+
+        # TODO: dtype
+        dtype = "accum_dtype"
+        for varname, input_var in input_vars.items():
+            if input_var.shape_idx == ["block_N", "block_M"]:
+                dtype = "dtype"
+                input_var.dtype = "dtype"
+                score_mod_bwd_inputs_declare_shared.add_line(alloc_shared_op(input_var))
+            else:
+                input_var.dtype = dtype
+                score_mod_bwd_inputs_declare.add_line(alloc_fragment_op(input_var))
+                
 
     
     return lowerScoreModOutput(
@@ -627,7 +642,7 @@ def lower_tl(score_mod, block_mask, online_func,
     # 2. kernel config options 
     kernel_options = AttnFwdKernelOption(tile_M=sp.simplify("block_M"), tile_N=sp.simplify("block_N"), 
                                          dim=sp.simplify("dim"), dimv=sp.simplify("dimv"))
-    kernel_code_template = KernelBase("kernel")
+    kernel_code_template = lowerKernelBaseOutput("kernel")
     
     
         
