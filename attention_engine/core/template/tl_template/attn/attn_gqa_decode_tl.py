@@ -223,9 +223,9 @@ def kernel(batch, heads, groups, seqlen_kv, dim, dimv, tune=False):
 
         @T.macro
         def combine(
-                glse: T.Buffer([batch, heads, num_split], dtype),
-                Output_partial: T.Buffer(part_shape, dtype),
-                Output: T.Buffer(shape_o, dtype),
+                glse: T.Tensor([batch, heads, num_split], dtype),
+                Output_partial: T.Tensor(part_shape, dtype),
+                Output: T.Tensor(shape_o, dtype),
         ):
             with T.Kernel(heads, batch, threads=128) as (by, bz):
                 po_local = T.alloc_fragment([dim], dtype)
@@ -241,14 +241,15 @@ def kernel(batch, heads, groups, seqlen_kv, dim, dimv, tune=False):
                         T.Fragment(lse_logsum_local.shape, forward_thread_fn=lambda i: i),
                     lse_max_local:
                         T.Fragment(lse_max_local.shape, forward_thread_fn=lambda i: i),
+                    # lse_local: (local_id, thread_id)
                     lse_local:
-                        T.Fragment(lse_local.shape, forward_thread_fn=lambda i, j: j),
+                        T.Fragment(lse_local.shape, forward_fn=lambda i, j: (j, i)),
                 })
 
                 T.clear(lse_logsum_local)
                 T.clear(o_accum_local)
-                for k in T.Parallel(num_split):
-                    lse_local[k, 0] = glse[bz, by, k]
+                for k, j in T.Parallel(num_split, 128):
+                    lse_local[k, j] = glse[bz, by, k]
                 T.reduce_max(lse_local, lse_max_local, dim=0, clear=True)
                 for k in T.Pipelined(num_split, num_stages=1):
                     lse_local_split[0] = glse[bz, by, k]
@@ -262,7 +263,7 @@ def kernel(batch, heads, groups, seqlen_kv, dim, dimv, tune=False):
                     for i in T.Parallel(dim):
                         o_accum_local[i] += po_local[i] * scale_local[0]
                 for i in T.Parallel(dim):
-                    Output[bz, 0, by, i] = o_accum_local[i]
+                    Output[bz, by, i] = o_accum_local[i]
 
         @T.prim_func
         def main_split(

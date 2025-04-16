@@ -4,6 +4,8 @@ import tilelang as tl
 import tilelang.language as T
 import torch.nn.functional as F
 
+from math import floor
+
 # TL_GLOBAL_FUNC = """
 def fast_tanh(A, B):
     return T.call_extern("handle", "fasttanh", T.address_of(A), T.address_of(B))
@@ -33,22 +35,11 @@ def kernel(batch, heads, seq_len, seq_len_kv, dim, dimv,
     # shared_fuse = True
     assert(is_casual == False)
 
-# TL_MAIN = """
     @T.macro
-    def score_mod(
-        # scores: T.Buffer([block_M, block_N], accum_dtype),
-        {{score_mod_inputs | indent(8)}}
-        ):
-        {{score_mod_body | indent(8)}}
-        pass
+    {{score_mod_func_def | indent(4)}}
     
     @T.macro
-    def online_func(
-        # scores: T.Buffer([block_M, block_N], accum_dtype),
-        {{online_func_inputs | indent(8)}}
-    ):
-        {{online_func_body | indent(8)}}
-        pass
+    {{online_func_def | indent(8)}}
 
         
     @T.macro
@@ -75,8 +66,6 @@ def kernel(batch, heads, seq_len, seq_len_kv, dim, dimv,
             # acc_o = T.alloc_fragment([block_M, dimv], accum_dtype)
 
             {{custom_fwd_inputs_init | indent(12)}}
-            {{online_func_init | indent(12)}}
-            {{final_rowscales_init | indent(12)}}
             
             mid = bx
             hid = by % heads
@@ -88,6 +77,7 @@ def kernel(batch, heads, seq_len, seq_len_kv, dim, dimv,
                 scores_shared: tl.layout.make_swizzled_layout(scores_shared),
                 {{swizzle_shared | indent(16)}}
             })
+            # automatic bound check?
             T.copy(Q[bid, mid * block_M : (mid + 1) * block_M, hid, :], Q_shared)
             {{custom_fwd_inputs_load_prolog | indent(12)}}
             T.fill(acc_o, 0)
@@ -114,22 +104,21 @@ def kernel(batch, heads, seq_len, seq_len_kv, dim, dimv,
                     
                 {{custom_fwd_inputs_load_s2r | indent(16)}}
                 # call score_mod
-                score_mod({{score_mod_inputs_list}}) # scores
+                {{call_score_mod | indent(16)}}
                     
                 # call online_func
                 if shared_fuse:
                     T.copy(scores, scores_shared)
                     T.copy(scores_shared, scores_1)
-                    online_func({{online_func_inputs_list}})
+                    {{call_online_func | indent(20)}}
                     T.copy(scores_1, acc_s_cast_1)
 
                 else:
-                    online_func({{online_func_inputs_list}}) # scores
+                    {{call_online_func | indent(20)}}
                     T.copy(scores, acc_s_cast)
 
-                # for i, j in T.Parallel(block_M, dimv):
-                #     acc_o[i, j] *= o_scale[i]
-                {{o_scale | indent(16)}}
+                for i, j in T.Parallel(block_M, dimv):
+                    acc_o[i, j] *= {{o_scale_varname}}[i]
                 
                 # update online_rowscales
                 {{online_rowscales_update | indent(16)}}
