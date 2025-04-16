@@ -1,8 +1,4 @@
 import torch
-from core.lower.lower import lower_tl
-from core.lower.lower_decode import lower_tl as lower_tl_decode
-from core.lower.lower_decode_gqa import lower_tl as lower_tl_decode_gqa
-from core.lower.lower_cute import lower_cute
 from core.transform.core import CustomIO, SymbolicArray, SymbolScalar, Var
 
 from autotuner.decider import decider
@@ -151,6 +147,93 @@ class AttentionEngine:
                 cute_attn.flash_attn_func,
                 causal=True if mask_mod is not None else False)
 
+    def _select_lower_template(self, qkv_meta, custom_fwd_inputs, score_mod, mask_mod,
+                    online_func, mask_value="-inf", tuned_config=None, infer_mask=False,
+                    tune=False, tune_file="",
+                    tune_bwd=False, tune_file_bwd="",
+                    kernel_template=None):
+        tl_dtype_map = {
+            torch.float16: "float16",
+            torch.bfloat16: "bfloat16",
+        }
+        q_seqlen = qkv_meta[0].shape[2]
+        kv_len = qkv_meta[2].shape[2]
+        head = qkv_meta[0].shape[1]
+        head_kv = qkv_meta[2].shape[1]
+        
+        # mla decode
+        if kernel_template == "mla_decode":
+            from core.lower.lower_decode_mla import lower_tl as lower_tl_decode_mla
+            tl_code = lower_tl_decode_mla(score_mod,
+                                        mask_mod,
+                                        online_func,
+                                        custom_fwd_inputs,
+                                        qkv_meta[0].shape[0], # B
+                                        head, # headq
+                                        head_kv, # H
+                                        kv_len, # S
+                                        qkv_meta[0].shape[3],
+                                        qkv_meta[2].shape[3],
+                                        tl_dtype_map[qkv_meta[0].dtype],
+                                        mask_value,
+                                        tuned_config)
+            return tl_code, None
+        
+        # decode gqa
+        if q_seqlen != kv_len and head > head_kv: # TODO: change condition
+            assert (q_seqlen < kv_len)
+            assert q_seqlen == 1
+            infer_mask = True
+            from core.lower.lower_decode_gqa import lower_tl as lower_tl_decode_gqa
+            tl_code, block_mask = lower_tl_decode_gqa(score_mod,
+                                      mask_mod,
+                                      online_func,
+                                      custom_fwd_inputs,
+                                      qkv_meta[0].shape[0], # B
+                                      head, # headq
+                                        head_kv, # H
+                                        kv_len, # S
+                                      qkv_meta[0].shape[3],
+                                      qkv_meta[2].shape[3],
+                                      tl_dtype_map[qkv_meta[0].dtype],
+                                      mask_value,
+                                      tuned_config)
+            return tl_code, block_mask
+            
+        # decode mha
+        if q_seqlen != kv_len and head == head_kv:
+            assert (q_seqlen < kv_len)
+            from core.lower.lower_decode import lower_tl as lower_tl_decode
+            tl_code = lower_tl_decode(score_mod,
+                                      mask_mod,
+                                      online_func,
+                                      custom_fwd_inputs,
+                                      qkv_meta[0].shape[3],
+                                      qkv_meta[2].shape[3],
+                                      tl_dtype_map[qkv_meta[0].dtype],
+                                      mask_value,
+                                      tuned_config)
+            return tl_code, None
+        
+        # train/prefill mha forward & backward
+        if q_seqlen == kv_len:
+            from core.lower.lower import lower_tl
+            tl_code, block_mask = lower_tl(score_mod,
+                                mask_mod,
+                                online_func,
+                                custom_fwd_inputs,
+                                qkv_meta[0].shape[0], # B
+                                qkv_meta[0].shape[1], # H
+                                q_seqlen, # S
+                                qkv_meta[0].shape[3],
+                                qkv_meta[2].shape[3],
+                                tl_dtype_map[qkv_meta[0].dtype],
+                                mask_value,
+                                tuned_config, infer_mask, 
+                                tune=tune, tune_file=tune_file,
+                                tune_bwd=tune_bwd, tune_file_bwd=tune_file_bwd)
+            return tl_code, block_mask
+            
     def _compile_tl(self, qkv_meta, custom_fwd_inputs, score_mod, mask_mod,
                     online_func, mask_value="-inf", tuned_config=None, infer_mask=False,
                     tune=False, tune_file="",
@@ -165,82 +248,19 @@ class AttentionEngine:
         head = qkv_meta[0].shape[1]
         head_kv = qkv_meta[2].shape[1]
         block_mask = None
-        if q_seqlen != kv_len:
-            assert (q_seqlen < kv_len)
-            if head > head_kv:
-                assert q_seqlen == 1
-                infer_mask = True
-                if kernel_template is not None:
-                    if kernel_template == "mla_decode":
-                        from core.lower.lower_decode_mla import lower_tl as lower_tl_decode_mla
-                        tl_code = lower_tl_decode_mla(score_mod,
-                                        mask_mod,
-                                        online_func,
-                                        custom_fwd_inputs,
-                                        qkv_meta[0].shape[0], # B
-                                        head, # headq
-                                        head_kv, # H
-                                        kv_len, # S
-                                        qkv_meta[0].shape[3],
-                                        qkv_meta[2].shape[3],
-                                        tl_dtype_map[qkv_meta[0].dtype],
-                                        mask_value,
-                                        tuned_config)
-                else:
-                    tl_code, block_mask = lower_tl_decode_gqa(score_mod,
-                                      mask_mod,
-                                      online_func,
-                                      custom_fwd_inputs,
-                                      qkv_meta[0].shape[0], # B
-                                      head, # headq
-                                        head_kv, # H
-                                        kv_len, # S
-                                      qkv_meta[0].shape[3],
-                                      qkv_meta[2].shape[3],
-                                      tl_dtype_map[qkv_meta[0].dtype],
-                                      mask_value,
-                                      tuned_config)
-            else:
-                tl_code = lower_tl_decode(score_mod,
-                                      mask_mod,
-                                      online_func,
-                                      custom_fwd_inputs,
-                                      qkv_meta[0].shape[3],
-                                      qkv_meta[2].shape[3],
-                                      tl_dtype_map[qkv_meta[0].dtype],
-                                      mask_value,
-                                      tuned_config)
-        else:
-            if infer_mask:
-                tl_code, block_mask = lower_tl(score_mod,
-                                mask_mod,
-                                online_func,
-                                custom_fwd_inputs,
-                                qkv_meta[0].shape[0], # B
-                                qkv_meta[0].shape[1], # H
-                                q_seqlen, # S
-                                qkv_meta[0].shape[3],
-                                qkv_meta[2].shape[3],
-                                tl_dtype_map[qkv_meta[0].dtype],
-                                mask_value,
-                                tuned_config, infer_mask, 
-                                tune=tune, tune_file=tune_file,
-                                tune_bwd=tune_bwd, tune_file_bwd=tune_file_bwd)
-            else:
-                tl_code = lower_tl(score_mod,
-                                mask_mod,
-                                online_func,
-                                custom_fwd_inputs,
-                                qkv_meta[0].shape[0], # B
-                                qkv_meta[0].shape[1], # H
-                                q_seqlen, # S
-                                qkv_meta[0].shape[3],
-                                qkv_meta[2].shape[3],
-                                tl_dtype_map[qkv_meta[0].dtype],
-                                mask_value,
-                                tuned_config,
-                                tune=tune, tune_file=tune_file,
-                                tune_bwd=tune_bwd, tune_file_bwd=tune_file_bwd)
+        tl_code, block_mask = self._select_lower_template(
+            qkv_meta,
+            custom_fwd_inputs,
+            score_mod,
+            mask_mod,
+            online_func,
+            mask_value, tuned_config=tuned_config, infer_mask=infer_mask,
+            tune=tune,
+            tune_file=tune_file,
+            tune_bwd=tune_bwd,
+            tune_file_bwd=tune_file_bwd,
+            kernel_template=kernel_template
+        )
         self.tl_code = tl_code  
         # for debug
         # with open("generated_tl.py","w") as f:

@@ -759,5 +759,5 @@ def lower_tl(score_mod, block_mask, online_func,
 
             output_idx_list=str(output_idx_list),
             bwd_output_idx_list=str(bwd_output_idx_list)
-        )()
+        )(), None
 
