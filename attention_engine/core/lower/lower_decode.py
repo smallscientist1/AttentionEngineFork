@@ -18,7 +18,7 @@ import sympy as sp
 THIS_FILE_PATH = osp.dirname(osp.abspath(__file__))
 TEMPLATE_PATH = osp.join(
     THIS_FILE_PATH,
-    "../template/tl_template/attn/attn_inference_tl.py")
+    "../template/tl_template/attn/attn_decode_tl.py")
 
 # TODO: bwd map
 shape_idx_map = {
@@ -279,6 +279,15 @@ def lower_online_func(online_func, lower_output: lowerOutput,
         torch_alloc_final_rowscales=torch_alloc_final_rowscales,
         final_rowscales_list=final_rowscales_list
     )
+
+def lower_combine(online_func, lower_output: lowerOutput,
+                      kernel_options: AttnFwdKernelOption=None,
+                      bwd_kernel_options: AttnBwdKernelOption=None):
+    combine = online_func.combine
+    final_rowscales = online_func.final_rowscales
+    combine_o_scale = combine(final_rowscales)
+    tl_code, input_vars = generate_tl_from_dag([combine_o_scale], )
+    
 
 from .lower import lower_score_mod
 

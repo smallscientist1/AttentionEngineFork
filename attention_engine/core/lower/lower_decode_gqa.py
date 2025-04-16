@@ -12,7 +12,7 @@ import os.path as osp
 THIS_FILE_PATH = osp.dirname(osp.abspath(__file__))
 TEMPLATE_PATH = osp.join(
     THIS_FILE_PATH,
-    "../template/tl_template/attn/attn_gqa_inference_tl.py")
+    "../template/tl_template/attn/attn_gqa_decode_tl.py")
 
 # TODO: bwd map
 shape_idx_map = {
