@@ -101,7 +101,8 @@ class AttentionEngine:
                  online_func, mask_value="-inf", device=H100(), backend="tl", 
                  tune=False, tune_file="", 
                  tune_bwd=False, tune_file_bwd="",
-                 infer_mask=False):
+                 infer_mask=False,
+                 kernel_template=None):
         # tunner
         # need_engine_fuse, fuse_config = decider(qkv_meta, device)
         
@@ -120,7 +121,8 @@ class AttentionEngine:
                 tune=tune,
                 tune_file=tune_file,
                 tune_bwd=tune_bwd,
-                tune_file_bwd=tune_file_bwd)
+                tune_file_bwd=tune_file_bwd,
+                kernel_template=kernel_template)
 
         elif backend == "cute":
             # must be same with cute_template.py
@@ -152,7 +154,8 @@ class AttentionEngine:
     def _compile_tl(self, qkv_meta, custom_fwd_inputs, score_mod, mask_mod,
                     online_func, mask_value="-inf", tuned_config=None, infer_mask=False,
                     tune=False, tune_file="",
-                    tune_bwd=False, tune_file_bwd=""):
+                    tune_bwd=False, tune_file_bwd="",
+                    kernel_template=None):
         tl_dtype_map = {
             torch.float16: "float16",
             torch.bfloat16: "bfloat16",
@@ -167,7 +170,24 @@ class AttentionEngine:
             if head > head_kv:
                 assert q_seqlen == 1
                 infer_mask = True
-                tl_code, block_mask = lower_tl_decode_gqa(score_mod,
+                if kernel_template is not None:
+                    if kernel_template == "mla_decode":
+                        from core.lower.lower_decode_mla import lower_tl as lower_tl_decode_mla
+                        tl_code = lower_tl_decode_mla(score_mod,
+                                        mask_mod,
+                                        online_func,
+                                        custom_fwd_inputs,
+                                        qkv_meta[0].shape[0], # B
+                                        head, # headq
+                                        head_kv, # H
+                                        kv_len, # S
+                                        qkv_meta[0].shape[3],
+                                        qkv_meta[2].shape[3],
+                                        tl_dtype_map[qkv_meta[0].dtype],
+                                        mask_value,
+                                        tuned_config)
+                else:
+                    tl_code, block_mask = lower_tl_decode_gqa(score_mod,
                                       mask_mod,
                                       online_func,
                                       custom_fwd_inputs,
@@ -252,30 +272,3 @@ class AttentionEngine:
             o = self.attention(*args, **kargs)
         return o
 
-
-if __name__ == "__main__":
-    online = OnlineFunc({}, {}, CustomIO(), CustomIO())
-    scores, online_rowscales, o_scale = online.online_fwd(
-        SymbolicArray(), online.online_rowscales, 1, 1, 1)
-    o, final_scales = online.online_fwd_epilogue(
-        SymbolScalar("o", Var("o")), online.online_rowscales, 1, 1, 1)
-    scores2 = online.forward(
-        SymbolicArray(),
-        online.final_rowscales,
-        1,
-        1,
-        1,
-        1)
-    dscores = online.backward(
-        SymbolScalar(
-            "dp",
-            Var("dp")),
-        SymbolScalar(
-            "scores",
-            Var("scores")),
-        online.final_rowscales,
-        online.external_bwd_tensors,
-        1,
-        1,
-        1,
-        1)
