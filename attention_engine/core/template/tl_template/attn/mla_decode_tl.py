@@ -11,7 +11,7 @@ import argparse
 
 def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H, num_split):
     scale = (1.0 / (dim + pe_dim))**0.5 * 1.44269504  # log2(e)
-    dtype = {{tl_dtype}}
+    dtype = "{{tl_dtype}}"
     accum_dtype = "float"
     kv_group_num = heads // kv_head_num
     VALID_BLOCK_H = min(block_H, kv_group_num)
@@ -19,11 +19,11 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_
 
     @T.macro
     def flash_attn(
-            Q: T.Tensor([batch, heads, dim], dtype),
-            Q_pe: T.Tensor([batch, heads, pe_dim], dtype),
+            Q: T.Tensor([batch, 1, heads, dim], dtype),
+            Q_pe: T.Tensor([batch, 1, heads, pe_dim], dtype),
             KV: T.Tensor([batch, seqlen_kv, kv_head_num, dim], dtype),
             K_pe: T.Tensor([batch, seqlen_kv, kv_head_num, pe_dim], dtype),
-            Output: T.Tensor([batch, heads, dim], dtype),
+            Output: T.Tensor([batch, 1, heads, dim], dtype),
     ):
         with T.Kernel(batch, heads // min(block_H, kv_group_num), threads=256) as (bx, by):
             Q_shared = T.alloc_shared([block_H, dim], dtype)
@@ -46,8 +46,8 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_
                 O_shared: tilelang.layout.make_swizzled_layout(O_shared),
             })
 
-            T.copy(Q[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_shared)
-            T.copy(Q_pe[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_pe_shared)
+            T.copy(Q[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_shared)
+            T.copy(Q_pe[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_pe_shared)
             T.fill(acc_o, 0)
             T.fill(logsum, 0)
             T.fill(scores_max, -T.infinity(accum_dtype))
@@ -82,16 +82,16 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_
             for i, j in T.Parallel(block_H, dim):
                 acc_o[i, j] /= logsum[i]
             T.copy(acc_o, O_shared)
-            T.copy(O_shared, Output[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :])
+            T.copy(O_shared, Output[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :])
 
     @T.macro
     def flash_attn_split(
-            Q: T.Tensor([batch, heads, dim], dtype),
-            Q_pe: T.Tensor([batch, heads, pe_dim], dtype),
+            Q: T.Tensor([batch, 1, heads, dim], dtype),
+            Q_pe: T.Tensor([batch, 1, heads, pe_dim], dtype),
             KV: T.Tensor([batch, seqlen_kv, kv_head_num, dim], dtype),
             K_pe: T.Tensor([batch, seqlen_kv, kv_head_num, pe_dim], dtype),
-            glse: T.Tensor([batch, heads, num_split], dtype),
-            Output_partial: T.Tensor([batch, heads, num_split, dim], dtype),
+            glse: T.Tensor([batch, heads, num_split, 1], dtype),
+            Output_partial: T.Tensor([batch, 1, heads, num_split, dim], dtype),
     ):
         with T.Kernel(
                 batch, heads // min(block_H, kv_group_num), num_split, threads=256) as (bx, by, bz):
@@ -117,8 +117,8 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_
                 S_shared: tilelang.layout.make_swizzled_layout(S_shared),
             })
 
-            T.copy(Q[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_shared)
-            T.copy(Q_pe[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_pe_shared)
+            T.copy(Q[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_shared)
+            T.copy(Q_pe[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_pe_shared)
             T.fill(acc_o, 0)
             T.fill(logsum, 0)
             T.fill(scores_max, -T.infinity(accum_dtype))
@@ -157,15 +157,15 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_
                 acc_o[i, j] /= logsum[i]
             for i in T.Parallel(block_H):
                 logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
-            T.copy(logsum, glse[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, bz])
+            T.copy(logsum, glse[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, bz, 0])
             T.copy(acc_o, O_shared)
-            T.copy(O_shared, Output_partial[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, bz, :])
+            T.copy(O_shared, Output_partial[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, bz, :])
 
     @T.macro
     def combine(
-            glse: T.Tensor([batch, heads, num_split], dtype),
-            Output_partial: T.Tensor([batch, heads, num_split, dim], dtype),
-            Output: T.Tensor([batch, heads, dim], dtype),
+            glse: T.Tensor([batch, heads, num_split, 1], dtype),
+            Output_partial: T.Tensor([batch, 1, heads, num_split, dim], dtype),
+            Output: T.Tensor([batch, 1, heads, dim], dtype),
     ):
         with T.Kernel(heads, batch, threads=128) as (by, bz):
             po_local = T.alloc_fragment([dim], dtype)
@@ -183,43 +183,43 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_
             T.clear(o_accum_local)
             lse_max_local[0] = -T.infinity(accum_dtype)
             for k in T.serial(num_split):
-                lse_max_local[0] = T.max(lse_max_local[0], glse[bz, by, k])
+                lse_max_local[0] = T.max(lse_max_local[0], glse[bz, by, k, 0])
             for k in T.Pipelined(num_split, num_stages=1):
-                lse_local_split[0] = glse[bz, by, k]
+                lse_local_split[0] = glse[bz, by, k, 0]
                 lse_logsum_local[0] += T.exp2(lse_local_split[0] - lse_max_local[0])
             lse_logsum_local[0] = T.log2(lse_logsum_local[0]) + lse_max_local[0]
             for k in T.serial(num_split):
                 for i in T.Parallel(dim):
-                    po_local[i] = Output_partial[bz, by, k, i]
-                lse_local_split[0] = glse[bz, by, k]
+                    po_local[i] = Output_partial[bz, 0, by, k, i]
+                lse_local_split[0] = glse[bz, by, k, 0]
                 scale_local[0] = T.exp2(lse_local_split[0] - lse_logsum_local[0])
                 for i in T.Parallel(dim):
                     o_accum_local[i] += po_local[i] * scale_local[0]
             for i in T.Parallel(dim):
-                Output[bz, by, i] = o_accum_local[i]
+                Output[bz, 0, by, i] = o_accum_local[i]
 
     @T.prim_func
     def main_split(
-            Q: T.Tensor([batch, heads, dim], dtype),
-            Q_pe: T.Tensor([batch, heads, pe_dim], dtype),
+            Q: T.Tensor([batch, 1, heads, dim], dtype),
+            Q_pe: T.Tensor([batch, 1, heads, pe_dim], dtype),
             KV: T.Tensor([batch, seqlen_kv, kv_head_num, dim], dtype),
             K_pe: T.Tensor([batch, seqlen_kv, kv_head_num, pe_dim], dtype),
-            glse: T.Tensor([batch, heads, num_split], dtype),
-            Output_partial: T.Tensor([batch, heads, num_split, dim], dtype),
-            Output: T.Tensor([batch, heads, dim], dtype),
+            glse: T.Tensor([batch, heads, num_split, 1], dtype),
+            Output_partial: T.Tensor([batch, 1, heads, num_split, dim], dtype),
+            Output: T.Tensor([batch, 1, heads, dim], dtype),
     ):
         flash_attn_split(Q, Q_pe, KV, K_pe, glse, Output_partial)
         combine(glse, Output_partial, Output)
 
     @T.prim_func
     def main_no_split(
-            Q: T.Tensor([batch, heads, dim], dtype),
-            Q_pe: T.Tensor([batch, heads, pe_dim], dtype),
+            Q: T.Tensor([batch, 1, heads, dim], dtype),
+            Q_pe: T.Tensor([batch, 1, heads, pe_dim], dtype),
             KV: T.Tensor([batch, seqlen_kv, kv_head_num, dim], dtype),
             K_pe: T.Tensor([batch, seqlen_kv, kv_head_num, pe_dim], dtype),
-            glse: T.Tensor([batch, heads, num_split], dtype),
-            Output_partial: T.Tensor([batch, heads, num_split, dim], dtype),
-            Output: T.Tensor([batch, heads, dim], dtype),
+            glse: T.Tensor([batch, heads, num_split, 1], dtype),
+            Output_partial: T.Tensor([batch, 1, heads, num_split, dim], dtype),
+            Output: T.Tensor([batch, 1, heads, dim], dtype),
     ):
         flash_attn(Q, Q_pe, KV, K_pe, Output)
 
@@ -286,9 +286,9 @@ class _attention(torch.autograd.Function):
     def forward(ctx, q, q_pe, kv, k_pe):
         global num_split
         glse = torch.empty(
-            (q.shape[0], q.shape[1], num_split), dtype=q.dtype, device=q.device)
+            (q.shape[0], q.shape[2], num_split, q.shape[1]), dtype=q.dtype, device=q.device)
         Output_partial = torch.empty(
-            (q.shape[0], q.shape[1], num_split, kv.shape[-1]), dtype=q.dtype, device=q.device)
+            (q.shape[0], q.shape[1], q.shape[2], num_split, kv.shape[-1]), dtype=q.dtype, device=q.device)
         o = mod(q, q_pe, kv, k_pe, glse, Output_partial)
         return o
 

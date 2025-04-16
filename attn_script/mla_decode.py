@@ -107,13 +107,23 @@ if __name__ == "__main__":
         kernel_template="mla_decode"
     )
     
-    q = torch.randn(B, H, 1, DV, dtype=dtype, device="cuda")
-    q_pe = torch.randn(B, H, 1, D-DV, dtype=dtype, device="cuda")
-    KV = torch.randn(B, G, S, DV, dtype=dtype, device="cuda")
-    k_pe = torch.randn(B, G, S, D-DV, dtype=dtype, device="cuda")
+    q = torch.randn(B, 1, H, DV, dtype=dtype, device="cuda")
+    q_pe = torch.randn(B, 1, H, D-DV, dtype=dtype, device="cuda")
+    KV = torch.randn(B, S, G, DV, dtype=dtype, device="cuda")
+    k_pe = torch.randn(B, S, G, D-DV, dtype=dtype, device="cuda")
     
     o = mod(
         q, q_pe,
         KV, k_pe,
     )
+    from tilelang.profiler import do_bench
+    latency = do_bench(
+        lambda: mod(
+            q, q_pe,
+            KV, k_pe,
+        ),
+        warmup=10,
+        rep=100,
+    )
+    print("latency: ", latency)
     

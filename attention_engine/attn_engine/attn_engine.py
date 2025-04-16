@@ -258,7 +258,6 @@ class AttentionEngine:
         spec = importlib.util.spec_from_file_location("tl_attn", file_path)
         tl_attn = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(tl_attn)
-        self.kernel = tl_attn.kernel
         self.attention = tl_attn.attention
         if infer_mask:
             self.block_mask = block_mask
