@@ -121,6 +121,7 @@ class AttentionEngine:
                 kernel_template=kernel_template)
 
         elif backend == "cute":
+            from core.lower.lower_cute import lower_cute
             # must be same with cute_template.py
             OUTPUT_DIR = osp.join(
                 osp.dirname(
