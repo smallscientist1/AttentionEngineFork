@@ -232,6 +232,9 @@ class SymbolScalar:
 
     def log(self):
         return self.op(Log)
+    
+    def log2(self):
+        return self.op(Log2)
 
     def max(self, other):
         return self.op(Max, [other])
@@ -251,21 +254,48 @@ class SymbolicArray(SymbolScalar):
 
     def get_reduce(self, op: Literal["sum", "max", "abssum"]):
         """
-        get reduce result of array
+        get row reduce result of array
         """
+        shape_idx = self.shape_idx[:-1]
+
         if op == "sum":
             return self.op(
-                ReduceSum, shape_idx=self.shape_idx[:-1], varname_suffix="sum")
+                ReduceSum, shape_idx=shape_idx, varname_suffix="sum")
         elif op == "max":
             return self.op(
-                ReduceMax, shape_idx=self.shape_idx[:-1], varname_suffix="max")
+                ReduceMax, shape_idx=shape_idx, varname_suffix="max")
         elif op == "abssum":
             return self.op(
-                ReduceAbsSum, shape_idx=self.shape_idx[:-1], varname_suffix="abssum")
+                ReduceAbsSum, shape_idx=shape_idx, varname_suffix="abssum")
         else:
             raise NotImplementedError
 
+class SymbolicColReduceArray(SymbolicArray):
+    """
+    Array for OnlineFunc.combine
+    """
+    def __init__(self, varname: str = "", code: Node = Var(" "),
+                 prev=[], shape_idx: list = ["block_M", "block_N"]):
+        super().__init__(varname, code, prev, shape_idx)
+        
+    def get_reduce(self, op: Literal["sum", "max", "abssum"]):
+        """
+        get col reduce result of array
+        """
+        shape_idx = self.shape_idx[:-2] + [self.shape_idx[-1]]
 
+        if op == "sum":
+            return self.op(
+                ColReduceSum, shape_idx=shape_idx, varname_suffix="sum")
+        elif op == "max":
+            return self.op(
+                ColReduceMax, shape_idx=shape_idx, varname_suffix="max")
+        elif op == "abssum":
+            return self.op(
+                ColReduceAbsSum, shape_idx=shape_idx, varname_suffix="abssum")
+        else:
+            raise NotImplementedError
+        
 class SymbolicTensor(SymbolScalar):
     """
     Tensor for CustomIO

@@ -145,6 +145,14 @@ class Log(Node):
 
     def _backward(self, grad: Node):
         raise NotImplementedError
+    
+class Log2(Node):
+    def __init__(self, node: Node):
+        super().__init__("Log2")
+        self.inputs = [node]
+
+    def _backward(self, grad: Node):
+        raise NotImplementedError
 
 
 class Tanh(Node):
@@ -209,6 +217,31 @@ class ReduceAbsSum(Node):
 
     def _backward(self, grad: Node):
         raise NotImplementedError
+
+class ColReduceMax(Node):
+    def __init__(self, node: Node):
+        super().__init__("ColReduceMax")
+        self.inputs = [node]
+
+    def _backward(self, grad: Node):
+        raise NotImplementedError
+    
+class ColReduceSum(Node):
+    def __init__(self, node: Node):
+        super().__init__("ColReduceSum")
+        self.inputs = [node]
+
+    def _backward(self, grad: Node):
+        raise NotImplementedError 
+    
+class ColReduceAbsSum(Node):
+    def __init__(self, node: Node):
+        super().__init__("ColReduceAbsSum")
+        self.inputs = [node]
+
+    def _backward(self, grad: Node):
+        raise NotImplementedError
+
 
 
 if __name__ == "__main__":

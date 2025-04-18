@@ -19,7 +19,19 @@ def to_tl_op(type: str, *args: SymbolScalar):
         code.add_line(
             f"T.reduce_abssum({args[1].varname}, {args[0].varname},dim=1)"
         )
-    elif type == "Sub" or type == "Add" or type == "Mul" or type == "Div" or type == "Neg" or type == "Exp" or type == "Log" or type == "Abs" or type == "Max" or type == "Tanh" or type == "MaxBwd":
+    elif type == "ColReduceSum":
+        code.add_line(
+            f"T.reduce_sum({args[1].varname}, {args[0].varname},dim=0)"
+        )
+    elif type == "ColReduceMax":
+        code.add_line(
+            f"T.reduce_max({args[1].varname}, {args[0].varname},dim=0, clear=True)"
+        )
+    elif type == "ColReduceAbsSum":
+        code.add_line(
+            f"T.reduce_abssum({args[1].varname}, {args[0].varname},dim=0)"
+        )
+    elif type == "Sub" or type == "Add" or type == "Mul" or type == "Div" or type == "Neg" or type == "Exp" or type == "Log" or type == "Abs" or type == "Max" or type == "Tanh" or type == "MaxBwd" or type == "Exp2" or type == "Log2":
         # args idx
         # note: assume input shape is validate: ["1",...] or [arg0[0], ...]
         idx_strs = []
@@ -61,6 +73,10 @@ def to_tl_op(type: str, *args: SymbolScalar):
             code.add_line(
                 f"{args[0].varname}[{idx_str}] = T.exp2({args[1].varname}{idx_strs[1]}*1.442695)"
             )
+        elif type == "Exp2":
+            code.add_line(
+                f"{args[0].varname}[{idx_str}] = T.exp2({args[1].varname}{idx_strs[1]})"
+            )
         elif type == "Mul":
             code.add_line(
                 f"{args[0].varname}[{idx_str}] = {args[1].varname}{idx_strs[1]} * {args[2].varname}{idx_strs[2]}"
@@ -72,6 +88,10 @@ def to_tl_op(type: str, *args: SymbolScalar):
         elif type == "Log":
             code.add_line(
                 f"{args[0].varname}[{idx_str}] = T.log2({args[1].varname}{idx_strs[1]}) * 0.69314718"
+            )
+        elif type == "Log2":
+            code.add_line(
+                f"{args[0].varname}[{idx_str}] = T.log2({args[1].varname}{idx_strs[1]})"
             )
         elif type == "Tanh":
             code.add_line(
