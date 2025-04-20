@@ -12,6 +12,14 @@ from functools import partial
 
 import operator
 
+from autotuner.arch import AttnDevice, H100
+current_device = torch.cuda.current_device()
+device_cap = torch.cuda.get_device_capability(current_device)
+try:
+    attn_device = AttnDevice[device_cap]()
+except KeyError:
+    attn_device = H100()
+
 # TL_GLOBAL_FUNC = """
 def fast_tanh(A, B):
     return T.call_extern("handle", "fasttanh", T.address_of(A), T.address_of(B))
@@ -216,7 +224,7 @@ def flashattn_bwd_preprocess(batch, heads, seq_len, dim, dimv):
 
 def get_bwd_configs():
     block_M = [64, 128]
-    block_N = [32, 64, 128]
+    block_N = [64, 128] if isinstance(attn_device, H100) else [32, 64, 128]
     thread_num = [128, 256]
     _configs = list(itertools.product(block_M, block_N, thread_num))
     
