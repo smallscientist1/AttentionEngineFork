@@ -147,6 +147,7 @@ class AttentionEngine:
             self.attention = partial(
                 cute_attn.flash_attn_func,
                 causal=True if mask_mod is not None else False)
+            self.block_mask = None
 
     def _select_lower_template(self, qkv_meta, custom_fwd_inputs, score_mod, mask_mod,
                     online_func, mask_value="-inf", tuned_config=None, infer_mask=False,
