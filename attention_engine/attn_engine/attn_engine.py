@@ -134,6 +134,7 @@ class AttentionEngine:
                 kernel_template=kernel_template)
 
         elif backend == "cute":
+            from core.lower.lower_cute import lower_cute
             # must be same with cute_template.py
             OUTPUT_DIR = osp.join(
                 osp.dirname(
@@ -159,6 +160,7 @@ class AttentionEngine:
             self.attention = partial(
                 cute_attn.flash_attn_func,
                 causal=True if mask_mod is not None else False)
+            self.block_mask = None
 
     def _select_lower_template(self, qkv_meta, custom_fwd_inputs, score_mod, mask_mod,
                     online_func, mask_value="-inf", tuned_config=None, infer_mask=False,
