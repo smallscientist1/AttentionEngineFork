@@ -1,4 +1,4 @@
-from ..transform.core import SymbolScalar, SymbolicArray, CustomIO
+from ..transform.core import SymbolScalar, SymbolicArray, SymbolicColReduceArray
 from ..transform.graph import Var, Const
 from ..utils import IndentedCode
 from typing import Tuple
@@ -34,17 +34,34 @@ def to_tl_op(type: str, *args: SymbolScalar):
     elif type == "Sub" or type == "Add" or type == "Mul" or type == "Div" or type == "Neg" or type == "Exp" or type == "Log" or type == "Abs" or type == "Max" or type == "Tanh" or type == "MaxBwd" or type == "Exp2" or type == "Log2":
         # args idx
         # note: assume input shape is validate: ["1",...] or [arg0[0], ...]
+        # assume not square: ["block_M", "block_M"]
         idx_strs = []
-        for _, arg in enumerate(args):
+        idx_str = [
+            f"i{i}" if idx != "1" else f"0" for i,
+            idx in enumerate(args[0].shape_idx)]
+        idx_str = ",".join(idx_str)
+        idx_strs.append(idx_str)
+        for _, arg in enumerate(args[1:]):
             input_idx = arg.shape_idx
-            idx_str = [
-                f"i{i}" if idx != "1" else f"0" for i,
-                idx in enumerate(input_idx)]
-            idx_str = ",".join(idx_str)
-            idx_strs.append(idx_str)
+            idx_str_t = []
+            target_i = 0
+            for i, idx in enumerate(input_idx):
+                if idx == "1":
+                    idx_str_t.append(f"0")
+                    continue
+                while target_i < len(args[0].shape_idx) and idx != args[0].shape_idx[target_i]:
+                    target_i += 1
+                if target_i >= len(args[0].shape_idx):
+                    print(
+                        f"Error: {args[0].varname} {args[0].shape_idx} {arg.varname} {arg.shape_idx}")
+                    idx_str_t.append(f"i{i}")
+                else:
+                    idx_str_t.append(f"i{target_i}")
+                    
+            idx_str_t = ",".join(idx_str_t)
+            idx_strs.append(idx_str_t)
         # [block_M,block_N]
         loop_str = ",".join(args[0].shape_idx)
-        idx_str = idx_strs[0]
 
         # for loop
         code.add_line(
