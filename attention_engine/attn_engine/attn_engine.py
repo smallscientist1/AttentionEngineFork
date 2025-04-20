@@ -91,6 +91,19 @@ class OnlineFunc:
         dscores = dp
         return dscores
 
+    @staticmethod
+    def combine(final_rowscales, ):
+        """combine kernel logic for split-k
+
+        Args:
+            final_rowscales
+
+        Returns:
+            o_scale: scale for acco chunk
+        """
+        o_scale = SymbolScalar("o_scale", Var("o_scale"))
+        return o_scale
+
 
 class AttentionEngine:
     def __init__(self, qkv_meta, custom_fwd_inputs, score_mod, mask_mod,
@@ -208,6 +221,10 @@ class AttentionEngine:
                                       mask_mod,
                                       online_func,
                                       custom_fwd_inputs,
+                                      qkv_meta[0].shape[0], # B
+                                        head, # headq
+                                        q_seqlen, # S
+                                        kv_len, # S
                                       qkv_meta[0].shape[3],
                                       qkv_meta[2].shape[3],
                                       tl_dtype_map[qkv_meta[0].dtype],

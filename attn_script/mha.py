@@ -85,7 +85,7 @@ class OnlineSoftmax(OnlineFunc):
 
 if __name__ == "__main__":
     B, H ,S, D, DV = 1,128,2048,D, 128
-    dynamic_shape = True
+    dynamic_shape = False # True
     dtype = torch.float16
     if dynamic_shape:
         qkv_meta = (
@@ -111,7 +111,7 @@ if __name__ == "__main__":
         custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
         online_func=online,
         tune=True, tune_file="attn_tl.json",
-        tune_bwd=True,
+        tune_bwd=False, # True,
         tune_file_bwd="attn_tl_bwd.json",
     )
 

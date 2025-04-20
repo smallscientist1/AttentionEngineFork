@@ -74,10 +74,10 @@ class OnlineSoftmax(OnlineFunc):
     def combine(final_rowscales, ):
         lse = final_rowscales["lse"]
         lse_max = lse.get_reduce("max")
-        row_sum = (lse - lse_max).exp()
+        row_sum = (lse - lse_max).exp2()
         row_sum_sum = row_sum.get_reduce("sum")
-        lse_sum = row_sum_sum.log() + lse_max
-        o_scale = (lse - lse_sum).exp()
+        lse_sum = row_sum_sum.log2() + lse_max
+        o_scale = (lse - lse_sum).exp2()
         return o_scale
 
     @staticmethod

@@ -30,6 +30,8 @@ def kernel(batch, heads, seq_len, seq_len_kv, dim, dimv,
     dtype = "{{tl_dtype}}" # "float16"
     accum_dtype = "float"
     
+    block_M2 = 128
+    
     # TODO: mask
     is_casual = {{is_inf_mask}} # True
     # shared_fuse = True
@@ -144,52 +146,49 @@ def kernel(batch, heads, seq_len, seq_len_kv, dim, dimv,
         Output_partial: T.Buffer(part_shape_o, dtype),
         Output: T.Buffer(shape_o, dtype),
     ):
-        with T.Kernel(T.ceildiv(seq_len, block_M), heads, batch, threads=128) as (bx, by, bz):
-            po_local = T.alloc_fragment([block_M, dim], dtype)
-            po_shared = T.alloc_shared([block_M, dim], dtype)
-            o_accum_local = T.alloc_fragment([block_M, dim], accum_dtype)
-            o_shared = T.alloc_shared([block_M, dim], dtype)
-            lse_local = T.alloc_fragment([num_split, block_M], dtype)
-            # lse_local2 = T.alloc_fragment([num_split, block_M], dtype)
-            # lse_shared = T.alloc_shared([num_split, block_M], dtype)
-            # lse_split_shared = T.alloc_shared([block_M], dtype)
-            lse_local_split = T.alloc_fragment([block_M], accum_dtype)
-            lse_logsum_local = T.alloc_fragment([block_M], accum_dtype)
-            lse_max_local = T.alloc_fragment([block_M], accum_dtype)
-            scale_local = T.alloc_fragment([block_M], accum_dtype)
+        with T.Kernel(T.ceildiv(seq_len, block_M2), heads, batch, threads=128) as (bx, by, bz):
+            po_local = T.alloc_fragment([block_M2, dim], dtype)
+            po_shared = T.alloc_shared([block_M2, dim], dtype)
+            o_accum_local = T.alloc_fragment([block_M2, dim], accum_dtype)
+            o_shared = T.alloc_shared([block_M2, dim], dtype)
+            
+            # lse_local = T.alloc_fragment([num_split, block_M], dtype)
+            # row_sum_local = T.alloc_fragment([num_split, block_M], dtype)
+            # lse_logsum_local = T.alloc_fragment([block_M], accum_dtype)
+            # lse_max_local = T.alloc_fragment([block_M], accum_dtype)
+            # scale_o_local = T.alloc_fragment([num_split, block_M], accum_dtype)
+            {{combinekernel_input_init | indent(12)}}
             
             T.annotate_layout(
                 {
                     o_accum_local: T.Fragment(o_accum_local.shape, forward_thread_fn=lambda i, j: i),
-                    lse_local_split: T.Fragment(lse_local_split.shape, forward_thread_fn=lambda i: i),
-                    # logsum_accum_local: T.Fragment(logsum_accum_local.shape, lambda i: i),
                     o_shared: tl.layout.make_swizzled_layout(o_shared),
                     po_shared: tl.layout.make_swizzled_layout(po_shared),
                 }
             )
 
-            T.clear(lse_logsum_local)
             T.clear(o_accum_local)
-            T.copy(g_lse[bz, by, :, bx * block_M : (bx + 1) * block_M,], lse_local)
-            # T.copy(glse[bz, by, :, bx * block_M : (bx + 1) * block_M,], lse_shared)
-            T.reduce_max(lse_local, lse_max_local, dim=0, clear=False)
-            for k in T.Pipelined(num_split):
-                T.copy(lse_local[k, :], lse_local_split)
-                for i in T.Parallel(block_M):
-                    lse_logsum_local[i] += T.exp2(lse_local_split[i] - lse_max_local[i])
-            for i in T.Parallel(block_M):
-                lse_logsum_local[i] = T.log2(lse_logsum_local[i]) + lse_max_local[i]
+            # T.copy(g_lse[bz, by, :, bx * block_M : (bx + 1) * block_M,], lse_local)
+            {{combinekernel_input_load | indent(12)}}
+            
+            # T.reduce_max(lse_local, lse_max_local, dim=0, clear=False)
+            # for i,j in T.Parallel(num_split, block_M):
+            #     row_sum_local[i, j] = T.exp2(lse_local[i, j] - lse_max_local[j])
+            # T.reduce_sum(row_sum_local, lse_logsum_local, dim=0)
+            # for i in T.Parallel(block_M):
+            #     lse_logsum_local[i] = T.log2(lse_logsum_local[i]) + lse_max_local[i]
+            # for i, j in T.Parallel(num_split, block_M):
+            #     scale_o_local[i, j] = T.exp2(lse_local[i, j] - lse_logsum_local[j])
+            {{combinekernel_combine | indent(12)}}
+            
             for k in T.Pipelined(num_split, num_stages=2):
-            # for k in T.serial(num_split): # for ablation
-                T.copy(Output_partial[bz, bx * block_M : (bx + 1) * block_M, by, k, :], po_shared)
+                T.copy(Output_partial[bz, bx * block_M2:(bx + 1) * block_M2, by, k, :], po_shared)
                 T.copy(po_shared, po_local)
-                T.copy(lse_local[k, :], lse_local_split)
-                for i in T.Parallel(block_M):
-                    scale_local[i] = T.exp2(lse_local_split[i] - lse_logsum_local[i])
-                for i, j in T.Parallel(block_M, dim):
-                    o_accum_local[i, j] += po_local[i, j] * scale_local[i]
+                for i, j in T.Parallel(block_M2, dim):
+                    # o_accum_local[i, j] += po_local[i, j] * scale_o_local[k, i]
+                    o_accum_local[i, j] += po_local[i, j] * {{combinekernel_scale_o_varname}}[k, i]
             T.copy(o_accum_local, o_shared)
-            T.copy(o_shared, Output[bz, bx * block_M : (bx + 1) * block_M, by, :])
+            T.copy(o_shared, Output[bz, bx * block_M2 : (bx + 1) * block_M2, by, :])
 
     @T.prim_func
     def main(
@@ -208,6 +207,16 @@ def kernel(batch, heads, seq_len, seq_len_kv, dim, dimv,
 
     return main
 
+program = kernel(
+    {{BATCH}}, {{HEADS}}, {{SEQ_LEN}}, {{SEQ_LEN_KV}}, {{DIM}}, {{DIMV}},
+    4, {{block_M}}, {{block_N}}, {{stages}}, {{thread_num}}, {{shared_fuse}}
+)
+mod = tl.compile(
+    program,
+    out_idx={{output_idx_list}},
+    target="cuda",
+    execution_backend="dlpack",
+)
 # TL_INFERFACE = """
 class _attention(torch.autograd.Function):
     @staticmethod
@@ -222,15 +231,10 @@ class _attention(torch.autograd.Function):
             q = F.pad(q, (0, 0, 0 , 0, 0, {{block_M}} - N_CTXQ))
             N_CTXQ = {{block_M}}
             
-        num_split = 4
-        block_M = {{block_M}} # 128
-        block_N = {{block_N}} # 128 if D_HEAD <= 128 else 64
-        stages = {{stages}} # 2
-        thread_num = {{thread_num}} # 256
-        shared_fuse = {{shared_fuse}} # False
-        output_idx_list = {{output_idx_list}}
-        mod = tl.profiler.cached(kernel, output_idx_list, BATCH, H, N_CTXQ, N_CTXKV, D_HEAD, D_HEADV, num_split, block_M, block_N, stages, thread_num, shared_fuse)
+        global mod
         
+        num_split = 4
+        output_idx_list = {{output_idx_list}}
         O_partial = torch.empty(BATCH, N_CTXQ, H, num_split, D_HEADV, dtype=q.dtype, device=q.device)
         {{torch_alloc_final_rowscales | indent(8)}}
         

@@ -10,6 +10,7 @@ from torch import Tensor
 from typing import Optional, Union, Any
 
 import sympy
+import random
 
 # TODO: support online_func extern_input_tensor
 
@@ -33,6 +34,9 @@ def plus_count(func):
 
 
 class SymbolScalar:
+    """
+    symbolic scalar/array
+    """
     def __init__(self, varname: str, value: Node, prev=[], shape_idx: list = ["block_M"],
                  require_grad: bool = True, dtype="float"):
         self.varname = varname
@@ -60,7 +64,7 @@ class SymbolScalar:
         self.allow_reuse = allow_reuse
         
     def __repr__(self):
-        return f"SymbolScalar({self.varname}, {self.code}, {self.prev}, {self.shape_idx}, {self.require_grad})"
+        return f"SymbolScalar({self.varname}, {self.code}, {self.prev}, {self.shape_idx}, {self.require_grad}, {self.dtype})"
 
     @property
     def name(self):
@@ -75,6 +79,9 @@ class SymbolScalar:
     # @plus_count # TODO: plus count bug
     def op(self, code: Type[Node], others: list = [],
            shape_idx: list = None, varname_suffix: str = None):
+        """
+        op for symbolic scalar
+        """
         for i, other in enumerate(others):
             # if other is python scalar
             if isinstance(other, (int, float)):
@@ -232,6 +239,9 @@ class SymbolScalar:
 
     def log(self):
         return self.op(Log)
+    
+    def log2(self):
+        return self.op(Log2)
 
     def max(self, other):
         return self.op(Max, [other])
@@ -242,7 +252,7 @@ class SymbolScalar:
 
 class SymbolicArray(SymbolScalar):
     """
-    Array for OnlineFunc.online_fwd
+    2D Array for OnlineFunc.online_fwd
     """
 
     def __init__(self, varname: str = "", code: Node = Var(" "),
@@ -251,21 +261,48 @@ class SymbolicArray(SymbolScalar):
 
     def get_reduce(self, op: Literal["sum", "max", "abssum"]):
         """
-        get reduce result of array
+        get row reduce result of array
         """
+        shape_idx = self.shape_idx[:-1]
+
         if op == "sum":
             return self.op(
-                ReduceSum, shape_idx=self.shape_idx[:-1], varname_suffix="sum")
+                ReduceSum, shape_idx=shape_idx, varname_suffix="sum")
         elif op == "max":
             return self.op(
-                ReduceMax, shape_idx=self.shape_idx[:-1], varname_suffix="max")
+                ReduceMax, shape_idx=shape_idx, varname_suffix="max")
         elif op == "abssum":
             return self.op(
-                ReduceAbsSum, shape_idx=self.shape_idx[:-1], varname_suffix="abssum")
+                ReduceAbsSum, shape_idx=shape_idx, varname_suffix="abssum")
         else:
             raise NotImplementedError
 
+class SymbolicColReduceArray(SymbolScalar):
+    """
+    2D Array for OnlineFunc.combine
+    """
+    def __init__(self, varname: str = "", code: Node = Var(" "),
+                 prev=[], shape_idx: list = ["block_M", "block_N"]):
+        super().__init__(varname, code, prev, shape_idx)
+        
+    def get_reduce(self, op: Literal["sum", "max", "abssum"]):
+        """
+        get col reduce result of array
+        """
+        shape_idx = self.shape_idx[:-2] + [self.shape_idx[-1]]
 
+        if op == "sum":
+            return self.op(
+                ColReduceSum, shape_idx=shape_idx, varname_suffix="sum")
+        elif op == "max":
+            return self.op(
+                ColReduceMax, shape_idx=shape_idx, varname_suffix="max")
+        elif op == "abssum":
+            return self.op(
+                ColReduceAbsSum, shape_idx=shape_idx, varname_suffix="abssum")
+        else:
+            raise NotImplementedError
+        
 class SymbolicTensor(SymbolScalar):
     """
     Tensor for CustomIO

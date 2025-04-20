@@ -1,5 +1,5 @@
 # from ..attn_engine import OnlineFunc
-from ..transform.core import SymbolScalar, SymbolicArray, CustomIO
+from ..transform.core import SymbolScalar, SymbolicArray, CustomIO, SymbolicColReduceArray
 from ..transform.graph import Var, Const
 from ..utils import IndentedCode
 from ..codegen.tl_gen import generate_tl_from_dag
@@ -82,6 +82,10 @@ class lowerOutput:
     qkT: str = "qkT"
     dsT: str = "dsT"
     doosum_shared: str = "doosum_shared"
+    
+    # combine kernel
+    combinekernel_scale_o_varname: str = "scale_o"
+    combinekernel_combine: str = ""
 
 from .lower import lowerKernelBaseOutput
 
@@ -284,9 +288,30 @@ def lower_combine(online_func, lower_output: lowerOutput,
                       kernel_options: AttnFwdKernelOption=None,
                       bwd_kernel_options: AttnBwdKernelOption=None):
     combine = online_func.combine
-    final_rowscales = online_func.final_rowscales
+    final_rowscales = {}
+    for k, v in online_func.final_rowscales.items():
+        final_rowscales[k] = SymbolicColReduceArray(
+            v.varname, v.code, shape_idx=[
+                "num_split", "block_M2"
+            ]
+        )
     combine_o_scale = combine(final_rowscales)
     tl_code, input_vars = generate_tl_from_dag([combine_o_scale], )
+    # print(tl_code)
+    lower_output.combinekernel_combine = str(tl_code)
+    lower_output.combinekernel_scale_o_varname = combine_o_scale.varname
+    for input_var in input_vars.values():
+        kernel_options.add_intermediate_tensor(
+            input_var.varname, input_var.shape_idx, False, input_var.dtype
+        )
+    for k, v in final_rowscales.items():
+        kernel_options.add_input_tensor(
+            v.varname, v.shape_idx, False, ["batch", "heads", "num_split", "seq_len"], 
+            v.dtype,
+            [sp.simplify(ii) for ii in ["bz", "by", "0", "bx * block_M2"]],
+            [2, 3]
+        )
+        
     
 
 from .lower import lower_score_mod
@@ -349,16 +374,18 @@ def lower_custom_inputs(custom_fwd_inputs, lower_output: lowerOutput, kernel_opt
 
 def lower_tl(score_mod, block_mask, online_func,
              custom_fwd_inputs,
+             batch, heads, seq_len, seq_len_kv,
              dimqk, dimv, tl_dtype, mask_value, tuned_config=None):
 
-    lower_output = lowerOutput()
+    lower_output = lowerOutput(BATCH=batch, HEADS=heads, SEQ_LEN=seq_len,
+                              SEQ_LEN_KV=seq_len_kv, DIM=dimqk, DIMV=dimv)
     lower_output.tl_dtype = tl_dtype
     # TODO: mask_value: 0 or -inf
     lower_output.is_inf_mask = "True" if block_mask is not None and mask_value == "-inf" else "False"
 
     # tune
     if tuned_config is None:
-        tune_output = TunnerOutput()
+        tune_output = TunnerOutput(block_M="128", block_N="64", stages="2", thread_num="128", shared_fuse="False")
     else:
         tune_output = TunnerOutput(**tuned_config)
     # FWD split config
@@ -393,6 +420,11 @@ def lower_tl(score_mod, block_mask, online_func,
                                         len(online_func.final_rowscales))]
 
     lower_kernel(kernel_options, kernel_code_template)
+    # combine kernel
+    kernel_options2 = KernelOptionsBase()
+    kernel_code_template2 = lowerKernelBaseOutput("combine")
+    lower_combine(online_func, lower_output, kernel_options2, None)
+    lower_kernel(kernel_options2, kernel_code_template2)
 
     custom_fwd_inputs_list = (",".join(kernel_options.global_tensors_input.keys()) + ",") if len(kernel_options.global_tensors_input) > 0 else ""
     return TlAttnTemplate(
@@ -403,6 +435,9 @@ def lower_tl(score_mod, block_mask, online_func,
         custom_fwd_inputs_load_prolog=kernel_code_template.input_args_copy_prologue,
         final_rowscales_output=kernel_code_template.output_args,
         final_rowscales_save=kernel_code_template.output_args_copy_epilogue,
+        
+        combinekernel_input_init=kernel_code_template2.alloc,
+        combinekernel_input_load=kernel_code_template2.input_args_copy_prologue,
         **lower_custom_inputs_output.__dict__,
         **lower_online_func_output.__dict__,
         **lower_score_mod_output.__dict__,
