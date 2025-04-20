@@ -111,7 +111,7 @@ if __name__ == "__main__":
         custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
         online_func=online,
         tune=True, tune_file="attn_tl.json",
-        tune_bwd=False, # True,
+        tune_bwd=True,
         tune_file_bwd="attn_tl_bwd.json",
     )
 

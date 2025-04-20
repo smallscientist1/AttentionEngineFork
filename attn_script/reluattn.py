@@ -88,7 +88,8 @@ if __name__ == "__main__":
         qkv_meta,
         custom_fwd_inputs, score_mod=score_mod, mask_mod=None,
         online_func=OnlineIdentity(),
-        tune = True, tune_file = "reluattn_tune.json"
+        tune = True, tune_file = "reluattn_tune.json",
+        tune_bwd = True, tune_file_bwd = "reluattn_tune_bwd.json",
     )
     from benchmark.bench_utils import do_bench_reluattn
     do_bench_reluattn(mod, B, H, S, D, D, requires_grad=True)
