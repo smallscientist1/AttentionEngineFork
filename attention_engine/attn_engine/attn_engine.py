@@ -304,6 +304,8 @@ class AttentionEngine:
             self.block_mask = None
 
     def __call__(self, *args, **kargs):
+        if kargs.get("block_mask") is not None:
+            self.block_mask = kargs["block_mask"]
         if self.block_mask is not None:
             o = self.attention(*args, self.block_mask, **kargs)
         else:

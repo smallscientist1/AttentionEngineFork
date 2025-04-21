@@ -160,6 +160,7 @@ def print_debug(o, O_ref, rtol=1e-3, atol=1e-3, save_file=True):
     total_elements = o.numel()
     num_not_close = (~close_mask).sum().item()
     percentage_not_close = (num_not_close / total_elements) * 100
+    print(f"{num_not_close} elements are not close.")
     print(f"{percentage_not_close:.2f}% of the elements are not close.")
     print(
         f"Total elements: {total_elements}, Not close elements: {num_not_close}")

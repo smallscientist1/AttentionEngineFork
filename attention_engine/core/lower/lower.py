@@ -19,6 +19,15 @@ import torch.fx as fx
 
 accum_type = "float"
 
+# avoid nan
+def init_value_map_func(value):
+    if value == "-inf":
+        return "-1e38"
+    elif value == "0.0":
+        return "0.0"
+    else:
+        return value
+
 shape_idx_map_sp = {
     "batch": sp.simplify("bz"),
     "heads": sp.simplify("by"),
@@ -330,7 +339,7 @@ def lower_online_func(online_func, lower_output: lowerOutput,
     # 2. fill op for online_rowscales
     online_rowscales_initvalue = IndentedCode()
     for k, v in online_rowscales.items():  # v.code is Var
-        tl_init_value = v.code.name
+        tl_init_value = init_value_map_func(v.code.name)
         online_rowscales_initvalue.add_line(fill_op(v, tl_init_value))
 
     # 3. online_fwd func op def&call
@@ -719,6 +728,7 @@ def lower_tl(score_mod, block_mask, online_func,
             tlattn_template = TlBlockAttnTemplate
             output_idx_list = [i+1 for i in output_idx_list]
         else:
+            block_mask = None
             tlattn_template = TlAttnTemplate
         
         return tlattn_template(

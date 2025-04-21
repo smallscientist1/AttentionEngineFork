@@ -30,7 +30,6 @@ def kernel(batch, heads, seq_len, dim, dimv,
     accum_dtype = "float"
     block_mask_dtype = "int8"
     
-    # TODO: mask
     is_casual = {{is_casual}} # True
     # shared_fuse = True
     assert(downsample_len == seq_len_kv // block_N)
@@ -69,6 +68,9 @@ def kernel(batch, heads, seq_len, dim, dimv,
             {{custom_fwd_inputs_init | indent(12)}}
             
             block_mask = T.alloc_local([downsample_len], block_mask_dtype)
+            has_valid_block = T.alloc_var("bool")
+            q_idxl = T.alloc_fragment([1], "int32")
+            kv_idxl = T.alloc_fragment([1], "int32")
 
             T.annotate_layout({
                 Q_shared: tl.layout.make_swizzled_layout(Q_shared),
@@ -89,9 +91,11 @@ def kernel(batch, heads, seq_len, dim, dimv,
             loop_range = (
                 T.ceildiv((bx + 1) * block_M, block_N) if is_casual else T.ceildiv(seq_len, block_N)
             )
+            has_valid_block = False
 
             for k in T.Pipelined(loop_range, num_stages=num_stages):
                 if block_mask[k] != 0:
+                    has_valid_block = True
                     T.copy(K[bz, k * block_N : (k + 1) * block_N, by, :], K_shared)
 
                     # TODO: copy custom_fwd_input_tensor in score_mod&online_func
@@ -100,8 +104,12 @@ def kernel(batch, heads, seq_len, dim, dimv,
                     # TODO: naive solution: if reduce_max, -T.inf; if reduce_sum, 0
                     if (is_casual or {{is_mask_mod_code}}) and {{is_inf_mask}}:
                         for i, j in T.Parallel(block_M, block_N):
-                            {{q_idx}} = bx * block_M + i
-                            {{kv_idx}} = k * block_N + j
+                            q_idxl[0] = bx * block_M + i
+                            kv_idxl[0] = k * block_N + j
+                            {{q_idx}} = q_idxl[0]
+                            {{kv_idx}} = kv_idxl[0]
+                            # {{q_idx}} = bx * block_M + i
+                            # {{kv_idx}} = k * block_N + j
                             {{batch_idx}} = bz
                             {{head_idx}} = by
                             {{mask_mod_code | indent(28)}}
@@ -140,7 +148,8 @@ def kernel(batch, heads, seq_len, dim, dimv,
                     else:
                         T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
             # online_fwd_epilogue
-            {{online_func_epilogue | indent(12)}}
+            if has_valid_block:
+                {{online_func_epilogue | indent(16)}}
 
             T.copy(acc_o, Output[bz, bx * block_M : (bx + 1) * block_M, by, :])
 
@@ -386,13 +395,12 @@ class _attention(torch.autograd.Function):
         block_M = {{block_M}} # 128
         block_N = {{block_N}} # 128 if D_HEAD <= 128 else 64
         downsample_len = N_CTX // block_N
-        # stages = 0 for tilelang blocksparse
-        stages = 0 # {{stages}} # 2
+        stages = {{stages}} # 2
         thread_num = {{thread_num}} # 256
         shared_fuse = {{shared_fuse}} # False
         output_idx_list = {{output_idx_list}}
         program = kernel(BATCH, H, N_CTX, D_HEAD, D_HEADV, downsample_len, block_M, block_N, stages, thread_num, shared_fuse)
-        mod = tl.compile(program, out_idx=output_idx_list)
+        mod = tl.compile(program, out_idx=output_idx_list)# , execution_backend="dlpack")# , pass_configs={"tl.disable_tma_lower": True})
         if len(output_idx_list) == 1:
             o = mod(q, k, v, *custom_fwd_inputs, block_sparse_mask)
             final_scale = []
