@@ -113,6 +113,7 @@ if __name__ == "__main__":
         tune=True, tune_file="attn_tl.json",
         tune_bwd=True,
         tune_file_bwd="attn_tl_bwd.json",
+        infer_mask=False if dynamic_shape else True,
     )
 
     from benchmark.bench_utils import do_bench_attention
