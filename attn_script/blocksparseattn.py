@@ -14,11 +14,17 @@ Example of causal attention with online softmax
 
 
 BLOCK = 128
-# mask on attention score
-def block_sparse_mask(b, h, q_idx, kv_idx):
-    return torch.logical_and(q_idx >= kv_idx, q_idx//BLOCK < kv_idx//BLOCK + 2)
-def causal_mask(b, h, q_idx, kv_idx):
-    return q_idx >= kv_idx
+def generate_block_mask_and_mask():
+    def mask_mod(b, h, q_idx, kv_idx):
+        return torch.logical_and(q_idx//BLOCK >= kv_idx//BLOCK, q_idx//BLOCK < kv_idx//BLOCK + 2)
+    from core.transform.core import create_mask, create_block_mask
+    block_mask = create_block_mask(mask_mod, B, H, S, S, device="cuda", Q_BLOCK_SIZE=BLOCK, KV_BLOCK_SIZE=BLOCK)
+    mask = create_mask(mask_mod, B, H, S, S, device="cuda")
+    return block_mask, mask
+
+def true_mask_mod(b, h, q_idx, kv_idx):
+    return True
+
 D = 128
 softmax_scale = 1/D ** 0.5
 # elementwise on attention scores
@@ -102,21 +108,19 @@ if __name__ == "__main__":
 
     mod = AttentionEngine(
         qkv_meta,
-        custom_fwd_inputs, score_mod=score_mod, mask_mod=block_sparse_mask,
+        custom_fwd_inputs, score_mod=score_mod, mask_mod=None,
         online_func=online,
         tune=False, tune_file="mha_tune.json",
-        infer_mask=True
+        extern_block_mask=True,
     )
-    # TODO: input mask的方式，tune mask的方式。
 
     # test sliding window attention
     torch.cuda.manual_seed(0)
     q = torch.ones(B, S, H, D, dtype=dtype, device="cuda")
     k = torch.ones(B, S, H, D, dtype=dtype, device="cuda")
     v = torch.randn(B, S, H, DV, dtype=dtype, device="cuda")
-    o = mod(q,k,v)
-    from core.transform.core import create_mask
-    mask = create_mask(block_sparse_mask, B, H, S, S, device="cuda")
+    block_mask, mask = generate_block_mask_and_mask()
+    o = mod(q,k,v, block_mask=block_mask)
     def ref_attn(q,k,v):
         attn = torch.einsum("bqhd,bkhd->bhqk", q, k)
         attn = (attn * (1/D ** 0.5)).float()
@@ -126,9 +130,7 @@ if __name__ == "__main__":
         return torch.einsum("bhqk,bkhd->bqhd", attn.to(dtype), v)
     
     ref_o = ref_attn(q,k,v)
-    with open("o.txt", "w") as f:
-        f.write(str(o))
-    with open("ref_o.txt", "w") as f:
-        f.write(str(ref_o))
     print(torch.allclose(o, ref_o, atol=1e-2, rtol=1e-2))
+    from benchmark.bench_utils import print_debug
+    print_debug(o[:,:,:,:], ref_o[:,:,:,:], atol=1e-2, rtol=1e-2)
     

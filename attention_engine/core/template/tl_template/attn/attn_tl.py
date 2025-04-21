@@ -57,7 +57,7 @@ def kernel(batch, heads, seq_len, dim, dimv, tune=False):
     dtype = "{{tl_dtype}}" # "float16"
     accum_dtype = "float"
     
-    # TODO: mask
+    # TODO: fix has_valid_block
     is_casual = {{is_casual}} # True
     
     def kernel_func(

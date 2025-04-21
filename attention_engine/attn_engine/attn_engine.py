@@ -110,7 +110,8 @@ class AttentionEngine:
                  online_func, mask_value="-inf", device=H100(), backend="tl", 
                  tune=False, tune_file="", 
                  tune_bwd=False, tune_file_bwd="",
-                 infer_mask=False,
+                 infer_mask=True, infer_mask_block_M=128, infer_mask_block_N=128, 
+                 extern_block_mask=False,
                  kernel_template=None):
         # tunner
         # need_engine_fuse, fuse_config = decider(qkv_meta, device)
@@ -126,7 +127,8 @@ class AttentionEngine:
                 score_mod,
                 mask_mod,
                 online_func,
-                mask_value, infer_mask=infer_mask, 
+                mask_value, infer_mask=infer_mask, infer_mask_block_M=infer_mask_block_M, infer_mask_block_N=infer_mask_block_N, 
+                extern_block_mask=extern_block_mask, 
                 tune=tune,
                 tune_file=tune_file,
                 tune_bwd=tune_bwd,
@@ -163,7 +165,9 @@ class AttentionEngine:
             self.block_mask = None
 
     def _select_lower_template(self, qkv_meta, custom_fwd_inputs, score_mod, mask_mod,
-                    online_func, mask_value="-inf", tuned_config=None, infer_mask=False,
+                    online_func, mask_value="-inf", tuned_config=None, 
+                    infer_mask=False, infer_mask_block_M=128, infer_mask_block_N=128,
+                    extern_block_mask=False,
                     tune=False, tune_file="",
                     tune_bwd=False, tune_file_bwd="",
                     kernel_template=None):
@@ -248,13 +252,19 @@ class AttentionEngine:
                                 qkv_meta[2].shape[3],
                                 tl_dtype_map[qkv_meta[0].dtype],
                                 mask_value,
-                                tuned_config, infer_mask, 
+                                tuned_config, 
+                                infer_mask, 
+                                infer_mask_block_M=infer_mask_block_M, 
+                                infer_mask_block_N=infer_mask_block_N,
+                                extern_block_mask=extern_block_mask,
                                 tune=tune, tune_file=tune_file,
                                 tune_bwd=tune_bwd, tune_file_bwd=tune_file_bwd)
             return tl_code, block_mask
             
     def _compile_tl(self, qkv_meta, custom_fwd_inputs, score_mod, mask_mod,
-                    online_func, mask_value="-inf", tuned_config=None, infer_mask=False,
+                    online_func, mask_value="-inf", tuned_config=None, 
+                    infer_mask=False, infer_mask_block_M=128, infer_mask_block_N=128,
+                    extern_block_mask=False,
                     tune=False, tune_file="",
                     tune_bwd=False, tune_file_bwd="",
                     kernel_template=None):
@@ -273,7 +283,9 @@ class AttentionEngine:
             score_mod,
             mask_mod,
             online_func,
-            mask_value, tuned_config=tuned_config, infer_mask=infer_mask,
+            mask_value, tuned_config=tuned_config, 
+            infer_mask=infer_mask, infer_mask_block_M=infer_mask_block_M, infer_mask_block_N=infer_mask_block_N,
+            extern_block_mask=extern_block_mask,
             tune=tune,
             tune_file=tune_file,
             tune_bwd=tune_bwd,
@@ -304,8 +316,10 @@ class AttentionEngine:
             self.block_mask = None
 
     def __call__(self, *args, **kargs):
+        if kargs.get("block_mask") is not None:
+            self.block_mask = kargs["block_mask"]
         if self.block_mask is not None:
-            o = self.attention(*args, self.block_mask, **kargs)
+            o = self.attention(*args, self.block_mask)
         else:
             o = self.attention(*args, **kargs)
         return o
