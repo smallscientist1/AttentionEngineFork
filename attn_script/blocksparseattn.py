@@ -115,12 +115,17 @@ if __name__ == "__main__":
     )
 
     # test sliding window attention
+    test_bwd = True
     torch.cuda.manual_seed(0)
-    q = torch.ones(B, S, H, D, dtype=dtype, device="cuda")
-    k = torch.ones(B, S, H, D, dtype=dtype, device="cuda")
-    v = torch.randn(B, S, H, DV, dtype=dtype, device="cuda")
+    q = torch.randn(B, S, H, D, dtype=dtype, device="cuda", requires_grad=True)
+    k = torch.randn(B, S, H, D, dtype=dtype, device="cuda", requires_grad=True)
+    v = torch.randn(B, S, H, DV, dtype=dtype, device="cuda", requires_grad=True)
     block_mask, mask = generate_block_mask_and_mask()
     o = mod(q,k,v, block_mask=block_mask)
+    do = torch.randn_like(o, dtype=dtype, device="cuda")
+    if test_bwd:
+        o.backward(do, retain_graph=True)
+    
     def ref_attn(q,k,v):
         attn = torch.einsum("bqhd,bkhd->bhqk", q, k)
         attn = (attn * (1/D ** 0.5)).float()
@@ -132,5 +137,14 @@ if __name__ == "__main__":
     ref_o = ref_attn(q,k,v)
     print(torch.allclose(o, ref_o, atol=1e-2, rtol=1e-2))
     from benchmark.bench_utils import print_debug
-    print_debug(o[:,:,:,:], ref_o[:,:,:,:], atol=1e-2, rtol=1e-2)
+    # print_debug(o[:,:,:,:], ref_o[:,:,:,:], atol=1e-2, rtol=1e-2)
     
+    if test_bwd:
+        q_grad, k_grad, v_grad = q.grad.clone(), k.grad.clone(), v.grad.clone()
+        q.grad.zero_()
+        k.grad.zero_()
+        v.grad.zero_()
+        ref_o.backward(do)
+        print(torch.allclose(q.grad, q_grad, atol=1e-2, rtol=1e-2))
+        print(torch.allclose(k.grad, k_grad, atol=1e-2, rtol=1e-2))
+        print(torch.allclose(v.grad, v_grad, atol=1e-2, rtol=1e-2))

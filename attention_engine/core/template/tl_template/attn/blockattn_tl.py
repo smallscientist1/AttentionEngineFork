@@ -193,6 +193,7 @@ def flashattn_bwd_preprocess(batch, heads, seq_len, dim, dimv):
 
 # TL_KERNEL_BWD = """
 def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual, 
+                downsample_len_q, downsample_len_kv,
                 block_M, block_N, thread_num = 128*2):
     sm_scale = (1.0 / dim) ** 0.5
     scale = (1.0 / dim) ** 0.5 * 1.44269504  # log2(e)
@@ -202,6 +203,13 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual,
     seq_len_kv = seq_len
     dtype = "{{tl_dtype}}" # "float16"
     accum_dtype = "float"
+    
+    assert(downsample_len_kv <= seq_len_kv // block_N)
+    assert(downsample_len_q <= seq_len // block_M)
+    block_M_ratio = seq_len_kv // block_M // downsample_len_q
+    block_N_ratio = seq_len // block_N // downsample_len_kv
+    block_mask_shape = [batch, heads, downsample_len_q, downsample_len_kv]
+    block_mask_dtype = "int8"
 
 # TL_MAIN_BWD = """
     @T.macro
@@ -236,6 +244,7 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual,
         # custom_bwd_inputs
         {{custom_bwd_inputs | indent(8)}}
 
+        BlockSparseMask: T.Buffer(block_mask_shape, block_mask_dtype), # type: ignore
         dQ: T.Buffer(shape, accum_dtype), # type: ignore
         dK: T.Buffer(shape, dtype), # type: ignore
         dV: T.Buffer(shape_v, dtype), # type: ignore
@@ -294,73 +303,74 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, is_casual,
             loop_ed = T.ceildiv(seq_len, block_N)
 
             for k in T.Pipelined(loop_st, loop_ed, num_stages=2):
-                T.copy(Q[bz, k * block_N : (k + 1) * block_N, bx, :], q)
-                {{custom_fwd_inputs_load_shared_bwd | indent(16)}}
-                T.clear(qkT)
-                T.gemm(K_shared, q, qkT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
-                
-                # score_mod
-                score_mod({{score_mod_inputs_bwd_list}}) # qkT,
+                if BlockSparseMask[bz, bx, k//block_N_ratio, by//block_M_ratio] !=0:
+                    T.copy(Q[bz, k * block_N : (k + 1) * block_N, bx, :], q)
+                    {{custom_fwd_inputs_load_shared_bwd | indent(20)}}
+                    T.clear(qkT)
+                    T.gemm(K_shared, q, qkT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                    
+                    # score_mod
+                    score_mod({{score_mod_inputs_bwd_list}}) # qkT,
 
-                # final_rowscales_load
-                {{final_rowscales_load | indent(16)}}
+                    # final_rowscales_load
+                    {{final_rowscales_load | indent(20)}}
 
-                # online_func_fwd
-                {{ online_func_fwd | indent(16) }}
-                
-                # TODO: is causal
-                if is_casual or {{is_mask_mod_code}}:
-                    for i, j in T.Parallel(block_M, block_N):
-                        {{q_idx}} = k * block_N + j
-                        {{kv_idx}} =  by * block_M + i
-                        {{batch_idx}} = bz
-                        {{head_idx}} = bx
-                        {{mask_mod_code | indent(24)}}
-                        {{score_mod_output_var}}[i, j] = T.if_then_else(
-                            {{mask_output}}, {{score_mod_output_var}}[i, j], 0
-                        )
-                
-                T.copy(dO[bz, k * block_N : (k + 1) * block_N, bx, :], do)
-                T.clear(dsT)
-                T.gemm(V_shared, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
-                
-                T.copy({{score_mod_output_var}}, qkT_cast)
-                T.gemm(qkT_cast, do, dv, policy=T.GemmWarpPolicy.FullRow)
+                    # online_func_fwd
+                    {{ online_func_fwd | indent(20) }}
+                    
+                    # TODO: is causal
+                    if is_casual or {{is_mask_mod_code}}:
+                        for i, j in T.Parallel(block_M, block_N):
+                            {{q_idx}} = k * block_N + j
+                            {{kv_idx}} =  by * block_M + i
+                            {{batch_idx}} = bz
+                            {{head_idx}} = bx
+                            {{mask_mod_code | indent(28)}}
+                            {{score_mod_output_var}}[i, j] = T.if_then_else(
+                                {{mask_output}}, {{score_mod_output_var}}[i, j], 0
+                            )
+                    
+                    T.copy(dO[bz, k * block_N : (k + 1) * block_N, bx, :], do)
+                    T.clear(dsT)
+                    T.gemm(V_shared, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                    
+                    T.copy({{score_mod_output_var}}, qkT_cast)
+                    T.gemm(qkT_cast, do, dv, policy=T.GemmWarpPolicy.FullRow)
 
-                # custom_bwd_inputs_load
-                {{custom_bwd_inputs_load | indent(16)}}
+                    # custom_bwd_inputs_load
+                    {{custom_bwd_inputs_load | indent(20)}}
 
-                # T.clear(dsT)
-                # T.gemm(V_local, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                    # T.clear(dsT)
+                    # T.gemm(V_local, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
-                if is_casual or {{is_mask_mod_code}}:
-                    for i, j in T.Parallel(block_M, block_N):
-                        {{q_idx}} = k * block_N + j
-                        {{kv_idx}} =  by * block_M + i
-                        {{batch_idx}} = bz
-                        {{head_idx}} = bx
-                        {{mask_mod_code | indent(24)}}
-                        dsT[i, j] = T.if_then_else(
-                            {{mask_output}}, dsT[i, j], 0
-                        )
+                    if is_casual or {{is_mask_mod_code}}:
+                        for i, j in T.Parallel(block_M, block_N):
+                            {{q_idx}} = k * block_N + j
+                            {{kv_idx}} =  by * block_M + i
+                            {{batch_idx}} = bz
+                            {{head_idx}} = bx
+                            {{mask_mod_code | indent(28)}}
+                            dsT[i, j] = T.if_then_else(
+                                {{mask_output}}, dsT[i, j], 0
+                            )
 
-                # custom_bwd
-                {{custom_bwd_body | indent(16)}}
-                
-                # score_mod_backward
-                score_mod_backward({{score_mod_bwd_inputs_list}}) #  qkT, 
-                  
-                                
-                T.copy(dsT, dsT_cast)
-                T.gemm(dsT_cast, q, dk, policy=T.GemmWarpPolicy.FullRow)
+                    # custom_bwd
+                    {{custom_bwd_body | indent(20)}}
+                    
+                    # score_mod_backward
+                    score_mod_backward({{score_mod_bwd_inputs_list}}) #  qkT, 
+                    
+                                    
+                    T.copy(dsT, dsT_cast)
+                    T.gemm(dsT_cast, q, dk, policy=T.GemmWarpPolicy.FullRow)
 
-                T.copy(dsT_cast, dsT_shared)
-                T.clear(dq)
-                # T.gemm(dsT_shared, K_local_T, dq, transpose_A=True)
-                T.gemm(dsT_shared, K_shared, dq, transpose_A=True, policy=T.GemmWarpPolicy.FullCol)
-                for i, j in T.Parallel(block_N, dim):
-                    if k * block_N + i < seq_len:
-                        T.atomic_add(dQ[bz, k * block_N + i, bx, j], dq[i, j])
+                    T.copy(dsT_cast, dsT_shared)
+                    T.clear(dq)
+                    # T.gemm(dsT_shared, K_local_T, dq, transpose_A=True)
+                    T.gemm(dsT_shared, K_shared, dq, transpose_A=True, policy=T.GemmWarpPolicy.FullCol)
+                    for i, j in T.Parallel(block_N, dim):
+                        if k * block_N + i < seq_len:
+                            T.atomic_add(dQ[bz, k * block_N + i, bx, j], dq[i, j])
             T.copy(dv, dV[bz, by * block_M : (by + 1) * block_M, bx, :])
             T.copy(dk, dK[bz, by * block_M : (by + 1) * block_M, bx, :])
 
@@ -388,6 +398,36 @@ def flashattn_bwd_postprocess(batch, heads, seq_len, dim, dimv):
 
     return flash_bwd_post
 
+block_M = {{block_M}} # 128
+block_N = {{block_N}} # 128 if D_HEAD <= 128 else 64
+stages = {{stages}} # 2
+thread_num = {{thread_num}} # 256
+shared_fuse = {{shared_fuse}} # False
+
+block_mask_M = {{infer_mask_block_M}}# 128
+block_mask_N = {{infer_mask_block_N}}# 128
+downsample_len_q = {{SEQ_LEN}} // block_mask_M
+downsample_len_kv = {{SEQ_LEN}} // block_mask_N
+
+program = kernel({{BATCH}}, {{HEADS}}, {{SEQ_LEN}}, {{DIM}}, {{DIMV}}, downsample_len_q, downsample_len_kv, block_M, block_N, stages, thread_num, shared_fuse)
+mod = tl.compile(program, out_idx={{output_idx_list}})# , execution_backend="dlpack")# , pass_configs={"tl.disable_tma_lower": True})
+        
+mod_prep = tl.compile(
+    flashattn_bwd_preprocess({{BATCH}}, {{HEADS}}, {{SEQ_LEN}}, {{DIM}}, {{DIMV}}), 
+    out_idx=[2],
+)
+mod_post = tl.compile(
+    flashattn_bwd_postprocess({{BATCH}}, {{HEADS}}, {{SEQ_LEN}}, {{DIM}}, {{DIMV}}), 
+    out_idx=[1],
+)
+mod_bwd = tl.compile(
+    flashattn_bwd(
+        {{BATCH}}, {{HEADS}}, {{SEQ_LEN}}, {{DIM}}, {{DIMV}}, {{is_casual}}, 
+        downsample_len_q, downsample_len_kv, {{block_M_bwd}}, {{block_N_bwd}}, {{thread_num_bwd}}
+    ),
+    out_idx={{bwd_output_idx_list}},
+)
+
 # TL_INFERFACE = """
 class _attention(torch.autograd.Function):
     @staticmethod
@@ -395,55 +435,39 @@ class _attention(torch.autograd.Function):
         custom_fwd_inputs, block_sparse_mask = custom_fwd_inputs[:-1], custom_fwd_inputs[-1]
         BATCH, N_CTX, H, D_HEAD = q.shape
         D_HEADV = v.shape[-1]
-        block_M = {{block_M}} # 128
-        block_N = {{block_N}} # 128 if D_HEAD <= 128 else 64
-        block_mask_M = {{infer_mask_block_M}}# 128
-        block_mask_N = {{infer_mask_block_N}}# 128
-        downsample_len_q = N_CTX // block_mask_M
-        downsample_len_kv = N_CTX // block_mask_N
-        stages = {{stages}} # 2
-        thread_num = {{thread_num}} # 256
-        shared_fuse = {{shared_fuse}} # False
+
         output_idx_list = {{output_idx_list}}
-        program = kernel(BATCH, H, N_CTX, D_HEAD, D_HEADV, downsample_len_q, downsample_len_kv, block_M, block_N, stages, thread_num, shared_fuse)
-        mod = tl.compile(program, out_idx=output_idx_list)# , execution_backend="dlpack")# , pass_configs={"tl.disable_tma_lower": True})
+        global mod
         if len(output_idx_list) == 1:
             o = mod(q, k, v, *custom_fwd_inputs, block_sparse_mask)
             final_scale = []
         else:
             o, *final_scale = mod(q, k, v, *custom_fwd_inputs, block_sparse_mask)
-        ctx.save_for_backward(q, k, v, o, *custom_fwd_inputs, *final_scale)
+        ctx.save_for_backward(q, k, v, o, block_sparse_mask, *custom_fwd_inputs, *final_scale)
         return o
     
     @staticmethod
     def backward(ctx, do):
-        q, k, v, o, *tmp = ctx.saved_tensors
+        q, k, v, o, block_sparse_mask, *tmp = ctx.saved_tensors
         BATCH, N_CTX, H, D_HEAD = q.shape
         D_HEAD_V = v.shape[-1]
         # custom_fwd_inputs = tmp[:-{{final_rowscales_length}}]
         # final_rowscales = tmp[-{{final_rowscales_length}}:]
         maybe_contiguous = lambda x: x.contiguous() if x.stride(-1) != 1 else x
         do, q, k, v, o = [maybe_contiguous(x) for x in (do, q, k, v, o)]
-        block_M = {{block_M_bwd}} # 128
-        block_N = {{block_N_bwd}} # 64 
-        thread_num = {{thread_num_bwd}} # 256
-        mod_prep = tl.profiler.cached(flashattn_bwd_preprocess, [2], BATCH, H, N_CTX, D_HEAD, D_HEAD_V)
-        mod_post = tl.profiler.cached(flashattn_bwd_postprocess, [1], BATCH, H, N_CTX, D_HEAD, D_HEAD_V)
+        
+        global mod_prep, mod_post, mod_bwd
         if {{isused_doosum}}:
             delta = mod_prep(o, do)
         # TODO: causal
-        is_casual = {{is_casual}}
-        output_idx_list = {{bwd_output_idx_list}}
-        mod = tl.profiler.cached(
-            flashattn_bwd, output_idx_list, BATCH, H, N_CTX, D_HEAD, D_HEAD_V, is_casual, block_M, block_N, thread_num
-        )
+        
         if {{isused_doosum}}:
-            dq, dk, dv = mod(q, k, v, do, *tmp, delta)
+            dq, dk, dv = mod_bwd(q, k, v, do, *tmp, delta, block_sparse_mask)
         else:
-            dq, dk, dv = mod(q, k, v, do, *tmp)
+            dq, dk, dv = mod_bwd(q, k, v, do, *tmp, block_sparse_mask)
         dq = mod_post(dq)
         none_list = [None] * len(tmp)
-        return dq, dk, dv, *none_list
+        return dq, dk, dv, *none_list, None
 
 attention = _attention.apply
 
