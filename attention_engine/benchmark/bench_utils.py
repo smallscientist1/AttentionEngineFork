@@ -733,7 +733,36 @@ def do_bench_sigmoidattn(attn, B, H, S, D, DV,
         dK, key.grad = key.grad.clone(), None
         dV, value.grad = value.grad.clone(), None
 
-    from flash_sigmoid import flash_attn_func
+    try:
+        from flash_sigmoid import flash_attn_func
+    except:
+        def flash_attn_func(query, key, value, softmax_scale, causal, sigmoid_bias):
+            dim = query.shape[-1]
+            num_head_groups = query.shape[2] // key.shape[2]
+            if softmax_scale is None:
+                softmax_scale = 1 / dim** 0.5
+
+            query = rearrange(
+                query, 'b s (h g) d -> b s g h d',
+                g=num_head_groups)  # [batch_size, num_head_groups, groups, dim]
+            scores = einsum(query, key,
+            'b s g h d, b t h d -> b g h s t')
+            if causal:
+                seqlenq = query.shape[1]
+                seqlenk = key.shape[1]
+                mask = torch.tril(
+                    torch.ones(
+                        seqlenq, seqlenk, device=scores.device))
+                mask = mask.unsqueeze(0).unsqueeze(0)
+                scores = scores.masked_fill(mask == 0, float('-inf'))
+            scores *= softmax_scale
+            scores += sigmoid_bias.to(scores.device)
+            attention = F.sigmoid(scores)
+
+            out = einsum(attention, value,
+                 'b g h s t, b t h d -> b g h s d')
+            out = rearrange(out, 'b g h s d -> b s (h g) d') 
+            return out
 
     o_ref = flash_attn_func(
         query,

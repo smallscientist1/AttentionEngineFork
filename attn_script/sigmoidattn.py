@@ -65,6 +65,7 @@ if __name__ == "__main__":
         qkv_meta,
         custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
         online_func=OnlineIdentity(),
+        infer_mask=False
     )
     from benchmark.bench_utils import do_bench_sigmoidattn
     do_bench_sigmoidattn(mod, B, H, S, D, D, requires_grad=True)
