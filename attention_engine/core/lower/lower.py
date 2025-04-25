@@ -732,6 +732,7 @@ def lower_tl(score_mod, block_mask, online_func,
         if (block_mask is not None and not is_causal_mask(block_mask, infer_mask_block_M, infer_mask_block_N)) or extern_block_mask:
             tlattn_template = TlBlockAttnTemplate
             output_idx_list = [i+1 for i in output_idx_list]
+            bwd_output_idx_list = [i+1 for i in bwd_output_idx_list]
         else:
             block_mask = None
             tlattn_template = TlAttnTemplate
@@ -758,6 +759,7 @@ def lower_tl(score_mod, block_mask, online_func,
         if extern_block_mask:
             tlattn_template = TlBlockAttnTemplate
             output_idx_list = [i+1 for i in output_idx_list]
+            bwd_output_idx_list = [i+1 for i in bwd_output_idx_list]
         else:
             tlattn_template = TlAttnTemplate
         lower_output.is_casual = "False"
