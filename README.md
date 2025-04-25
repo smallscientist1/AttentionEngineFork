@@ -39,6 +39,12 @@ pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel
 git clone --recursive https://github.com/smallscientist1/AttentionEngine.git
 ```
 - install **TileLang**: change directory `cd 3rd_parties/tilelang` and build TileLang from source according to this link (https://github.com/tile-ai/tilelang/blob/main/docs/get_started/Installation.md#method-2-install-from-source-using-the-bundled-tvm-submodule)
+
+> 
+> **Note 2025.4.25**
+> 
+> We are currently migrating to newer version of TileLang. Some examples may need to install a later version of TileLang(https://github.com/smallscientist1/tilelang/tree/attnengine_upstream_new)
+
 - export some environment variables
 ```
 export PYTHONPATH="$(pwd)/attention_engine:$(pwd)/3rd_parties/tilelang:$PYTHONPATH"
