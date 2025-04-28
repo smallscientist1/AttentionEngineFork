@@ -295,6 +295,8 @@ def chunk_o(
     seq_len = seqlen
     heads = head
     dimqk = dim
+    
+    BT2 = BT
 
     assert(head % headk == 0)
     head_headk_ratio = head // headk

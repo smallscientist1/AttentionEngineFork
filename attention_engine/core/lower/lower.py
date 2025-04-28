@@ -757,6 +757,8 @@ def lower_tl(score_mod, block_mask, online_func,
         
     else: # always use dense attn with causal=False or blocksparse attn with causal=False
         if extern_block_mask:
+            lower_output.infer_mask_block_N = str(infer_mask_block_N)
+            lower_output.infer_mask_block_M = str(infer_mask_block_M)
             tlattn_template = TlBlockAttnTemplate
             output_idx_list = [i+1 for i in output_idx_list]
             bwd_output_idx_list = [i+1 for i in bwd_output_idx_list]
