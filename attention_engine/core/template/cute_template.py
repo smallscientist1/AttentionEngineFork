@@ -17,7 +17,7 @@ if not os.path.exists(OUTPUT_DIR):
 
 
 class CuteAttnTemplate:
-    def __init__(self,
+    def __init__(self, template_dir=TEMPLATE_DIR, output_dir=OUTPUT_DIR,
                  **kwargs):
         for root, dirs, files in os.walk(TEMPLATE_DIR):
             for file in files:

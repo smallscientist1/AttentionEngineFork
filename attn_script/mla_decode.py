@@ -86,7 +86,7 @@ class OnlineSoftmax(OnlineFunc):
         return dscores
 
 if __name__ == "__main__":
-    B, H, G ,S, D, DV = 128,128, 1,8192, D, 512
+    B, H, G ,S, D, DV = 8, 128, 1, 4096, D, 512
     # D = DV + D_pe = 512 + 64 = 576
     dtype = torch.float16
     qkv_meta = (
@@ -104,7 +104,7 @@ if __name__ == "__main__":
         qkv_meta,
         custom_fwd_inputs, score_mod=score_mod, mask_mod=None,
         online_func=online,
-        kernel_template="mla_decode"
+        kv_shared=True,
     )
     
     q = torch.randn(B, 1, H, DV, dtype=dtype, device="cuda")
@@ -126,4 +126,6 @@ if __name__ == "__main__":
         rep=100,
     )
     print("latency: ", latency)
+    flops = B * S * H * (D + DV) * 2
+    print("flops/s: ", flops / latency)
     

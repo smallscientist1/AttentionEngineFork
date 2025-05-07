@@ -243,7 +243,7 @@ def lower_score_mod(score_mod, custom_fwd_inputs,
 
 def lower_cute(score_mod, block_mask, online_func,
                custom_fwd_inputs,
-               dimqk, dimv, cutlass_dtype):
+               dimqk, dimv, cutlass_dtype, template_dir=None):
 
     lower_cute_output = LowerCuteOutput()
     lower_cute_output.dimqk = str(dimqk)
@@ -259,6 +259,8 @@ def lower_cute(score_mod, block_mask, online_func,
     if "softmax_lse_ptr" in lower_cute_output.global_ptr_params_def:
         lower_cute_output.global_ptr_params_def_bwd = ""
 
+    if template_dir is not None:
+        lower_cute_output.template_dir = template_dir
     return CuteAttnTemplate(
         **lower_cute_output.__dict__,
     )()
