@@ -12,7 +12,7 @@ cc_flag.append("-gencode")
 cc_flag.append("arch=compute_90a,code=sm_90a")
 
 repo_dir = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../../"))
-cutlass_dir = Path("/cfy/FlashMLA/csrc/cutlass") # repo_dir / "3rd_parties" / "cutlass"
+cutlass_dir = repo_dir / "3rd_parties" / "cutlass_39"
 
 sources = [
     os.path.join(os.path.dirname(__file__), "flash_api.cpp"),
