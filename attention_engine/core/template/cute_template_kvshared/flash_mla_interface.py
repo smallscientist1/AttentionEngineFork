@@ -3,6 +3,7 @@ from typing import Optional, Tuple
 import torch
 
 # import flash_mla_cuda
+import torch.utils.cpp_extension
 import os
 from pathlib import Path
 
@@ -20,7 +21,7 @@ sources = [
     os.path.join(os.path.dirname(__file__), "kernels", "splitkv_mla.cu"),
 ]
 flash_mla_cuda = torch.utils.cpp_extension.load(
-    name="flash_mla_hopper_cuda"+"{{dimqk}}_{{dimv}}_{{cutlass_dtype}}".replace("::", "_").replace(" ", "_")
+    name="flash_mla_hopper_cuda"+"{{dimqk}}_{{dimv}}_{{cutlass_dtype}}".replace("::", "_").replace(" ", "_"),
     sources=sources,
     extra_cflags=[
         "-O3", "-std=c++17", "-DNDEBUG", "-Wno-deprecated-declarations"
@@ -44,6 +45,7 @@ flash_mla_cuda = torch.utils.cpp_extension.load(
         str(cutlass_dir / "include"),
     ],
     with_cuda=True,
+    # build_directory=os.path.expanduser("~/.cache/torch_extensions/flash_mla_cuda"),
 )
 
 

@@ -137,26 +137,27 @@ class AttentionEngine:
 
         elif backend == "cute":
             from core.lower.lower_cute import lower_cute
-            if kv_shared:
-                template_dir = osp.join(
-                    osp.dirname(
-                        osp.abspath(__file__)),
-                    "../core/template/cute_template")
-            else:
-                template_dir = osp.join(
-                    osp.dirname(
-                        osp.abspath(__file__)),
-                    "../core/template/cute_template_kvshared")
             # must be same with cute_template.py
             OUTPUT_DIR = osp.join(
                 osp.dirname(
                     osp.abspath(__file__)),
                 "../core/template/cute_template_output")
+            if not kv_shared:
+                template_dir = osp.join(
+                    osp.dirname(
+                        osp.abspath(__file__)),
+                    "../core/template/cute_template")
+                file_path = os.path.join(OUTPUT_DIR, "flash_attn_interface.py")
+            else:
+                template_dir = osp.join(
+                    osp.dirname(
+                        osp.abspath(__file__)),
+                    "../core/template/cute_template_kvshared")
+                file_path = os.path.join(OUTPUT_DIR, "flash_mla_interface.py")
             cutlass_dtype_map = {
                 torch.float16: "cutlass::half_t",
                 torch.bfloat16: "cutlass::bfloat16_t",
             }
-            file_path = os.path.join(OUTPUT_DIR, "flash_attn_interface.py")
             lower_cute(score_mod,
                        mask_mod,
                        online_func,
@@ -182,7 +183,7 @@ class AttentionEngine:
                 h_kv = qkv_meta[2].shape[1]
                 seqlen_k = qkv_meta[2].shape[2]
                 head_dim_v = qkv_meta[2].shape[3]
-                cache_seqlens = torch.full((b,), seqlen_k, dtype=torch.int32)
+                cache_seqlens = torch.full((b,), seqlen_k, dtype=torch.int32, device="cuda")
                 tile_scheduler_metadata, num_split = cute_attn.get_mla_metadata(
                     cache_seqlens,
                     s_q * h_q // h_kv,
@@ -192,7 +193,7 @@ class AttentionEngine:
                 max_seqlen_pad = ((max_seqlen+255) // 256) * 256
                 block_size = 64
                 block_table = torch.arange(
-                    b * max_seqlen_pad // 64, dtype=torch.int32
+                    b * max_seqlen_pad // 64, dtype=torch.int32, device="cuda"
                 ).view(b, max_seqlen_pad // 64)
                 self.attention = partial(
                     cute_attn.flash_mla_with_kvcache,
