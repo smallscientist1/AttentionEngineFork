@@ -86,7 +86,7 @@ class OnlineSoftmax(OnlineFunc):
         return dscores
 
 if __name__ == "__main__":
-    B, H, G ,S, D, DV = 8, 128, 1, 4096, D, 512
+    B, H, G ,S, D, DV = 8, 128, 1, 8192, D, 512
     # D = DV + D_pe = 512 + 64 = 576
     dtype = torch.float16
     qkv_meta = (
@@ -105,25 +105,26 @@ if __name__ == "__main__":
         custom_fwd_inputs, score_mod=score_mod, mask_mod=None,
         online_func=online,
         kv_shared=True,
+        backend="cute",
     )
     
-    q = torch.randn(B, 1, H, DV, dtype=dtype, device="cuda")
-    q_pe = torch.randn(B, 1, H, D-DV, dtype=dtype, device="cuda")
+    q = torch.randn(B, 1, H, D, dtype=dtype, device="cuda")
     KV = torch.randn(B, S, G, DV, dtype=dtype, device="cuda")
     k_pe = torch.randn(B, S, G, D-DV, dtype=dtype, device="cuda")
+    KV = torch.concat([KV, k_pe], dim=-1)
     
     o = mod(
-        q, q_pe,
-        KV, k_pe,
+        q,
+        KV
     )
     from tilelang.profiler import do_bench
     latency = do_bench(
         lambda: mod(
-            q, q_pe,
-            KV, k_pe,
+            q,
+            KV,
         ),
-        warmup=10,
-        rep=100,
+        # warmup=10,
+        # rep=100,
     )
     print("latency: ", latency)
     flops = B * S * H * (D + DV) * 2

@@ -112,7 +112,7 @@ class AttentionEngine:
                  tune_bwd=False, tune_file_bwd="",
                  infer_mask=True, infer_mask_block_M=128, infer_mask_block_N=128, 
                  extern_block_mask=False,
-                 kernel_template=None):
+                 kv_shared=False):
         # tunner
         # need_engine_fuse, fuse_config = decider(qkv_meta, device)
         
@@ -133,7 +133,7 @@ class AttentionEngine:
                 tune_file=tune_file,
                 tune_bwd=tune_bwd,
                 tune_file_bwd=tune_file_bwd,
-                kernel_template=kernel_template)
+                kv_shared=kv_shared)
 
         elif backend == "cute":
             from core.lower.lower_cute import lower_cute
@@ -142,27 +142,69 @@ class AttentionEngine:
                 osp.dirname(
                     osp.abspath(__file__)),
                 "../core/template/cute_template_output")
+            if not kv_shared:
+                template_dir = osp.join(
+                    osp.dirname(
+                        osp.abspath(__file__)),
+                    "../core/template/cute_template")
+                file_path = os.path.join(OUTPUT_DIR, "flash_attn_interface.py")
+            else:
+                template_dir = osp.join(
+                    osp.dirname(
+                        osp.abspath(__file__)),
+                    "../core/template/cute_template_kvshared")
+                file_path = os.path.join(OUTPUT_DIR, "flash_mla_interface.py")
             cutlass_dtype_map = {
                 torch.float16: "cutlass::half_t",
                 torch.bfloat16: "cutlass::bfloat16_t",
             }
-            file_path = os.path.join(OUTPUT_DIR, "flash_attn_interface.py")
             lower_cute(score_mod,
                        mask_mod,
                        online_func,
                        custom_fwd_inputs,
                        qkv_meta[0].shape[3],
                        qkv_meta[2].shape[3],
-                       cutlass_dtype_map[qkv_meta[0].dtype])
+                       cutlass_dtype_map[qkv_meta[0].dtype],
+                       template_dir=template_dir)
             spec = importlib.util.spec_from_file_location(
                 "cute_attn", file_path)
             cute_attn = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(cute_attn)
-            # TODO: causal
-            self.attention = partial(
-                cute_attn.flash_attn_func,
-                causal=True if mask_mod is not None else False)
-            self.block_mask = None
+            if not kv_shared:
+                # TODO: causal
+                self.attention = partial(
+                    cute_attn.flash_attn_func,
+                    causal=True if mask_mod is not None else False)
+                self.block_mask = None
+            else:
+                b = qkv_meta[0].shape[0]
+                s_q = qkv_meta[0].shape[2]
+                h_q = qkv_meta[0].shape[1]
+                h_kv = qkv_meta[2].shape[1]
+                seqlen_k = qkv_meta[2].shape[2]
+                head_dim_v = qkv_meta[2].shape[3]
+                cache_seqlens = torch.full((b,), seqlen_k, dtype=torch.int32, device="cuda")
+                tile_scheduler_metadata, num_split = cute_attn.get_mla_metadata(
+                    cache_seqlens,
+                    s_q * h_q // h_kv,
+                    h_kv,
+                )
+                max_seqlen = cache_seqlens.max().item()
+                max_seqlen_pad = ((max_seqlen+255) // 256) * 256
+                block_size = 64
+                block_table = torch.arange(
+                    b * max_seqlen_pad // 64, dtype=torch.int32, device="cuda"
+                ).view(b, max_seqlen_pad // 64)
+                self.attention = partial(
+                    cute_attn.flash_mla_with_kvcache,
+                    cache_seqlens=cache_seqlens,
+                    block_table=block_table,
+                    head_dim_v=head_dim_v,
+                    tile_scheduler_metadata=tile_scheduler_metadata,
+                    num_splits=num_split,
+                    causal=True if mask_mod is not None else False)
+                self.block_mask = None
+                
 
     def _select_lower_template(self, qkv_meta, custom_fwd_inputs, score_mod, mask_mod,
                     online_func, mask_value="-inf", tuned_config=None, 
@@ -170,7 +212,7 @@ class AttentionEngine:
                     extern_block_mask=False,
                     tune=False, tune_file="",
                     tune_bwd=False, tune_file_bwd="",
-                    kernel_template=None):
+                    kv_shared=False):
         tl_dtype_map = {
             torch.float16: "float16",
             torch.bfloat16: "bfloat16",
@@ -181,7 +223,7 @@ class AttentionEngine:
         head_kv = qkv_meta[2].shape[1]
         
         # mla decode
-        if kernel_template == "mla_decode":
+        if kv_shared:
             from core.lower.lower_decode_mla import lower_tl as lower_tl_decode_mla
             tl_code = lower_tl_decode_mla(score_mod,
                                         mask_mod,
@@ -286,7 +328,7 @@ class AttentionEngine:
                     extern_block_mask=False,
                     tune=False, tune_file="",
                     tune_bwd=False, tune_file_bwd="",
-                    kernel_template=None):
+                    kv_shared=False):
         tl_dtype_map = {
             torch.float16: "float16",
             torch.bfloat16: "bfloat16",
@@ -309,7 +351,7 @@ class AttentionEngine:
             tune_file=tune_file,
             tune_bwd=tune_bwd,
             tune_file_bwd=tune_file_bwd,
-            kernel_template=kernel_template
+            kv_shared=kv_shared,
         )
         self.tl_code = tl_code  
         # for debug
