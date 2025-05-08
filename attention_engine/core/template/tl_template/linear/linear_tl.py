@@ -76,9 +76,9 @@ def compute_final_dg(
 
 def generate_config_h(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100()):
     # BTs = [32,64,128,192,256]
-    BK_hs = [32,64,128,192,256]
-    BV_hs = [32,64,128,192,256]
-    num_stages_hs = [1,2,3,4]
+    BK_hs = [32, 64,128]
+    BV_hs = [32, 64,128]
+    num_stages_hs = [1]
     num_threads_hs = [128,256]
     
     # H100
@@ -124,7 +124,8 @@ def chunk_fwd_h(
     # BT = 64
     # BK = 64
     # BV = 64
-    dtype = "bfloat16"
+    # amd mi250 bug
+    dtype = "float16"
     accum_dtype = "float"
     LOG2E = 1.44269504
     
@@ -243,9 +244,9 @@ def chunk_fwd_h(
 
 def generate_config_o(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100()):
     # BTs = [32,64,128,192,256]
-    BK_os = [32,64,128,256]
-    BV_os = [32,64,128,256]
-    num_stages_os = [1,2,3,4]
+    BK_os = [32, 64,128]
+    BV_os = [32, 64,128]
+    num_stages_os = [1]
     num_threads_os = [128,256]
     
     # H100
@@ -295,7 +296,7 @@ def chunk_o(
     # BK = 64
     # BV = 64
     NT = seqlen // BT
-    dtype = "bfloat16"
+    dtype = "float16"
     accum_dtype = "float"
     LOG2E = 1.44269504
 
@@ -419,9 +420,9 @@ def chunk_o(
         
 
 def generate_config_dh(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100()):
-    BK_dhs = [32,64,128,192,256]
-    BV_dhs = [32,64,128,192,256]
-    num_stages_dhs = [1,2,3,4]
+    BK_dhs = [32,64, 128]
+    BV_dhs = [32,64,128]
+    num_stages_dhs = [1]
     num_threads_dhs = [128,256]
     # H100
     MMA_ATOM_M = device.mma_primitive[0]# 64
@@ -435,6 +436,9 @@ def generate_config_dh(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100(
     BV_dhs = [bv for bv in BV_dhs if D_HEADV % bv == 0]
     config_dh = []
     for BK_dh, BV_dh, num_stages_dh, num_threads_dh in itertools.product(BK_dhs, BV_dhs, num_stages_dhs, num_threads_dhs):
+        # bug mi250
+        if BT >= 128 and BK_dh > 64:
+            continue
         conditions_dh = [
             num_stages_dh > N_CTX // BT,
             BK_dh % (MMA_ATOM_M) != 0,
@@ -460,7 +464,7 @@ def chunk_bwd_kernel_dh(
         NT = seqlen // BT
         NK = dim // BK
         NV = dimv // BV
-        dtype = "bfloat16"
+        dtype = "float16"
         accum_dtype = "float"
         num_stages = num_stages
         thread_num = num_threads
@@ -553,9 +557,9 @@ def chunk_bwd_kernel_dh(
         return kernel
 
 def generate_config_dqkg(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100()):
-    BK_dqkg = [32,64,128,256]
-    BV_dqkg = [32,64,128,256]
-    num_stages_dqkg = [1,2,3,4]
+    BK_dqkg = [32,64,128]
+    BV_dqkg = [32,64,128]
+    num_stages_dqkg = [1]
     num_threads_dqkg = [128,256]
     
     # H100
@@ -571,6 +575,11 @@ def generate_config_dqkg(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H10
     
     config_dqkg = []
     for BK_dqk, BV_dqk, num_stages_dqk, num_threads_dqk in itertools.product(BK_dqkg, BV_dqkg, num_stages_dqkg, num_threads_dqkg):
+        # mi250
+        if BT >= 128 and (BK_dqk > 32 or BV_dqk > 32):
+            continue
+        if BT >= 192:
+            continue
         conditions_dqk = [
             num_stages_dqk > D_HEADV // BV_dqk,
             BT % (MMA_ATOM_M*(num_threads_dqk//MMA_ATOM_TRHEADS)) != 0,
@@ -598,7 +607,7 @@ def chunk_bwd_dqkg(
         NT = seqlen // BT
         NK = dim // BK
         NV = dimv // BV
-        dtype = "bfloat16"
+        dtype = "float16"
         accum_dtype = "float"
         num_stages = num_stages
         thread_num = num_threads
@@ -641,6 +650,7 @@ def chunk_bwd_dqkg(
                 q_local = T.alloc_fragment((BT,BK),dtype)
                 k_local = T.alloc_fragment((BT,BK),dtype)
                 k_local1 = T.alloc_fragment((BT,BK),dtype)
+                k_shared1 = T.alloc_shared((BT,BK),dtype)
 
                 b_dq = T.alloc_fragment((BT, BK), accum_dtype)
                 b_dq_shared = T.alloc_shared((BT,BK), dtype)
@@ -689,11 +699,12 @@ def chunk_bwd_dqkg(
 
                     T.gemm(b_do_shared, b_v_shared, b_ds, transpose_A=False, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                     
-                    T.copy(b_h_shared, b_h_local)
-                    T.copy(b_dh_shared, b_dh_local)
+                    # T.copy(b_h_shared, b_h_local)
+                    # T.copy(b_dh_shared, b_dh_local)
+                    # amd layout infer bug
                     for i in T.Parallel(BK*BV):
-                        b_hdh[0,i] = b_h_local[i//BV, i % BV] * b_dh_local[i//BV, i % BV]
-                    # tl only support clear=True for sharedmemory reduce
+                        b_hdh[0,i] = b_h_shared[i//BV, i % BV] * b_dh_shared[i//BV, i % BV]
+                    # # tl only support clear=True for sharedmemory reduce
                     T.reduce_sum(b_hdh, b_dg_last_tmp,dim=1) # , clear=True)
                     b_dg_last[0] += b_dg_last_tmp[0]
                     T.gemm(b_do_shared, b_h_shared, b_dq, transpose_A=False, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
@@ -732,12 +743,13 @@ def chunk_bwd_dqkg(
                 #     b_dkk[0,i] *= k_shared[i//BK,i%BK]
                 
                 # T.copy(k_shared, k_local1) # layout没有以b_dk 优先
+                # amd bug here
                 for i,j in T.Parallel(BT,BK):
-                    k_local1[i,j] = b_dk[i,j]
+                    k_shared1[i,j] = b_dk[i,j]
                 for i,j in T.Parallel(BT, BK):
-                    k_local1[i,j] *= k_shared[i, j]
+                    k_shared1[i,j] *= k_shared[i, j]
                 for i in T.Parallel(BT*BK):
-                    b_dkk[0,i] = k_local1[i//BK, i%BK]
+                    b_dkk[0,i] = k_shared1[i//BK, i%BK]
                 
                 T.reduce_sum(b_dkk, b_dg_last_tmp, dim=1)# , clear=True)
                 b_dg_last[0] += b_dg_last_tmp[0]
@@ -796,9 +808,9 @@ def chunk_bwd_dqkg(
         return kernel
 
 def generate_config_dv(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100()):
-    BK_dvs = [32,64,128,256]
-    BV_dvs = [32,64,128,256]
-    num_stages_dvs = [1,2,3,4]
+    BK_dvs = [32,64,128]
+    BV_dvs = [32,64,128]
+    num_stages_dvs = [1,]
     num_threads_dvs = [128,256]
     
     # H100
@@ -841,7 +853,7 @@ def chunk_bwd_kernel_dv(
         NT = seqlen // BT
         NK = dim // BK
         NV = dimv // BV
-        dtype = "bfloat16"
+        dtype = "float16"
         accum_dtype = "float"
         num_stages = num_stages
         thread_num = num_threads

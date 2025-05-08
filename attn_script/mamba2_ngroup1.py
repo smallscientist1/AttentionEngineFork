@@ -69,7 +69,7 @@ def eval():
 if __name__ == "__main__":
     B, H, T, D, DV = 8,24, 2048, 128, 64
     HQ, HK = 1, 1
-    dtype = torch.bfloat16
+    dtype = torch.float16
     qkv_meta = (
         meta_tensor(B, HQ, T, D, dtype=dtype),
         meta_tensor(B, HK, T, D, dtype=dtype),
