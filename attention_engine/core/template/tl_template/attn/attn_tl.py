@@ -31,9 +31,14 @@ def make_dq_layout(dQ):
     )
 
 def get_configs():
-    block_M = [64, 128, 256]
-    block_N = [32, 64, 128, 256]
-    num_stages = [1, 2]
+    # block_M = [64, 128, 256]
+    # block_N = [32, 64, 128, 256]
+    # num_stages = [1, 2]
+    # thread_num = [128, 256]
+    # Mi300
+    block_M = [32, 64, 128]
+    block_N = [32, 64, 128]
+    num_stages = [0, 1]
     thread_num = [128, 256]
     shared_fuse = [{{shared_fuse}},]# [True, False]
     _configs = list(itertools.product(block_M, block_N, num_stages, thread_num, shared_fuse))
@@ -98,7 +103,7 @@ def kernel(batch, heads, seq_len, dim, dimv, tune=False):
                 {{custom_fwd_inputs_init | indent(16)}}
 
                 T.annotate_layout({
-                    Q_shared: tl.layout.make_swizzled_layout(Q_shared),
+                    # Q_shared: tl.layout.make_swizzled_layout(Q_shared),
                     scores_shared: tl.layout.make_swizzled_layout(scores_shared),
                     {{swizzle_shared | indent(20)}}
                 })
@@ -223,8 +228,12 @@ def flashattn_bwd_preprocess(batch, heads, seq_len, dim, dimv):
     return flash_bwd_prep
 
 def get_bwd_configs():
-    block_M = [64, 128]
-    block_N = [64, 128] if isinstance(attn_device, H100) else [32, 64, 128]
+    # block_M = [64, 128]
+    # block_N = [64, 128] if isinstance(attn_device, H100) else [32, 64, 128]
+    # thread_num = [128, 256]
+    block_M = [32, 64, 128]
+    block_N = [32, 64, 128]
+    num_stages = [0, 1]
     thread_num = [128, 256]
     _configs = list(itertools.product(block_M, block_N, thread_num))
     
@@ -323,9 +332,9 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, tune=False):
                 T.annotate_layout(
                     {
                         dQ: make_dq_layout(dQ),
-                        K_shared: tl.layout.make_swizzled_layout(K_shared),
-                        dv_shared: tl.layout.make_swizzled_layout(dv_shared),
-                        dk_shared: tl.layout.make_swizzled_layout(dk_shared),
+                        # K_shared: tl.layout.make_swizzled_layout(K_shared),
+                        # dv_shared: tl.layout.make_swizzled_layout(dv_shared),
+                        # dk_shared: tl.layout.make_swizzled_layout(dk_shared),
                     }
                 )
                 T.copy(K[bz, by * block_M : (by + 1) * block_M, bx, :], K_shared)
@@ -341,7 +350,7 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, tune=False):
                 loop_st = T.floordiv(by * block_M, block_N) if is_casual else 0
                 loop_ed = T.ceildiv(seq_len, block_N)
 
-                for k in T.Pipelined(loop_st, loop_ed, num_stages=2):
+                for k in T.Pipelined(loop_st, loop_ed, num_stages=0):
                     T.copy(Q[bz, k * block_N : (k + 1) * block_N, bx, :], q)
                     {{custom_fwd_inputs_load_shared_bwd | indent(20)}}
                     T.clear(qkT)
