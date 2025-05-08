@@ -209,7 +209,7 @@ def lowerVmod(v_mod, custom_io, lower_output: lowerOutput, bwd_only=False):
 
 
 def lowerFusedVmod(v_mod, custom_io, lower_output: lowerOutput):
-    vv = SymbolicArray("bs", Var("bs"), shape_idx=["BT", "BT"])
+    vv = SymbolicArray("bs", Var("bs"), shape_idx=["BT", "BT2"])
     custom_io1 = copy.deepcopy(custom_io)
     new_v = v_mod(vv, custom_io1)
 
@@ -232,7 +232,7 @@ def lowerFusedVmod(v_mod, custom_io, lower_output: lowerOutput):
         #     lower_output.o_alloc_buffer_list += f"{k}_shared = T.alloc_shared(({','.join(new_custom_io.input_tensors[k].shape_idx)},), dtype=dtype, scope='shared')\n"
         #     lower_output.o_alloc_buffer_list += f"{k}_local = T.alloc_fragment(({','.join(new_custom_io.input_tensors[k].shape_idx)},), dtype=accum_dtype)\n"
         elif v.shape_idx == ["batch", "heads", "seq_len"]:
-            new_custom_io.input_tensors[k].shape_idx = ["1", "BT"]
+            new_custom_io.input_tensors[k].shape_idx = ["1", "BT2"]
             lower_output.o_alloc_buffer_list += f"{k}_shared = T.alloc_shared(({','.join(new_custom_io.input_tensors[k].shape_idx)},), dtype=dtype, scope='shared')\n"
             lower_output.o_alloc_buffer_list += f"{k}_local = T.alloc_fragment(({','.join(new_custom_io.input_tensors[k].shape_idx)},), dtype=accum_dtype)\n"
             lower_output.v_mod_expr_fused_o += \
@@ -245,7 +245,7 @@ def lowerFusedVmod(v_mod, custom_io, lower_output: lowerOutput):
             raise ("Not support shape_idx")
 
     lower_output.output_idx_list_o = f"[{len(input_vars)+5},]"
-    vv = SymbolicArray("bs", Var("bs"), shape_idx=["BT", "BT"])
+    vv = SymbolicArray("bs", Var("bs"), shape_idx=["BT", "BT2"])
     new_v = v_mod(vv, new_custom_io)
     tl_code, input_vars = generate_tl_from_dag([new_v])
     lower_output.v_mod_expr_fused_o += str(tl_code)
