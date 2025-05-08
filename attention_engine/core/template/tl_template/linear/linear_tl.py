@@ -300,6 +300,8 @@ def chunk_o(
     head_headk_ratio = head // headk
     assert(head % headq == 0)
     head_headq_ratio = head // headq
+    
+    BT2 = BT
 
     def kernel_func(BK, BV, num_stages, num_threads):
         NK = dim // BK
@@ -319,8 +321,8 @@ def chunk_o(
             with T.Kernel(NV, NT, batch * head, threads=num_threads) as (bx, by, bz):
                 bo = T.alloc_fragment((BT, BV), dtype=accum_dtype)
                 bo_shared = T.alloc_shared((BT, BV), dtype=dtype)
-                bs = T.alloc_fragment((BT, BT), dtype=accum_dtype)
-                bs_cast = T.alloc_fragment((BT, BT), dtype=dtype)
+                bs = T.alloc_fragment((BT, BT2), dtype=accum_dtype)
+                bs_cast = T.alloc_fragment((BT, BT2), dtype=dtype)
                 bq = T.alloc_fragment((BT, BK), dtype=dtype)
                 bq_shared = T.alloc_shared((BT,BK), dtype=dtype)
                 bk_shared = T.alloc_shared((BT,BK), dtype=dtype)
@@ -367,10 +369,10 @@ def chunk_o(
                 for i0,i1 in T.Parallel(BT,BV):
                     bo[i0,i1] *= T.exp2(bg[i0] * LOG2E)
                 
-                for i0,i1 in T.Parallel(BT,BT):
+                for i0,i1 in T.Parallel(BT,BT2):
                     bs[i0,i1] *= T.exp2((bg[i0]-bg1[i1]) * LOG2E)
                 # fix nan bug
-                for i0,i1 in T.Parallel(BT,BT):
+                for i0,i1 in T.Parallel(BT,BT2):
                     bs[i0,i1] = T.if_then_else(
                         i0 >= i1, bs[i0,i1], 0.0
                     )
