@@ -7,6 +7,8 @@ import torch
 import torch.nn.functional as F 
 import math
 
+import time
+
 """
 Example of mamba2 SSD
 
@@ -79,11 +81,14 @@ if __name__ == "__main__":
             "dt": ("batch", "heads", "seq_len")
         }
     )
+    st = time.time()
     mod = LinearAttentionEngine(qkv_meta,
         decay_mod=decay_mod, v_mod=v_mod,
                             custom_io = custom_io,
                             tune=False, tune_filename="mamba2",
                             tune_bwd=False)
+    ed = time.time()
+    print("compile time: ", ed-st)
 
     from benchmark.bench_utils import do_bench_mamba
     do_bench_mamba(mod, B, HQ,HK,H, T, D, DV, BT=256, requires_grad=True)
