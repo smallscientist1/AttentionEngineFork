@@ -270,7 +270,7 @@ def test_mod(mod, b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen):
 
 if __name__ == "__main__":
     torch.cuda.manual_seed(0)
-    B, H, G ,S, D, DV = 128, 128, 1, 4096, D, 384
+    B, H, G ,S, D, DV = 128, 128, 1, 4096, D, 512# 384
     # D = DV + D_pe = 512 + 64 = 576
     dtype = torch.bfloat16
     qkv_meta = (
