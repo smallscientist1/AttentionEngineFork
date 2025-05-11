@@ -196,6 +196,8 @@ class AttentionEngine:
                     s_q * h_q // h_kv,
                     h_kv,
                 )
+                # print("num_split", num_split)
+                # print("tile_scheduler_metadata", tile_scheduler_metadata)
                 max_seqlen = cache_seqlens.max().item()
                 max_seqlen_pad = ((max_seqlen+255) // 256) * 256
                 block_size = 64

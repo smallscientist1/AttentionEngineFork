@@ -180,8 +180,8 @@ template<int TILE_IDX, int BARRIER_COUNT, typename TiledMMA, typename TiledMMA_r
     typename Engine1, typename Layout1,
     typename Engine2, typename Layout2,
     typename Engine3, typename Layout3>
-__forceinline__ __device__ void qkt_gemm_one_tile(TiledMMA tiled_mma_sQ,
-    TiledMMA_rQ tiled_mma_rQ,
+__forceinline__ __device__ void qkt_gemm_one_tile(TiledMMA &tiled_mma_sQ,
+    TiledMMA_rQ &tiled_mma_rQ,
     Tensor<Engine0, Layout0> const &thr_mma_sQ_tiled,	
     Tensor<Engine1, Layout1> const &rQ8,
     Tensor<Engine2, Layout2> const &thr_mma_sKV_tiled,	
@@ -201,8 +201,8 @@ template<int BARRIER_COUNT, size_t... Is, typename TiledMMA, typename TiledMMA_r
     typename Engine3, typename Layout3>
 __forceinline__ __device__ void qkt_gemm_phase_impl(
     std::index_sequence<Is...>,
-    TiledMMA tiled_mma_sQ,
-    TiledMMA_rQ tiled_mma_rQ,
+    TiledMMA &tiled_mma_sQ,
+    TiledMMA_rQ &tiled_mma_rQ,
     Tensor<Engine0, Layout0> const &thr_mma_sQ_tiled,
     Tensor<Engine1, Layout1> const &rQ8,
     Tensor<Engine2, Layout2> const &thr_mma_sKV_tiled,
@@ -664,7 +664,7 @@ template<
     typename Engine1, typename Layout1
 >
 __forceinline__ __device__ void store_o(
-    Tensor<Engine0, Layout0> &rO,	// ((2, 2, 32), 1, 1)
+    Tensor<Engine0, Layout0> &rO,	// ((2, 2, 32), 1, 1) for dim 512    (2, 2, 24), 1, 1 for dim 384
     Tensor<Engine1, Layout1> &gOorAccum,	// (BLOCK_SIZE_M, HEAD_DIM_V)
     float rL[2],
     char* sO_addr,
@@ -739,7 +739,7 @@ __forceinline__ __device__ void store_o(
         CUTLASS_PRAGMA_UNROLL
         for (int idx = 0; idx < size(rO); idx += 2) {
             int row = (idx_in_warpgroup/32)*16 + (idx_in_warpgroup%32/4) + (idx%4 >= 2 ? 8 : 0);
-            int col = warpgroup_idx*256 + (idx_in_warpgroup%4)*2 + idx/4*8;
+            int col = warpgroup_idx*(Config::HEAD_DIM_V/2) + (idx_in_warpgroup%4)*2 + idx/4*8;
             *(float2*)((float*)sO_addr + sOutputBuf.layout()(row, col)) = float2 {
                 rO(idx) / rL[idx%4 >= 2],
                 rO(idx+1) / rL[idx%4 >= 2],
@@ -1072,7 +1072,7 @@ flash_fwd_splitkv_mla_kernel(__grid_constant__ const Flash_fwd_mla_params params
     Tensor sK0 = make_tensor(make_smem_ptr(plan.smem_sK0.data()), (typename T::SmemLayoutK){});
     Tensor sK1 = make_tensor(make_smem_ptr(plan.smem_sK1.data()), (typename T::SmemLayoutK){});
     Tensor sP0 = make_tensor(make_smem_ptr(plan.smem_sP0.data()), (typename T::SmemLayoutP0){});
-    Tensor sP1 = flat_divide(sQ, Shape<Int<T::BLOCK_SIZE_M>, Int<T::PAGE_BLOCK_SIZE>>{})(_, _, _0{}, _8{}); // Overlap with sQ's 8-th tile
+    Tensor sP1 = flat_divide(sQ, Shape<Int<T::BLOCK_SIZE_M>, Int<T::PAGE_BLOCK_SIZE>>{})(_, _, _0{}, Int<BARRIER_COUNT-1>{}); // Overlap with sQ's last tile (suppose dimqk >= 64?)
     Tensor sM = make_tensor(make_smem_ptr(plan.smem_sM.data()), make_shape(Int<T::BLOCK_SIZE_M>{}));
     Tensor sL_reduction_wksp = make_tensor(make_smem_ptr(plan.sL_reduction_wksp.data()), make_shape(Int<2*T::BLOCK_SIZE_M>{}));
     Tensor sScale0 = make_tensor(make_smem_ptr(plan.smem_sScale0.data()), make_shape(Int<T::BLOCK_SIZE_M>{}));
