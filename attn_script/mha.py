@@ -17,7 +17,7 @@ Example of causal attention with online softmax
 def causal_mask(b, h, q_idx, kv_idx):
     return q_idx >= kv_idx
 
-D = 128
+D = 128 # 192
 softmax_scale = 1/D ** 0.5
 # elementwise on attention scores
 def score_mod(score, custom_fwd_inputs, b, h, q_idx, kv_idx):
@@ -83,38 +83,79 @@ class OnlineSoftmax(OnlineFunc):
         dscores = (dp - dppsum)*scores # TODO: bug if swap
         return dscores
 
-if __name__ == "__main__":
-    B, H ,S, D, DV = 1,128,2048,D, 128
-    dynamic_shape = False # True
-    dtype = torch.float16
-    if dynamic_shape:
-        qkv_meta = (
-            meta_tensor("B", "H", "S", D, dtype=dtype),
-            meta_tensor("B", "H", "S", D, dtype=dtype),
-            meta_tensor("B", "H", "S", DV, dtype=dtype),
+def eval():
+    import itertools
+    BHSD = list(
+        itertools.product(
+            (1, 8,),
+            (12,), # (32, ), # (16,),
+            (2048, 4096, 8192),
+            (128,), # (192,),
+            (256,) # (128,)
         )
-    else:
+    )
+    dtype = torch.float16
+    for B, H, S, D, DV in BHSD:
+        print(f"B={B}, H={H}, S={S}, D={D}, DV={DV}")
         qkv_meta = (
             meta_tensor(B, H, S, D, dtype=dtype),
             meta_tensor(B, H, S, D, dtype=dtype),
             meta_tensor(B, H, S, DV, dtype=dtype),
         )
+        custom_fwd_inputs = CustomIO({
+            # "softmax_scale": (1,),
+        })
 
-    custom_fwd_inputs = CustomIO({
-        # "softmax_scale": (1,),
-    })
+        online = OnlineSoftmax()
 
-    online = OnlineSoftmax()
+        mod = AttentionEngine(
+            qkv_meta,
+            custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
+            online_func=online,
+            tune=True, tune_file="attn_tl.json",
+            tune_bwd=True,
+            tune_file_bwd="attn_tl_bwd.json",
+            infer_mask=True,
+        )
 
-    mod = AttentionEngine(
-        qkv_meta,
-        custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
-        online_func=online,
-        tune=True, tune_file="attn_tl.json",
-        tune_bwd=True,
-        tune_file_bwd="attn_tl_bwd.json",
-        infer_mask=False if dynamic_shape else True,
-    )
+        from benchmark.bench_utils import do_bench_attention
+        do_bench_attention(mod, B, H, S, D, DV, dtype=dtype, require_grad=True)
 
-    from benchmark.bench_utils import do_bench_attention
-    do_bench_attention(mod, B, H, S, D, DV, dtype=dtype, require_grad=True)
+
+    
+if __name__ == "__main__":
+    eval()
+    # B, H ,S, D, DV = 8, 16, 2048, D, 128
+    # dynamic_shape = False # True
+    # dtype = torch.float16
+    # if dynamic_shape:
+    #     qkv_meta = (
+    #         meta_tensor("B", "H", "S", D, dtype=dtype),
+    #         meta_tensor("B", "H", "S", D, dtype=dtype),
+    #         meta_tensor("B", "H", "S", DV, dtype=dtype),
+    #     )
+    # else:
+    #     qkv_meta = (
+    #         meta_tensor(B, H, S, D, dtype=dtype),
+    #         meta_tensor(B, H, S, D, dtype=dtype),
+    #         meta_tensor(B, H, S, DV, dtype=dtype),
+    #     )
+
+    # custom_fwd_inputs = CustomIO({
+    #     # "softmax_scale": (1,),
+    # })
+
+    # online = OnlineSoftmax()
+
+    # mod = AttentionEngine(
+    #     qkv_meta,
+    #     custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
+    #     online_func=online,
+    #     tune=False, tune_file="attn_tl.json",
+    #     tune_bwd=True,
+    #     tune_file_bwd="attn_tl_bwd.json",
+    #     infer_mask=False if dynamic_shape else True,
+    # )
+
+    # from benchmark.bench_utils import do_bench_attention
+    # do_bench_attention(mod, B, H, S, D, DV, dtype=dtype, require_grad=True)
