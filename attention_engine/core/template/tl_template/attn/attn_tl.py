@@ -3,7 +3,7 @@ import torch
 import tilelang as tl
 import tilelang
 import tilelang.language as T
-from tilelang.autotuner import *
+# from tilelang.autotuner import *
 import itertools
 import os
 import json
@@ -174,12 +174,12 @@ def kernel(batch, heads, seq_len, dim, dimv, tune=False):
         return main
     
     if tune:
-        @autotune(
+        @tilelang.autotune(
             configs=get_configs(),
             warmup=10,
             rep=10,
         )
-        @jit(out_idx={{output_idx_list}}, supply_type=tilelang.TensorSupplyType.Auto, ref_prog=None)
+        @tilelang.jit(out_idx={{output_idx_list}})
         def kernel(block_M=None, block_N=None, num_stages=None, thread_num=None, shared_fuse=None):
             return kernel_func(block_M, block_N, num_stages, thread_num, shared_fuse)
 
@@ -415,12 +415,12 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, tune=False):
         return flash_bwd     
     
     if tune:
-        @autotune(
+        @tilelang.autotune(
             configs=get_bwd_configs(),
             warmup=10,
             rep=10,
         )
-        @jit(out_idx={{bwd_output_idx_list}}, supply_type=tilelang.TensorSupplyType.Auto, ref_prog=None)
+        @tilelang.jit(out_idx={{bwd_output_idx_list}})
         def kernel(block_M=None, block_N=None, thread_num=None):
             return kernel_func(block_M, block_N, thread_num)
 
@@ -505,11 +505,11 @@ if TUNE:
     pk = get_problem_keys()
     _tuned_config = tune(TUNE_FILE, partial(kernel, tune=True), pk)
     tuned_config = {
-        'block_M': _tuned_config[0],
-        'block_N': _tuned_config[1],
-        'num_stages': _tuned_config[2],
-        'thread_num': _tuned_config[3],
-        'shared_fuse': _tuned_config[4]
+        'block_M': _tuned_config['block_M'],
+        'block_N': _tuned_config['block_N'],
+        'num_stages': _tuned_config['num_stages'],
+        'thread_num': _tuned_config['thread_num'],
+        'shared_fuse': _tuned_config['shared_fuse']
     }
 else:
     tuned_config = {
@@ -543,9 +543,9 @@ if TUNE_BWD:
     pk = get_problem_keys()
     _tuned_bwd_config = tune(TUNE_FILE_BWD, partial(flashattn_bwd, tune=True), pk)
     tuned_bwd_config = {
-        'block_M': _tuned_bwd_config[0],
-        'block_N': _tuned_bwd_config[1],
-        'thread_num': _tuned_bwd_config[2],
+        'block_M': _tuned_bwd_config['block_M'],
+        'block_N': _tuned_bwd_config['block_N'],
+        'thread_num': _tuned_bwd_config['thread_num'],
     }
 else:
     tuned_bwd_config = {
