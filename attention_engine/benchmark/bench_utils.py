@@ -1218,10 +1218,11 @@ def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16,
         flash_attn_func_hopper = None
         enable_fa3 = False
 
-    DIM_HOPPER = [64, 128, 256]
-    dim_padded_fa3 = list(filter(lambda x: x >= max(D, DV), DIM_HOPPER))
-    assert (len(dim_padded_fa3) > 0)
-    dim_padded_fa3 = min(dim_padded_fa3)
+    # DIM_HOPPER = [64, 128, 256]
+    # dim_padded_fa3 = list(filter(lambda x: x >= max(D, DV), DIM_HOPPER))
+    # assert (len(dim_padded_fa3) > 0)
+    # dim_padded_fa3 = min(dim_padded_fa3)
+    dim_padded_fa3 = 0
 
     def fa3(dim_padded):
         if D < dim_padded:
@@ -1236,7 +1237,7 @@ def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16,
             value_padded = value
         o_ref = flash_attn_func_hopper(
             query_padded, key_padded, value_padded, softmax_scale=(
-                1 / D)**0.5, causal=causal)[0]
+                1 / D)**0.5, causal=causal)
         if DV < dim_padded:
             o_ref = o_ref[:, :, :, :DV]
         return o_ref
@@ -1305,7 +1306,7 @@ def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16,
         print_debug(key.grad, dK)
         print_debug(value.grad, dV)
 
-    # from tilelang.profiler import do_bench
+    from tilelang.profiler import do_bench
     def run():
         o = attn(query, key, value)
 
@@ -1354,7 +1355,7 @@ def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16,
         latency_ref = do_bench(run_bacward_ref, warmup=50, rep=100)
         print("flash bwd: {:.2f} ms".format(latency_ref))
         print("tflops: {:.2f}".format(bwd_tflops / latency_ref * 1e-9))
-        if enable_fa3 and dim_padded_fa3 <= 128:
+        if enable_fa3:
             latency_reffa3 = do_bench(run_bacward_ref_fa3, warmup=50, rep=100)
             print("flash fa3 bwd: {:.2f} ms".format(latency_reffa3))
             print("tflops: {:.2f}".format(bwd_tflops / latency_reffa3 * 1e-9))
