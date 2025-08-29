@@ -1305,6 +1305,18 @@ def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16,
         print_debug(query.grad, dQ)
         print_debug(key.grad, dK)
         print_debug(value.grad, dV)
+        dQ, dK, dV = query.grad, key.grad, value.grad
+        query.grad, key.grad, value.grad = None, None, None
+    o_reffa3 = fa3(dim_padded_fa3) if enable_fa3 else None
+    if enable_fa3:
+        print("-----------fa3 reference test begin")
+        print_debug(o_reffa3, o_ref)
+        if require_grad:
+            o_reffa3.backward(do, retain_graph=True)
+            print_debug(query.grad, dQ)
+            print_debug(key.grad, dK)
+            print_debug(value.grad, dV)
+        print("-----------fa3 reference test end")
 
     from tilelang.profiler import do_bench
     def run():
@@ -1321,7 +1333,6 @@ def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16,
 
     def run_bacward_ref():
         o_ref.backward(do, retain_graph=True)
-    o_reffa3 = fa3(dim_padded_fa3) if enable_fa3 else None
 
     def run_bacward_ref_fa3():
         o_reffa3.backward(do, retain_graph=True)
@@ -1786,11 +1797,12 @@ def do_bench_flashinfer(attn, B, H, S, D, DV, dtype=torch.float16):
     num_layers = 1  # 32
     num_qo_heads = H  # 64
     num_kv_heads = H  # 16
-    head_dim = dim_padded_fa3  # 128
+    head_dim = max(D, dim_padded_fa3)  # 128
+    head_dim_v = max(DV, dim_padded_fa3)
     page_size = 16
     max_num_pages = B * S // page_size  # 128
 
-    if B == 1:
+    if True:
         query = torch.randn(
             B * S, H, D, device=device, dtype=dtype, requires_grad=require_grad
         )
@@ -1799,13 +1811,6 @@ def do_bench_flashinfer(attn, B, H, S, D, DV, dtype=torch.float16):
         )
         value = torch.randn(
             B * S, H, DV, device=device, dtype=dtype, requires_grad=require_grad
-        )
-    elif B != 1:
-        query = torch.randn(
-            B * S, H, dim_padded_fa3, device=device, dtype=dtype, requires_grad=require_grad
-        )
-        kv_cache = torch.randn(
-            max_num_pages, 2, page_size, H, dim_padded_fa3, device=device, dtype=dtype, requires_grad=require_grad
         )
 
     # out = prefill.single_prefill_with_kv_cache(query, key, value, causal=True)
@@ -1816,40 +1821,21 @@ def do_bench_flashinfer(attn, B, H, S, D, DV, dtype=torch.float16):
     if B != 1:
         workspace_buffer = torch.empty(
             128 * 1024 * 1024, dtype=torch.uint8, device=device)
-        prefill_wrapper = flashinfer.BatchPrefillWithPagedKVCacheWrapper(
-            workspace_buffer, "NHD"
+        prefill_wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
+            workspace_buffer, "NHD", backend="fa3"
         )
         #     qo_indptr = torch.tensor(
         #     # [0, 33, 44, 55, 66, 77, 88, nnz_qo], dtype=torch.int32, device="cuda:0"
         # )
         qo_indptr = torch.range(0, S * B, S, dtype=torch.int32, device=device)
-        paged_kv_indices = torch.arange(max_num_pages).int().to(device)
-        # paged_kv_indptr = torch.tensor(
-        #     [0, 17, 29, 44, 48, 66, 100, 128], dtype=torch.int32, device="cuda:0"
-        # )
-        paged_kv_indptr = torch.range(
-            0,
-            max_num_pages,
-            S // page_size,
-            dtype=torch.int32,
-            device=device)
-        # 1 <= paged_kv_last_page_len <= page_size
-        # paged_kv_last_page_len = torch.tensor(
-        #     [1, 7, 14, 4, 3, 1, 16], dtype=torch.int32, device="cuda:0"
-        # )
-        paged_kv_last_page_len = torch.tensor(
-            [page_size] * B, dtype=torch.int32, device=device
-        )
-        # create auxiliary data structures for batch prefill attention
+        kv_indptr = qo_indptr.clone()
         prefill_wrapper.plan(
             qo_indptr,
-            paged_kv_indptr,
-            paged_kv_indices,
-            paged_kv_last_page_len,
+            kv_indptr,
             num_qo_heads,
             num_kv_heads,
             head_dim,
-            page_size,
+            head_dim_v,
             causal=True,
         )
     # o = prefill_wrapper.run(query, kv_cache)
@@ -1866,7 +1852,23 @@ def do_bench_flashinfer(attn, B, H, S, D, DV, dtype=torch.float16):
         else:
             value_padded = value
         o_ref = prefill.single_prefill_with_kv_cache(
-            query_padded, key_padded, value_padded, causal=True)
+            query_padded, key_padded, value_padded, causal=True, backend="fa3")
+        if DV < dim_padded:
+            o_ref = o_ref[:, :, :DV]
+        return o_ref
+    
+    def batch_fa3(dim_padded):
+        if D < dim_padded:
+            query_padded = F.pad(query, (0, dim_padded - D), value=0.)
+            key_padded = F.pad(key, (0, dim_padded - D), value=0.)
+        else:
+            query_padded = query
+            key_padded = key
+        if DV < dim_padded:
+            value_padded = F.pad(value, (0, dim_padded - DV), value=0.)
+        else:
+            value_padded = value
+        o_ref = prefill_wrapper.run(query_padded, key_padded, value_padded)
         if DV < dim_padded:
             o_ref = o_ref[:, :, :DV]
         return o_ref
@@ -1874,7 +1876,7 @@ def do_bench_flashinfer(attn, B, H, S, D, DV, dtype=torch.float16):
     if B == 1:
         def run(): return fa3(dim_padded_fa3)
     else:
-        def run(): return prefill_wrapper.run(query, kv_cache)
+        def run(): return batch_fa3(dim_padded_fa3)
 
     # from tilelang.profiler import do_bench
 
@@ -1915,70 +1917,118 @@ def do_bench_sigmoid_flashinfer(attn, B, H, S, D, DV, dtype=torch.float16):
     num_layers = 1  # 32
     num_qo_heads = H  # 64
     num_kv_heads = H  # 16
-    head_dim = dim_padded_fa3  # 128
+    head_dim_qk = max(dim_padded_fa3, D)  # 128
+    head_dim_v = max(dim_padded_fa3, DV)
     page_size = 16
     max_num_pages = B * S // page_size  # 128
 
-    variant_decl = r"""
-    template <typename ParamsT_>
-    struct FlashSigmoid {
-    using ParamsT = ParamsT_;
-    using DTypeQ = typename ParamsT::DTypeQ;
-    using DTypeKV = typename ParamsT::DTypeKV;
-    using DTypeO = typename ParamsT::DTypeO;
-    using IdType = typename ParamsT::IdType;
-    static constexpr bool use_softmax = false;
+    flash_sigmoid_sm80_decl = r"""
+struct FlashSigmoid : AttentionVariantBase {
+  static constexpr bool use_softmax = false;
 
-    uint32_t window_left, qo_len, kv_len;
-    float sigmoid_bias_log2e;
+  uint32_t window_left, qo_len, kv_len;
+  float sigmoid_scale_log2;
+  float sigmoid_bias_log2;
 
-    // Create closure
-    __device__ __host__ FlashSigmoid(const ParamsT& params, uint32_t batch_idx,
-                                    uint8_t* smem_ptr) {
-        qo_len = params.get_qo_len(batch_idx);
-        kv_len = params.get_kv_len(batch_idx);
-        window_left = kv_len;
-        sigmoid_bias_log2e = params.sigmoid_bias * math::log2e;
-    }
+  // Create closure
+  template <typename Params>
+  __device__ __host__ FlashSigmoid(const Params& params, uint32_t batch_idx,
+                                   uint8_t* smem_ptr) {
+    qo_len = params.get_qo_len(batch_idx);
+    kv_len = params.get_kv_len(batch_idx);
+    window_left = kv_len;
+    sigmoid_bias_log2 = params.sigmoid_bias * math::log2e;
+    sigmoid_scale_log2 = params.logits_scale * math::log2e;
+  }
 
-    template <typename T>
-    __device__ __forceinline__ T QueryTransform(const ParamsT& params, T q) {
-        return float(q) * params.logits_scale * math::log2e;
-    }
+  REGISTER_LOGITS_TRANSFORM(params, logits, batch_idx, qo_idx, kv_idx, qo_head_idx, kv_head_idx, {
+    return math::ptx_rcp(1.f + math::ptx_exp2(-float(logits * sigmoid_scale_log2 + sigmoid_bias_log2)));
+  });
 
-    template <typename T>
-    __device__ __forceinline__ T LogitsTransform(const ParamsT& params, T logits, uint32_t batch_idx,
-                                                uint32_t qo_idx, uint32_t kv_idx,
-                                                uint32_t qo_head_idx, uint32_t kv_head_idx) {
-        return math::ptx_rcp(1.f + math::ptx_exp2(-float(logits + sigmoid_bias_log2e)));
-    }
+  REGISTER_OUTPUT_TRANSFORM(params, output, batch_idx, qo_idx, qo_head_idx, m, d, scale, {
+    return output;
+  })
+};
+"""
 
-    __device__ __forceinline__ bool LogitsMask(const ParamsT& params, uint32_t batch_idx,
-                                                uint32_t qo_idx, uint32_t kv_idx, uint32_t qo_head_idx,
-                                                uint32_t kv_head_idx) {
-        return true;
-    }
-    };
+    flash_sigmoid_sm90_decl = r"""
+struct FlashSigmoid : AttentionVariantBase {
+  float logits_scale_log2, sigmoid_bias_log2e;
+  // Init
+  template <typename MainloopParams, typename BlockCoord>
+  __device__ __host__ FlashSigmoid(const MainloopParams& params, const BlockCoord& block_coord) {
+    logits_scale_log2 = params.additional_params.logits_scale * math::log2e;
+    sigmoid_bias_log2e = params.additional_params.sigmoid_bias * math::log2e;
+  }
+
+
+  template <int NUM_ROWS_PER_THREAD>
+  __device__ auto GetAttentionUpdater() {
+    return DefaultUpdater<NUM_ROWS_PER_THREAD>();
+  }
+
+  REGISTER_LOGITS_TRANSFORM(params, logits, batch_idx, qo_idx, kv_idx, qo_head_idx, kv_head_idx, {
+    return math::ptx_rcp(1.f + math::ptx_exp2(-float(logits * logits_scale_log2 + sigmoid_bias_log2e)));
+  });
+};
     """
-    jit_module = gen_customize_single_prefill_module(
-        "flash_sigmoid",
-        dtype,  # dtype_q
-        dtype,  # dtype_kv
-        dtype,  # dtype_o
-        head_dim,  # hidden_dim
-        [],  # additional_input_tensor_var_names
-        [],  # additional_input_tensor_var_types
-        ["logits_scale", "sigmoid_bias"],  # additional_input_scalar_var_names
-        ["float", "float"],  # additional_input_scalar_var_types
-        "FlashSigmoid",
-        variant_decl,
-    )
-    f = functools.partial(
-        single_prefill_with_kv_cache_with_jit_module,
-        jit_module)
-    assert (B == 1)
-
     if B == 1:
+        jit_module = gen_customize_single_prefill_module(
+            "fa2",
+            "flash_sigmoid",
+            dtype,  # dtype_q
+            dtype,  # dtype_kv
+            dtype,  # dtype_o
+            head_dim_qk,  # hidden_dim
+            head_dim_v,
+            [],  # additional_input_tensor_var_names
+            [],  # additional_input_tensor_var_types
+            ["logits_scale", "sigmoid_bias"],  # additional_input_scalar_var_names
+            ["double", "double"],  # additional_input_scalar_var_types
+            "FlashSigmoid",
+            flash_sigmoid_sm80_decl,
+        ).build_and_load()
+        f = functools.partial(
+            single_prefill_with_kv_cache_with_jit_module,
+            jit_module)
+    else:
+        jit_args = [
+            "flash_sigmoid",
+            dtype,  # dtype_q
+            dtype,  # dtype_kv
+            dtype,  # dtype_o
+            torch.int,
+            head_dim_qk,  # hidden_dim
+            head_dim_v,
+            [],  # additional_input_tensor_var_names
+            [],  # additional_input_tensor_var_types
+            ["logits_scale", "sigmoid_bias"],  # additional_input_scalar_var_names
+            ["double", "double"],  # additional_input_scalar_var_types
+            "FlashSigmoid",
+            flash_sigmoid_sm80_decl,
+        ]
+        
+
+        workspace_buffer = torch.empty(
+            128 * 1024 * 1024, dtype=torch.uint8, device=device)
+        prefill_wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
+            workspace_buffer, "NHD", False, None, None, None, None, 
+            "fa2", jit_args
+        )
+        qo_indptr = torch.range(0, S * B, S, dtype=torch.int32, device=device)
+        kv_indptr = qo_indptr.clone()
+        prefill_wrapper.plan(
+            qo_indptr,
+            kv_indptr,
+            num_qo_heads,
+            num_kv_heads,
+            head_dim_qk,
+            head_dim_v,
+            causal=True,
+        )
+        f = prefill_wrapper.run
+
+    if True:
         query = torch.randn(
             B * S, H, D, device=device, dtype=dtype, requires_grad=require_grad
         )
@@ -1988,14 +2038,8 @@ def do_bench_sigmoid_flashinfer(attn, B, H, S, D, DV, dtype=torch.float16):
         value = torch.randn(
             B * S, H, DV, device=device, dtype=dtype, requires_grad=require_grad
         )
-    elif B != 1:
-        query = torch.randn(
-            B * S, H, dim_padded_fa3, device=device, dtype=dtype, requires_grad=require_grad
-        )
-        kv_cache = torch.randn(
-            max_num_pages, 2, page_size, H, dim_padded_fa3, device=device, dtype=dtype, requires_grad=require_grad
-        )
-    logits_scale = 1.0 / math.sqrt(head_dim)
+
+    logits_scale = 1.0 / math.sqrt(head_dim_qk)
     sigmoid_bias = 0.25
     o = f(
         query,
@@ -2003,54 +2047,12 @@ def do_bench_sigmoid_flashinfer(attn, B, H, S, D, DV, dtype=torch.float16):
         value,
         logits_scale,
         sigmoid_bias,
-        mask_mode=MaskMode.NON_CAUSAL.value)
+        mask_mode=MaskMode.CAUSAL.value)
 
     # out = prefill.single_prefill_with_kv_cache(query, key, value, causal=True)
     # run = lambda: prefill.single_prefill_with_kv_cache(
     #     query, key, value, causal=True
     # )
-    # allocate 128MB workspace buffer
-    if B != 1:
-        workspace_buffer = torch.empty(
-            128 * 1024 * 1024, dtype=torch.uint8, device=device)
-        prefill_wrapper = flashinfer.BatchPrefillWithPagedKVCacheWrapper(
-            workspace_buffer, "NHD"
-        )
-        #     qo_indptr = torch.tensor(
-        #     # [0, 33, 44, 55, 66, 77, 88, nnz_qo], dtype=torch.int32, device="cuda:0"
-        # )
-        qo_indptr = torch.range(0, S * B, S, dtype=torch.int32, device=device)
-        paged_kv_indices = torch.arange(max_num_pages).int().to(device)
-        # paged_kv_indptr = torch.tensor(
-        #     [0, 17, 29, 44, 48, 66, 100, 128], dtype=torch.int32, device="cuda:0"
-        # )
-        paged_kv_indptr = torch.range(
-            0,
-            max_num_pages,
-            S // page_size,
-            dtype=torch.int32,
-            device=device)
-        # 1 <= paged_kv_last_page_len <= page_size
-        # paged_kv_last_page_len = torch.tensor(
-        #     [1, 7, 14, 4, 3, 1, 16], dtype=torch.int32, device="cuda:0"
-        # )
-        paged_kv_last_page_len = torch.tensor(
-            [page_size] * B, dtype=torch.int32, device=device
-        )
-        # create auxiliary data structures for batch prefill attention
-        prefill_wrapper.plan(
-            qo_indptr,
-            paged_kv_indptr,
-            paged_kv_indices,
-            paged_kv_last_page_len,
-            num_qo_heads,
-            num_kv_heads,
-            head_dim,
-            page_size,
-            causal=True,
-        )
-    # o = prefill_wrapper.run(query, kv_cache)
-
     def fa3(dim_padded):
         if D < dim_padded:
             query_padded = F.pad(query, (0, dim_padded - D), value=0.)
@@ -2068,15 +2070,13 @@ def do_bench_sigmoid_flashinfer(attn, B, H, S, D, DV, dtype=torch.float16):
             value_padded,
             logits_scale,
             sigmoid_bias,
-            mask_mode=MaskMode.NON_CAUSAL.value)
+            mask_mode=MaskMode.CAUSAL.value)
         if DV < dim_padded:
             o_ref = o_ref[:, :, :DV]
         return o_ref
 
-    if B == 1:
-        def run(): return fa3(dim_padded_fa3)
-    else:
-        def run(): return prefill_wrapper.run(query, kv_cache)
+
+    def run(): return fa3(dim_padded_fa3)
 
     # from tilelang.profiler import do_bench
 
