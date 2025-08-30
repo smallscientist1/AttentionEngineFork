@@ -1688,8 +1688,10 @@ def do_bench_attention_128256(B, H, S, D, DV, dtype=torch.float16):
 
 
 def do_bench_flex_attention(
-        attn, B, H, S, D, DV, dtype=torch.float16, require_grad=False):
-    tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
+        attn, B, H, S, D, DV, dtype=torch.float16, require_grad=False, seqlenq=None):
+    if seqlenq is None:
+        seqlenq = S
+    tflops = 2 * B * H * seqlenq * S * D + 2 * B * H * seqlenq * S * DV
     tflops = tflops * 0.5
     bwd_tflops = 4 * B * H * S * S * DV + 6 * B * H * S * S * D
     bwd_tflops = bwd_tflops * 0.5
@@ -1699,7 +1701,7 @@ def do_bench_flex_attention(
     accum_dtype = torch.float32
     require_grad = require_grad
     query = torch.randn(
-        B, H, S, D, device=device, dtype=dtype, requires_grad=require_grad
+        B, H, seqlenq, D, device=device, dtype=dtype, requires_grad=require_grad
     )
     key = torch.randn(
         B, H, S, D, device=device, dtype=dtype, requires_grad=require_grad
@@ -1726,8 +1728,12 @@ def do_bench_flex_attention(
         block_mask = create_block_mask(score_mod, B, H, M, N, device=device)
         return block_mask
 
-    block_mask = create_block_mask_cached(
-        causal_mask, 1, 1, S, S, device=query.device)
+    if seqlenq != 1:
+        assert seqlenq == S
+        block_mask = create_block_mask_cached(
+            causal_mask, 1, 1, S, S, device=query.device)
+    else:
+        block_mask = None
     flex_attention = torch.compile(flex_attention, dynamic=False)
     # run = lambda: flex_attention(
     #     query, key, value, block_mask=block_mask
@@ -1775,12 +1781,16 @@ def do_bench_flex_attention(
         print("tflops: {:.2f}".format(bwd_tflops / latency * 1e-9))
 
 
-def do_bench_flashinfer(attn, B, H, S, D, DV, dtype=torch.float16):
+def do_bench_flashinfer(attn, B, H, S, D, DV, dtype=torch.float16, seqlenq=None):
     # assert(B==1)
-    tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
-    tflops = tflops * 0.5
-    bwd_tflops = 4 * B * H * S * S * DV + 6 * B * H * S * S * D
-    bwd_tflops = bwd_tflops * 0.5
+    if seqlenq is None:
+        tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
+        tflops = tflops * 0.5
+        bwd_tflops = 4 * B * H * S * S * DV + 6 * B * H * S * S * D
+        bwd_tflops = bwd_tflops * 0.5
+    else:
+        tflops = 2 * B * H * seqlenq * S * D + 2 * B * H * seqlenq * S * DV
+        bwd_tflops = 4 * B * H * seqlenq * S * DV + 6 * B * H * seqlenq * S * D
     torch.cuda.manual_seed(0)
     dtype = dtype
     device = "cuda"
@@ -1788,7 +1798,7 @@ def do_bench_flashinfer(attn, B, H, S, D, DV, dtype=torch.float16):
     require_grad = False
 
     import flashinfer
-    from flashinfer import prefill
+    from flashinfer import prefill, decode
     DIM_HOPPER = [64, 128, 256]
     dim_padded_fa3 = list(filter(lambda x: x >= max(D, DV), DIM_HOPPER))
     assert (len(dim_padded_fa3) > 0)
@@ -1803,15 +1813,32 @@ def do_bench_flashinfer(attn, B, H, S, D, DV, dtype=torch.float16):
     max_num_pages = B * S // page_size  # 128
 
     if True:
-        query = torch.randn(
-            B * S, H, D, device=device, dtype=dtype, requires_grad=require_grad
-        )
-        key = torch.randn(
-            B * S, H, D, device=device, dtype=dtype, requires_grad=require_grad
-        )
-        value = torch.randn(
-            B * S, H, DV, device=device, dtype=dtype, requires_grad=require_grad
-        )
+        if seqlenq is None:
+            query = torch.randn(
+                B * S, H, D, device=device, dtype=dtype, requires_grad=require_grad
+            )
+        else:
+            assert seqlenq == 1
+            if B == 1:
+                query = torch.randn(
+                    H, D, device=device, dtype=dtype, requires_grad=require_grad
+                )
+            else:
+                query = torch.randn(
+                    B, H, dim_padded_fa3, device=device, dtype=dtype, requires_grad=require_grad
+                )
+        if seqlenq is None or B == 1:
+            key = torch.randn(
+                B * S, H, D, device=device, dtype=dtype, requires_grad=require_grad
+            )
+            value = torch.randn(
+                B * S, H, DV, device=device, dtype=dtype, requires_grad=require_grad
+            )
+        else:
+            assert dim_padded_fa3 >= head_dim
+            kv_cache = torch.randn(
+                max_num_pages, 2, page_size, H, dim_padded_fa3, device=device, dtype=dtype, requires_grad=require_grad
+            )
 
     # out = prefill.single_prefill_with_kv_cache(query, key, value, causal=True)
     # run = lambda: prefill.single_prefill_with_kv_cache(
@@ -1819,25 +1846,50 @@ def do_bench_flashinfer(attn, B, H, S, D, DV, dtype=torch.float16):
     # )
     # allocate 128MB workspace buffer
     if B != 1:
-        workspace_buffer = torch.empty(
-            128 * 1024 * 1024, dtype=torch.uint8, device=device)
-        prefill_wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
-            workspace_buffer, "NHD", backend="fa3"
-        )
-        #     qo_indptr = torch.tensor(
-        #     # [0, 33, 44, 55, 66, 77, 88, nnz_qo], dtype=torch.int32, device="cuda:0"
-        # )
-        qo_indptr = torch.range(0, S * B, S, dtype=torch.int32, device=device)
-        kv_indptr = qo_indptr.clone()
-        prefill_wrapper.plan(
-            qo_indptr,
-            kv_indptr,
-            num_qo_heads,
-            num_kv_heads,
-            head_dim,
-            head_dim_v,
-            causal=True,
-        )
+        if seqlenq is None:
+            workspace_buffer = torch.empty(
+                128 * 1024 * 1024, dtype=torch.uint8, device=device)
+            prefill_wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
+                workspace_buffer, "NHD", backend="fa3"
+            )
+            #     qo_indptr = torch.tensor(
+            #     # [0, 33, 44, 55, 66, 77, 88, nnz_qo], dtype=torch.int32, device="cuda:0"
+            # )
+            qo_indptr = torch.range(0, S * B, S, dtype=torch.int32, device=device)
+            kv_indptr = qo_indptr.clone()
+            prefill_wrapper.plan(
+                qo_indptr,
+                kv_indptr,
+                num_qo_heads,
+                num_kv_heads,
+                head_dim,
+                head_dim_v,
+                causal=True,
+            )
+        else:
+            # allocate 128MB workspace buffer
+            workspace_buffer = torch.zeros(128 * 1024 * 1024, dtype=torch.uint8, device="cuda:0")
+            decode_wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+                workspace_buffer, "NHD"
+            )
+            kv_page_indices = torch.arange(max_num_pages).int().to(device)
+            kv_page_indptr = torch.range(0, S * B//page_size, S//page_size, dtype=torch.int32, device=device)
+            # 1 <= kv_last_page_len <= page_size
+            kv_last_page_len = torch.tensor(
+                [page_size] * B, dtype=torch.int32, device=device
+            )
+            # create auxiliary data structures for batch decode attention
+            decode_wrapper.plan(
+                kv_page_indptr,
+                kv_page_indices,
+                kv_last_page_len,
+                num_qo_heads,
+                num_kv_heads,
+                head_dim,
+                page_size,
+                pos_encoding_mode="NONE",
+                data_type=dtype
+            )
     # o = prefill_wrapper.run(query, kv_cache)
 
     def fa3(dim_padded):
@@ -1872,8 +1924,30 @@ def do_bench_flashinfer(attn, B, H, S, D, DV, dtype=torch.float16):
         if DV < dim_padded:
             o_ref = o_ref[:, :, :DV]
         return o_ref
+    
+    def fa3_decode(dim_padded):
+        if D < dim_padded:
+            query_padded = F.pad(query, (0, dim_padded - D), value=0.)
+            key_padded = F.pad(key, (0, dim_padded - D), value=0.)
+        else:
+            query_padded = query
+            key_padded = key
+        if DV < dim_padded:
+            value_padded = F.pad(value, (0, dim_padded - DV), value=0.)
+        else:
+            value_padded = value
+        o_ref = decode.single_decode_with_kv_cache(
+            query_padded, key_padded, value_padded, use_tensor_cores=False)
+        if DV < dim_padded:
+            o_ref = o_ref[:, :DV]
+        return o_ref
 
-    if B == 1:
+    if seqlenq is not None:
+        if B == 1:
+            def run(): return fa3_decode(dim_padded_fa3)
+        else:
+            def run(): return decode_wrapper.run(query, kv_cache)
+    elif B == 1:
         def run(): return fa3(dim_padded_fa3)
     else:
         def run(): return batch_fa3(dim_padded_fa3)
@@ -1900,7 +1974,7 @@ def do_bench_sigmoid_flashinfer(attn, B, H, S, D, DV, dtype=torch.float16):
 
     import flashinfer
     import flashinfer.jit
-    from flashinfer import prefill
+    from flashinfer import prefill, decode
     DIM_HOPPER = [64, 128, 256]
     dim_padded_fa3 = list(filter(lambda x: x >= max(D, DV), DIM_HOPPER))
     assert (len(dim_padded_fa3) > 0)
