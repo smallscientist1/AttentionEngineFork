@@ -1,8 +1,9 @@
 import torch
 import tilelang as tl
+import tilelang
 import tilelang.language as T
 
-from tilelang.autotuner import *
+# from tilelang.autotuner import *
 
 import triton.language as triton_lang
 import triton
@@ -216,12 +217,12 @@ def chunk_fwd_h(
         configs = generate_config_h(batch,headq,headk,head,seqlen,dim,dimv,BT, device=attn_device)
         if len(configs) == 0:
             return None
-        @autotune(
+        @tilelang.autotune(
             configs=configs,
             warmup=10,
             rep=10,
         )
-        @jit(out_idx={{output_idx_list_h}}, ref_prog=None)
+        @tilelang.jit(out_idx={{output_idx_list_h}})
         def kernel(BK=None, BV=None, num_stages=None, num_threads=None):
             return kernel_func(BK,BV,num_stages,num_threads)
         
@@ -393,12 +394,12 @@ def chunk_o(
         configs = generate_config_o(batch,headq,headk,head,seqlen,dim,dimv,BT, device=attn_device)
         if len(configs) == 0:
             return None
-        @autotune(
+        @tilelang.autotune(
             configs=configs,
             warmup=10,
             rep=10,
         )
-        @jit(out_idx={{output_idx_list_o}}, ref_prog=None)
+        @tilelang.jit(out_idx={{output_idx_list_o}})
         def kernel(BK=None, BV=None, num_stages=None, num_threads=None):
             return kernel_func(BK,BV,num_stages,num_threads)
         
@@ -528,12 +529,12 @@ def chunk_bwd_kernel_dh(
         configs = generate_config_dh(batch,headq,headk,head,seqlen,dim,dimv,BT, device=attn_device)
         if len(configs) == 0:
             return None
-        @autotune(
+        @tilelang.autotune(
             configs=configs,
             warmup=10,
             rep=10,
         )
-        @jit(out_idx=[5,], ref_prog=None)
+        @tilelang.jit(out_idx=[5,])
         def kernel(BK=None, BV=None, num_stages=None, num_threads=None):
             return kernel_func(BK,BV,num_stages,num_threads)
         
@@ -561,11 +562,16 @@ def generate_config_dqkg(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H10
     BK_dqkg = [bk for bk in BK_dqkg if D_HEAD % bk == 0]
     BV_dqkg = [bv for bv in BV_dqkg if D_HEADV % bv == 0]
     
+    def is_power_of_two(n):
+        return (n & (n - 1)) == 0 and n > 0
+    
     config_dqkg = []
     for BK_dqk, BV_dqk, num_stages_dqk, num_threads_dqk in itertools.product(BK_dqkg, BV_dqkg, num_stages_dqkg, num_threads_dqkg):
         conditions_dqk = [
             num_stages_dqk > D_HEADV // BV_dqk,
             BT % (MMA_ATOM_M*(num_threads_dqk//MMA_ATOM_TRHEADS)) != 0,
+            # Tilelang 0.1.5 T.reduce_sum limit
+            not is_power_of_two(BT // (num_threads_dqk // device.warp_size)),
             # sharedmem_chunk_dqk > smem_cap,
             # reg_chunk_dqk > reg_cap and reg_chunk_dqk > reg_cap_per_thread * num_threads_dqk,
         ]
@@ -628,6 +634,7 @@ def chunk_bwd_dqkg(
                 b_h_shared = T.alloc_shared((BK, BV),dtype)
                 b_h_local = T.alloc_fragment((BK, BV),dtype)
                 b_hdh = T.alloc_fragment((1,BK*BV),accum_dtype)
+                b_hdh2 = T.alloc_fragment((BK, BV),accum_dtype)
                 k_shared = T.alloc_shared((BT,BK), dtype)
                 q_shared = T.alloc_shared((BT,BK),dtype)
                 q_local = T.alloc_fragment((BT,BK),dtype)
@@ -647,12 +654,18 @@ def chunk_bwd_dqkg(
                 b_ds_shared = T.alloc_shared((BT, BT), dtype)
                 b_dg_last = T.alloc_fragment((1),accum_dtype)
                 b_dg_last_tmp = T.alloc_fragment((1),accum_dtype)
+                b_dg_last_tmp2 = T.alloc_fragment((BK),accum_dtype)
+                b_dg_last_tmp3 = T.alloc_fragment((BK),accum_dtype)
+                b_dg_last_tmp_shared = T.alloc_shared((BK),accum_dtype, scope="shared")
                 # b_dg_last_local = T.alloc_local((1),accum_dtype)
                 # b_dg_last_shared = T.alloc_shared((1),accum_dtype, scope="shared")
                 b_dg_qk = T.alloc_fragment((BT,BK),accum_dtype)
                 b_dg = T.alloc_fragment((BT),accum_dtype)
 
                 b_dkk = T.alloc_fragment((1,BT*BK), accum_dtype)
+                b_dg_last_tmp4 = T.alloc_fragment((BT), accum_dtype)
+                b_dg_last_tmp4_shared = T.alloc_shared((BT), accum_dtype, scope="shared")
+                b_dg_last_tmp5 = T.alloc_fragment((BT), accum_dtype)
                 # b_dkksum = T.alloc_fragment((BT), accum_dtype)
                 # b_dkksum_shared = T.alloc_shared((BT), accum_dtype, scope="shared")
                 # b_dkksum_T = T.alloc_fragment((1,BT), accum_dtype)
@@ -683,11 +696,21 @@ def chunk_bwd_dqkg(
                     
                     T.copy(b_h_shared, b_h_local)
                     T.copy(b_dh_shared, b_dh_local)
-                    for i in T.Parallel(BK*BV):
-                        b_hdh[0,i] = b_h_local[i//BV, i % BV] * b_dh_local[i//BV, i % BV]
+                    # tilelang<0.1.5
+                    # for i in T.Parallel(BK*BV):
+                    #     b_hdh[0,i] = b_h_local[i//BV, i % BV] * b_dh_local[i//BV, i % BV]
                     # tl only support clear=True for sharedmemory reduce
-                    T.reduce_sum(b_hdh, b_dg_last_tmp,dim=1) # , clear=True)
+                    # T.reduce_sum(b_hdh, b_dg_last_tmp,dim=1) # , clear=True)
+                    # b_dg_last[0] += b_dg_last_tmp[0]
+                    # tilelang==0.1.5
+                    for i, j in T.Parallel(BK, BV):
+                        b_hdh2[i, j] = b_h_local[i,j] * b_dh_local[i,j]
+                    T.reduce_sum(b_hdh2, b_dg_last_tmp2, dim=1)
+                    T.copy(b_dg_last_tmp2, b_dg_last_tmp_shared)
+                    T.copy(b_dg_last_tmp_shared, b_dg_last_tmp3)
+                    T.reduce_sum(b_dg_last_tmp3, b_dg_last_tmp, dim=0)
                     b_dg_last[0] += b_dg_last_tmp[0]
+                    
                     T.gemm(b_do_shared, b_h_shared, b_dq, transpose_A=False, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                     T.gemm(b_v_shared, b_dh_shared, b_dk, transpose_A=False, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
@@ -723,15 +746,24 @@ def chunk_bwd_dqkg(
                 # for i in T.Parallel(BT*BK):
                 #     b_dkk[0,i] *= k_shared[i//BK,i%BK]
                 
-                # T.copy(k_shared, k_local1) # layout没有以b_dk 优先
+                # TIlelang < 0.1.5
+                # layout没有以b_dk 优先 # T.copy(k_shared, k_local1) 
+                # for i,j in T.Parallel(BT,BK):
+                #     k_local1[i,j] = b_dk[i,j]
+                # for i,j in T.Parallel(BT, BK):
+                #     k_local1[i,j] *= k_shared[i, j]
+                # for i in T.Parallel(BT*BK):
+                #     b_dkk[0,i] = k_local1[i//BK, i%BK]
+                # T.reduce_sum(b_dkk, b_dg_last_tmp, dim=1)# , clear=True)
+                # Tilelang == 0.1.5
+                T.copy(k_shared, k_local1)
                 for i,j in T.Parallel(BT,BK):
-                    k_local1[i,j] = b_dk[i,j]
-                for i,j in T.Parallel(BT, BK):
-                    k_local1[i,j] *= k_shared[i, j]
-                for i in T.Parallel(BT*BK):
-                    b_dkk[0,i] = k_local1[i//BK, i%BK]
+                    k_local1[i,j] *= b_dk[i,j]
+                T.reduce_sum(k_local1, b_dg_last_tmp4, dim=1)
+                T.copy(b_dg_last_tmp4, b_dg_last_tmp4_shared)
+                T.copy(b_dg_last_tmp4_shared, b_dg_last_tmp5)
+                T.reduce_sum(b_dg_last_tmp5, b_dg_last_tmp, dim=0)
                 
-                T.reduce_sum(b_dkk, b_dg_last_tmp, dim=1)# , clear=True)
                 b_dg_last[0] += b_dg_last_tmp[0]
                 
                 T.gemm(b_ds_cast,k_shared,b_dq,transpose_A=False, transpose_B=False,policy=T.GemmWarpPolicy.FullRow)
@@ -771,12 +803,12 @@ def chunk_bwd_dqkg(
         configs = generate_config_dqkg(batch,headq,headk,head,seqlen,dim,dimv,BT, device=attn_device)
         if len(configs) == 0:
             return None
-        @autotune(
+        @tilelang.autotune(
             configs=configs,
             warmup=10,
             rep=10,
         )
-        @jit(out_idx=[7,8,9,], ref_prog=None)
+        @tilelang.jit(out_idx=[7,8,9,])
         def kernel(BK=None, BV=None, num_stages=None, num_threads=None):
             return kernel_func(BK,BV,num_stages,num_threads)
         
@@ -913,12 +945,12 @@ def chunk_bwd_kernel_dv(
         configs = generate_config_dv(batch,headq,headk,head,seqlen,dim,dimv,BT, device=attn_device)
         if len(configs) == 0:
             return None
-        @autotune(
+        @tilelang.autotune(
             configs=configs,
             warmup=10,
             rep=10,
         )
-        @jit(out_idx=[5,], ref_prog=None)
+        @tilelang.jit(out_idx=[5,])
         def kernel(BK=None, BV=None, num_stages=None, num_threads=None):
             return kernel_func(BK,BV,num_stages,num_threads)
         
@@ -999,16 +1031,16 @@ def autotune_linearattn(file_path="mamba2"):
             best_BT = BT
             best_latency = latency_h + latency_o
             best_config_h = {
-                "BK": config_h[0],
-                "BV": config_h[1],
-                "num_stages": config_h[2],
-                "num_threads": config_h[3],
+                "BK": config_h["BK"],
+                "BV": config_h["BV"],
+                "num_stages": config_h["num_stages"],
+                "num_threads": config_h["num_threads"],
             }
             best_config_o = {
-                "BK": config_o[0],
-                "BV": config_o[1],
-                "num_stages": config_o[2],
-                "num_threads": config_o[3],
+                "BK": config_o["BK"],
+                "BV": config_o["BV"],
+                "num_stages": config_o["num_stages"],
+                "num_threads": config_o["num_threads"],
             }
     
     return best_BT, best_config_h, best_config_o, best_latency
@@ -1033,28 +1065,28 @@ def autotune_linearattn_bwd(file_path="mamba2"):
             best_BT = BT
             best_latency = latency_h + latency_dh + latency_dqkg + latency_dv
             best_config_h = {
-                "BK": config_h[0],
-                "BV": config_h[1],
-                "num_stages": config_h[2],
-                "num_threads": config_h[3],
+                "BK": config_h["BK"],
+                "BV": config_h["BV"],
+                "num_stages": config_h["num_stages"],
+                "num_threads": config_h["num_threads"],
             }
             best_config_dh = {
-                "BK": config_dh[0],
-                "BV": config_dh[1],
-                "num_stages": config_dh[2],
-                "num_threads": config_dh[3],
+                "BK": config_dh["BK"],
+                "BV": config_dh["BV"],
+                "num_stages": config_dh["num_stages"],
+                "num_threads": config_dh["num_threads"],
             }
             best_config_dqkg = {
-                "BK": config_dqkg[0],
-                "BV": config_dqkg[1],
-                "num_stages": config_dqkg[2],
-                "num_threads": config_dqkg[3],
+                "BK": config_dqkg["BK"],
+                "BV": config_dqkg["BV"],
+                "num_stages": config_dqkg["num_stages"],
+                "num_threads": config_dqkg["num_threads"],
             }
             best_config_dv = {
-                "BK": config_dv[0],
-                "BV": config_dv[1],
-                "num_stages": config_dv[2],
-                "num_threads": config_dv[3],
+                "BK": config_dv["BK"],
+                "BV": config_dv["BV"],
+                "num_stages": config_dv["num_stages"],
+                "num_threads": config_dv["num_threads"],
             }
     
     return best_BT, best_config_h, best_config_dh, best_config_dqkg, best_config_dv, best_latency

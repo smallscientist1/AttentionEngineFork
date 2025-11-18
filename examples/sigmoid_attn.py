@@ -7,7 +7,7 @@ from core import SymbolicArray, SymbolScalar, SymbolicTensor
 from core import Var
 from core.utils import meta_tensor
 
-def sigmoid_attention(B, H, S, D):
+def sigmoid_attention(B, H, S, D, DV):
     
     def causal_mask(b, h, q_idx, kv_idx):
         return q_idx >= kv_idx
@@ -57,7 +57,7 @@ def sigmoid_attention(B, H, S, D):
     qkv_meta = (
         meta_tensor(B, H, S, D, dtype=torch.float16),
         meta_tensor(B, H, S, D, dtype=torch.float16),
-        meta_tensor(B, H, S, D, dtype=torch.float16),
+        meta_tensor(B, H, S, DV, dtype=torch.float16),
     )
 
 

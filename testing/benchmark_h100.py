@@ -1,6 +1,13 @@
 from examples.mha import causal_softmax_attention
 from examples.mha_v2 import causal_softmax_attention as causal_softmax_attention_v2
-from attention_engine.benchmark.bench_utils import do_bench
+from examples.gated_retention import gated_retention
+from examples.sigmoid_attn import sigmoid_attention
+from examples.reluattn_v2 import relu_attention
+from examples.retnet_recurrent import retnet_recurrent
+from examples.retention_parallel import retention_parallel
+
+# from attention_engine.benchmark.bench_utils import do_bench
+from tilelang.profiler import do_bench
 
 import torch
 import torch.nn.functional as F
@@ -112,10 +119,14 @@ def bench_attention(attn_type:str, Batch:int, head:int, seqlen_q:int, seqlen_kv:
     if head_v is None:
         head_v = head
         
+    result_dict = {}
     if attn_type == "causal_softmax_attn":
-        result_dict = bench_softmaxattention(Batch, head, seqlen_q, seqlen_kv, dim_qk, dim_v)
+        pass
+        # result_dict = bench_softmaxattention(Batch, head, seqlen_q, seqlen_kv, dim_qk, dim_v)
     # elif attn_type == "sigmoid_attn":
     #     result_dict = bench_sigmoidattention(Batch, head, seqlen_q, dim_qk, dim_v)
+    elif attn_type == "gated_retention":
+        result_dict = bench_gated_retention(Batch, head, seqlen_q, dim_qk, dim_v)
     else:
         # raise ValueError(f"Undefined attention type: {attn_type}")
         print("Warning: Undefined attention type, skipping benchmark.")
@@ -220,8 +231,234 @@ def bench_softmaxattention(B, H, Sq, S, D, DV, device='cuda', dtype=torch.float1
     
     return result_dict
 
-def bench_sigmoidattention(B, H, S, D, DV):
-    pass
+def bench_sigmoidattention(B, H, S, D, DV, dtype=torch.float16, require_grad=True):
+    
+    result_dict = {}
+    
+    accum_dtype = torch.float32
+    query = torch.randn(B, S, H, D, device="cuda", dtype=dtype, requires_grad=require_grad)
+    key = torch.randn(B, S, H, D, device="cuda", dtype=dtype, requires_grad=require_grad)
+    value = torch.randn(B, S, H, DV, device="cuda", dtype=dtype, requires_grad=require_grad)
+    do = torch.randn(B, S, H, DV, device="cuda", dtype=dtype, requires_grad=False)
+    
+    softmax_bias = 0.1 * torch.randn(1, device="cuda", dtype=accum_dtype, requires_grad=False)
+    
+    softmax_bias_2 = softmax_bias.to("cpu")
+    
+    # ours
+    attention_module = sigmoid_attention(B, H, S, D, DV)
+    fwd_lat = do_bench(lambda: attention_module(query, key, value, softmax_bias))
+    if require_grad:
+        o = attention_module(query, key, value, softmax_bias)
+        bwd_lat = do_bench(lambda: o.backward(do, retain_graph=True))
+    result_dict["MetaAttention"] = (fwd_lat, bwd_lat)
+    
+    # flash-sigmoid
+    try:
+        from flash_sigmoid import flash_attn_func
+        
+        fwd_lat_ref = do_bench(lambda: flash_attn_func(
+            query,
+            key,
+            value,
+            softmax_scale=1.0,
+            causal=True,
+            sigmoid_bias=softmax_bias_2))
+        if require_grad:
+            out_ref = flash_attn_func(
+                query,
+                key,
+                value,
+                softmax_scale=1.0,
+                causal=True,
+                sigmoid_bias=softmax_bias_2)
+            bwd_lat_ref = do_bench(lambda: out_ref.backward(do, retain_graph=True))
+            
+        result_dict["FlashSigmoid"] = (fwd_lat_ref, bwd_lat_ref)
+    except Exception:
+        print("Warning: flash-sigmoid not available")
+    
+    return result_dict
+    
+def bench_reluattention(B, H, S, D, DV, device='cuda', dtype=torch.float16, require_grad=True):
+    
+    result_dict = {}
+    query = torch.randn(B, S, H, D, device=device, dtype=dtype, requires_grad=require_grad)
+    key = torch.randn(B, S, H, D, device=device, dtype=dtype, requires_grad=require_grad)
+    value = torch.randn(B, S, H, DV, device=device, dtype=dtype, requires_grad=require_grad)
+    do = torch.randn(B, S, H, DV, device=device, dtype=dtype, requires_grad=False)
+    
+    # ours
+    attention_module = relu_attention(B, H, S, D, DV, dtype=dtype)
+    fwd_lat = do_bench(lambda: attention_module(query, key, value))
+    if require_grad:
+        o = attention_module(query, key, value)
+        bwd_lat = do_bench(lambda: o.backward(do, retain_graph=True))
+    result_dict["MetaAttention"] = (fwd_lat, bwd_lat)
+    
+    # Pytorch ReLU Attention
+    def ref_program(query, key, value):
+        qk = torch.einsum('bqhd,bkhd->bhqk', query, key)
+        qk = qk / (D ** 0.5)
+        qk = F.relu(qk)
+        o = torch.einsum('bhqk,bkhd->bqhd', qk, value)
+        return o
+
+    ref_program_fwd_lat = do_bench(lambda: ref_program(query, key, value))
+    if require_grad:
+        out_ref = ref_program(query, key, value)
+        ref_program_bwd_lat = do_bench(lambda: out_ref.backward(do, retain_graph=True))
+    result_dict["PytorchReLU"] = (ref_program_fwd_lat, ref_program_bwd_lat)
+    
+    return result_dict
+
+def bench_gated_retention(B, H, S, D, DV, device='cuda', dtype=torch.bfloat16, require_grad=True):
+    
+    result_dict = {}
+    # prepare input
+    accum_dtype = torch.float32
+    q = torch.randn(B, H, S, D, device="cuda", dtype=dtype)
+    k = torch.randn(B, H, S, D, device="cuda", dtype=dtype)
+    g = F.logsigmoid(torch.randn(B, H, S, device="cuda", dtype=accum_dtype)).clamp_min(-5)
+    v = torch.randn(B, H, S, DV, device="cuda", dtype=dtype)
+    do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype)
+    
+    q.detach_().requires_grad_(require_grad)
+    k.detach_().requires_grad_(require_grad)
+    g.detach_().requires_grad_(require_grad)
+    v.detach_().requires_grad_(require_grad)
+
+
+    q1 = q.clone()
+    k1 = k.clone()
+    v1 = v.clone()
+    g1 = g.clone().to(dtype)
+    
+    q1.detach_().requires_grad_(require_grad)
+    k1.detach_().requires_grad_(require_grad)
+    g1.detach_().requires_grad_(require_grad)
+    v1.detach_().requires_grad_(require_grad)
+    
+    # ours
+    attention_module = gated_retention(B, H, S, D, DV, dtype=dtype, tune=True)
+    fwd_lat = do_bench(lambda: attention_module(q, k, v, g))
+    if require_grad:
+        o = attention_module(q, k, v, g)
+        bwd_lat = do_bench(lambda: o.backward(do, retain_graph=True))
+    
+    result_dict["MetaAttention"] = (fwd_lat, bwd_lat)
+    
+    # flash-linear-attention
+    # try:
+    from fla.ops.simple_gla import chunk_simple_gla
+    fwd_lat_ref = do_bench(lambda: chunk_simple_gla(
+        q1, k1, v1, g1, head_first=True
+    )[0])
+    
+    if require_grad:
+        out_ref,_ = chunk_simple_gla(
+            q1, k1, v1, g1, head_first=True
+        )
+        bwd_lat_ref = do_bench(lambda: out_ref.backward(do, retain_graph=True))
+    result_dict["FlashLinearAttention"] = (fwd_lat_ref, bwd_lat_ref)
+    
+    # except:
+    #     print("Warning: fla.ops.simple_gla not available")
+    #     return
+    
+    return result_dict
+   
+def bench_retnet_recurrent(B, H, S, D, DV, device="cuda", dtype=torch.bfloat16, require_grad=True):
+    
+    result_dict = {}
+    # prepare input
+    accum_dtype = torch.float32
+    q = torch.randn(B, H, S, D, device="cuda", dtype=dtype)
+    k = torch.randn(B, H, S, D, device="cuda", dtype=dtype)
+    g = torch.tensor(range(0, H), dtype=accum_dtype)
+    g = 1 - torch.exp2(-5 - g)
+    g = g[None, :, None].expand(B, H, TLen).cuda().detach().contiguous()
+    v = torch.randn(B, H, S, DV, device="cuda", dtype=dtype)
+    do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype)
+    
+    q.detach_().requires_grad_(require_grad)
+    k.detach_().requires_grad_(require_grad)
+    g.detach_().requires_grad_(False)
+    v.detach_().requires_grad_(require_grad)
+
+    # clone for reference
+    q1 = q.clone()
+    k1 = k.clone()
+    v1 = v.clone()
+    g1 = g.clone()
+
+    q1.detach_().requires_grad_(require_grad)
+    k1.detach_().requires_grad_(require_grad)
+    g1.detach_().requires_grad_(False)
+    v1.detach_().requires_grad_(require_grad)
+
+    # ours
+    attention_module = retnet_recurrent(B, H, S, D, DV, dtype=dtype, tune=True)
+    fwd_lat = do_bench(lambda: attention_module(q, k, v, g))
+    if require_grad:
+        o = attention_module(q, k, v, g)
+        bwd_lat = do_bench(lambda: o.backward(do, retain_graph=True))
+    
+    result_dict["MetaAttention"] = (fwd_lat, bwd_lat)
+    
+    # flash-linear-attention
+    try:
+        from fla.ops.retention import chunk_retention
+        fwd_lat_ref = do_bench(lambda: chunk_retention(
+            q1, k1, v1, head_first=True
+        )[0])
+        if require_grad:
+            o_ref, _ = chunk_retention(
+                q1, k1, v1, head_first=True
+            )
+            bwd_lat_ref = do_bench(lambda: o_ref.backward(do, retain_graph=True))
+        result_dict["FlashLinearAttention"] = (fwd_lat_ref, bwd_lat_ref)
+    except Exception:
+        print("Warning: fla.ops.retention not available")
+                
+    
+    return result_dict
+
+def bench_retention_parallel(B, H, S, D, DV, device="cuda", dtype=torch.float16, require_grad=False):
+    
+    result_dict = {}
+    # prepare input
+    accum_dtype = torch.float32
+    q = torch.randn(B, S, H, D, device="cuda", dtype=dtype, requires_grad=require_grad)
+    k = torch.randn(B, S, H, D, device="cuda", dtype=dtype, requires_grad=require_grad)
+    v = torch.randn(B, S, H, DV, device="cuda", dtype=dtype, requires_grad=require_grad)
+    do = torch.randn(B, S, H, DV, device="cuda", dtype=dtype, requires_grad=False)
+    mask = torch.rand(
+        1, H, S, S, device="cuda", dtype=dtype, requires_grad=False
+    ).tril().contiguous()
+
+
+    # ours
+    attention_module = retention_parallel(B, H, S, D, DV, dtype=dtype, tune=True)
+    fwd_lat = do_bench(lambda: attention_module(q, k, v, mask))
+    
+    result_dict["MetaAttention"] = (fwd_lat, None)
+    
+    # pytorch 
+    
+    @torch.compile
+    def ref_program(q, k, v, mask):
+        qk = torch.einsum('bqhd,bkhd->bhqk', q, k)
+        qkm = qk * mask
+        r = qkm.detach().abs().sum(dim=-1, keepdim=True).clamp(min=1.0)
+        o = torch.einsum('bhqk,bkhd->bqhd', qkm / r, v)
+        return o.to(dtype=dtype)
+
+    ref_lat = do_bench(lambda: ref_program(q, k, v, mask))
+    result_dict["PytorchRetention"] = (ref_lat, None)
+    
+    return result_dict
+
 
 def plot_fig():
     pass

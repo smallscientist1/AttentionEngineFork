@@ -156,27 +156,53 @@ def check_close(o, O_ref, rtol=1e-3, atol=1e-3):
 
 
 def print_debug(o, O_ref, rtol=1e-3, atol=1e-3, save_file=True):
-    close_mask = torch.isclose(o, O_ref, rtol=rtol, atol=atol)
+    # 计算容差阈值
+    tolerance_threshold = atol + rtol * torch.abs(O_ref)
+    
+    # 计算绝对差异
+    abs_diff = torch.abs(o - O_ref)
+    
+    # 找出超过容差的元素
+    exceed_mask = abs_diff > tolerance_threshold
     total_elements = o.numel()
-    num_not_close = (~close_mask).sum().item()
-    percentage_not_close = (num_not_close / total_elements) * 100
-    print(f"{num_not_close} elements are not close.")
-    print(f"{percentage_not_close:.2f}% of the elements are not close.")
-    print(
-        f"Total elements: {total_elements}, Not close elements: {num_not_close}")
-    # max diff and idx
-    max_diff = (o - O_ref).abs().max().item()
-    max_diff_idx = (o - O_ref).abs().argmax().item()
+    num_exceed = exceed_mask.sum().item()
+    percentage_exceed = (num_exceed / total_elements) * 100
+    
+    print(f"{num_exceed} elements exceed tolerance.")
+    print(f"{percentage_exceed:.2f}% of the elements exceed tolerance.")
+    print(f"Total elements: {total_elements}, Exceed tolerance elements: {num_exceed}")
+    
+    # 找出超过容差的最大差异值和索引
+    if num_exceed > 0:
+        # 只在有超过容差的元素时计算
+        exceed_diff = torch.where(exceed_mask, abs_diff, torch.tensor(0.0, device=o.device))
+        max_exceed_diff = exceed_diff.max().item()
+        max_exceed_idx = exceed_diff.argmax().item()
+        max_exceed_idx = torch.unravel_index(torch.tensor(max_exceed_idx), o.shape)
+        
+        print(f"Max exceed diff: {max_exceed_diff} at index {max_exceed_idx}")
+        print(f"Tolerance threshold: {tolerance_threshold[max_exceed_idx].item()}")
+        print(f"Reference: {O_ref[max_exceed_idx]}")
+        print(f"Library: {o[max_exceed_idx]}")
+        print(f"Absolute diff: {abs_diff[max_exceed_idx].item()}")
+    else:
+        print("No elements exceed tolerance.")
+        max_exceed_diff = 0.0
+        max_exceed_idx = None
+    
+    # 原有的最大绝对差异计算
+    max_diff = abs_diff.max().item()
+    max_diff_idx = abs_diff.argmax().item()
     max_diff_idx = torch.unravel_index(torch.tensor(max_diff_idx), o.shape)
     print(f"Max diff: {max_diff} at index {max_diff_idx}")
-    print(f"Reference: {O_ref[max_diff_idx]}")
-    print(f"Library: {o[max_diff_idx]}")
+    print(f"Reference: {O_ref[max_exceed_idx]}")
+    print(f"Library: {o[max_exceed_idx]}")
     print(torch.allclose(o, O_ref, rtol=rtol, atol=atol))
-    # max relative diff and idx
-    max_rel_diff = ((o - O_ref).abs() / O_ref.abs()).max().item()
-    max_rel_diff_idx = ((o - O_ref).abs() / O_ref.abs()).argmax().item()
-    max_rel_diff_idx = torch.unravel_index(
-        torch.tensor(max_rel_diff_idx), o.shape)
+    
+    # 最大相对差异计算
+    max_rel_diff = (abs_diff / torch.abs(O_ref)).max().item()
+    max_rel_diff_idx = (abs_diff / torch.abs(O_ref)).argmax().item()
+    max_rel_diff_idx = torch.unravel_index(torch.tensor(max_rel_diff_idx), o.shape)
     print(f"Max rel diff: {max_rel_diff} at index {max_rel_diff_idx}")
     print(f"Reference: {O_ref[max_rel_diff_idx]}")
     print(f"Library: {o[max_rel_diff_idx]}")
@@ -184,13 +210,12 @@ def print_debug(o, O_ref, rtol=1e-3, atol=1e-3, save_file=True):
     if save_file:
         with open("o_ref.txt", "w") as f:
             O_ref_1 = O_ref.cpu()
-            for idx, element in enumerate(O_ref_1):  # .flatten()):
+            for idx, element in enumerate(O_ref_1):
                 f.write(f"{idx}: {element}\n")
         with open("o.txt", "w") as f:
             o_1 = o.cpu()
-            for idx, element in enumerate(o_1):  # .flatten()):
+            for idx, element in enumerate(o_1):
                 f.write(f"{idx}: {element}\n")
-
 
 # def bench_func_fwd(attn, B, H, S, D, DV, custom_fwd_input={}, causal=True, dtype=torch.float16):
 #     tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
