@@ -135,18 +135,24 @@ class AttentionEngine:
                 tune_file_bwd=tune_file_bwd,
                 kv_shared=kv_shared)
 
-        elif backend == "cute":
+        elif backend == "cute" or backend == "cute_v2":
             from core.lower.lower_cute import lower_cute
             # must be same with cute_template.py
             OUTPUT_DIR = osp.join(
                 osp.dirname(
                     osp.abspath(__file__)),
-                "../core/template/cute_template_output")
+                f"../core/template/{backend}_template_output")
             if not kv_shared:
-                template_dir = osp.join(
-                    osp.dirname(
-                        osp.abspath(__file__)),
-                    "../core/template/cute_template")
+                if backend == "cute_v2":
+                    template_dir = osp.join(
+                        osp.dirname(
+                            osp.abspath(__file__)),
+                        "../core/template/cute_template_v2")
+                else:
+                    template_dir = osp.join(
+                        osp.dirname(
+                            osp.abspath(__file__)),
+                        "../core/template/cute_template")
                 file_path = os.path.join(OUTPUT_DIR, "flash_attn_interface.py")
             else:
                 template_dir = osp.join(
