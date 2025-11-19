@@ -65,6 +65,7 @@ def sigmoid_attention(B, H, S, D, DV):
         qkv_meta,
         custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
         online_func=OnlineIdentity(),
+        tune_bwd=True, tune_file_bwd="sigmoid_bwd.json",
     )
     
     return mod

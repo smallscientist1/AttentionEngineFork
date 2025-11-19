@@ -2,6 +2,7 @@ from examples.mha import causal_softmax_attention
 from examples.mha_decode import softmax_attention_decode
 from examples.mamba2 import mamba2
 from examples.gated_retention import gated_retention
+from examples.sigmoid_attn import sigmoid_attention
 
 import torch
 import torch.nn.functional as F
@@ -17,6 +18,7 @@ def test_attention():
     # test_softmaxattention_decode(8, 16, 1, 4096, 128, 128) # TODO: compile TileLang with llvm
     # test_mamba2(1, 1, 2048, 128, 64, HK=1, HV=80, require_grad=True)
     test_gated_retention(8, 32, 2048, 256, 512)
+    test_sigmoid_attention(1, 16, 2048, 128, 128)
 
     print("All tests pass.")
     
@@ -513,6 +515,72 @@ def test_gated_retention(B, H, S, D, DV, dtype=torch.bfloat16, require_grad=True
         #     atol=1e-2,
         # )
     
+def test_sigmoid_attention(B, H, S, D, DV, device="cuda", dtype=torch.float16, require_grad=True):
+    attention_module = sigmoid_attention(B, H, S, D, DV)
+    
+    def ref(query, key, value, sigmoid_bias, causal=True):
+        dim = query.shape[-1]
+        num_head_groups = query.shape[2] // key.shape[2]
+
+        query = rearrange(
+            query, 'b s (h g) d -> b s g h d',
+            g=num_head_groups)  # [batch_size, num_head_groups, groups, dim]
+        scores = einsum(query, key,
+        'b s g h d, b t h d -> b g h s t')
+        if causal:
+            seqlenq = query.shape[1]
+            seqlenk = key.shape[1]
+            mask = torch.tril(
+                torch.ones(
+                    seqlenq, seqlenk, device=scores.device))
+            mask = mask.unsqueeze(0).unsqueeze(0)
+            scores = scores.masked_fill(mask == 0, float('-inf'))
+        scores += sigmoid_bias
+        attention = torch.sigmoid(scores)
+
+        out = einsum(attention, value,
+                'b g h s t, b t h d -> b g h s d')
+        out = rearrange(out, 'b g h s d -> b s (h g) d') 
+        return out
+    
+    accum_dtype = torch.float32
+    # init input
+    query = torch.randn(B, S, H, D, device=device, dtype=dtype, requires_grad=require_grad)
+    key = torch.randn(B, S, H, D, device=device, dtype=dtype, requires_grad=require_grad)
+    value = torch.randn(B, S, H, DV, device=device, dtype=dtype, requires_grad=require_grad)
+    softmax_bias = 0.1* torch.randn(1, device=device, dtype=accum_dtype, requires_grad=False)
+    
+    ref_o = ref(query, key, value, softmax_bias)
+    
+    query1 = query.clone().detach().requires_grad_(require_grad)
+    key1 = key.clone().detach().requires_grad_(require_grad)
+    value1 = value.clone().detach().requires_grad_(require_grad)
+    o = attention_module(query1, key1, value1, softmax_bias)
+    
+    torch.testing.assert_close(o, ref_o, rtol=1e-2, atol=1e-2)
+    
+    if require_grad:
+        do = torch.randn(B, S, H, DV, device=device, dtype=dtype)
+        o.backward(do, retain_graph=True)
+        ref_o.backward(do, retain_graph=True)
+        torch.testing.assert_close(
+            query.grad,
+            query1.grad,
+            rtol=3e-2,
+            atol=1e-2,
+        )
+        torch.testing.assert_close(
+            key.grad,
+            key1.grad,
+            rtol=3e-2,
+            atol=1e-2,
+        )
+        torch.testing.assert_close(
+            value.grad,
+            value1.grad,
+            rtol=3e-2,
+            atol=1e-2,
+        )
     
 if __name__ == "__main__":
     test_attention()

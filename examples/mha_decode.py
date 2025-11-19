@@ -100,7 +100,7 @@ def softmax_attention_decode(B, H, S, KV, D, DV, dtype=torch.float16):
 
     
     qkv_meta = (
-        meta_tensor(B, H, S, D, dtype=dtype),
+        meta_tensor(B, H, ((S+127)//128)*128, D, dtype=dtype),
         meta_tensor(B, H, KV, D, dtype=dtype),
         meta_tensor(B, H, KV, DV, dtype=dtype),
     )
@@ -114,3 +114,5 @@ def softmax_attention_decode(B, H, S, KV, D, DV, dtype=torch.float16):
         online_func=online,
         # tune=False, tune_file="mha_tune.json"
     )
+    
+    return mod
