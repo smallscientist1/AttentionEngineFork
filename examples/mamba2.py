@@ -22,7 +22,7 @@ output:
 O: [B, H, T, DV]
 """
 
-def mamba2(B, HQ, S, D, DV, HK=None, HV=None, dtype=torch.bfloat16):
+def mamba2(B, HQ, S, D, DV, HK=None, HV=None, dtype=torch.bfloat16, tune=False):
     if HK is None:
         HK = HQ
     if HV is None:
@@ -50,6 +50,6 @@ def mamba2(B, HQ, S, D, DV, HK=None, HV=None, dtype=torch.bfloat16):
     mod = LinearAttentionEngine(qkv_meta,
         decay_mod=decay_mod, v_mod=v_mod,
                                 custom_io = custom_io,
-                                tune=False, tune_filename="mamba2",
-                                tune_bwd=False)
+                                tune=tune, tune_filename="mamba2",
+                                tune_bwd=tune)
     return mod

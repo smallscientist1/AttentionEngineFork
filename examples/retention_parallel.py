@@ -87,7 +87,9 @@ def retention_parallel(B, H, S, D, DV, dtype=torch.float16, tune=False):
         qkv_meta,
         custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
         online_func=online,
-        mask_value="0"
+        mask_value="0",
+        tune=tune, tune_file="retention_parallel_fwd.json",
+        # tune_bwd = True, tune_file_bwd = "retention_parallel_bwd.json"
     )
     
     return mod

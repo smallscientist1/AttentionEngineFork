@@ -68,10 +68,9 @@ def compute_final_dg(
 
 
 def generate_config_h(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100()):
-    # BTs = [32,64,128,192,256]
-    BK_hs = [32,64,128,192,256]
-    BV_hs = [32,64,128,192,256]
-    num_stages_hs = [1,2,3,4]
+    BK_hs = [32,64,128] # ,192,256]
+    BV_hs = [32,64,128] # ,192,256]
+    num_stages_hs = [1,2] # ,3,4]
     num_threads_hs = [128,256]
     
     # H100
@@ -235,10 +234,9 @@ def chunk_fwd_h(
         
 
 def generate_config_o(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100()):
-    # BTs = [32,64,128,192,256]
-    BK_os = [32,64,128,256]
-    BV_os = [32,64,128,256]
-    num_stages_os = [1,2,3,4]
+    BK_os = [32,64,128] # ,256]
+    BV_os = [32,64,128] # ,256]
+    num_stages_os = [1,2] # ,3,4]
     num_threads_os = [128,256]
     
     # H100
@@ -412,9 +410,9 @@ def chunk_o(
         
 
 def generate_config_dh(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100()):
-    BK_dhs = [32,64,128,192,256]
-    BV_dhs = [32,64,128,192,256]
-    num_stages_dhs = [1,2,3,4]
+    BK_dhs = [32,64,128] # ,192,256]
+    BV_dhs = [32,64,128] # ,192,256]
+    num_stages_dhs = [1,2] # ,3,4]
     num_threads_dhs = [128,256]
     # H100
     MMA_ATOM_M = device.mma_primitive[0]# 64
@@ -546,9 +544,9 @@ def chunk_bwd_kernel_dh(
         return kernel
 
 def generate_config_dqkg(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100()):
-    BK_dqkg = [32,64,128,256]
-    BV_dqkg = [32,64,128,256]
-    num_stages_dqkg = [1,2,3,4]
+    BK_dqkg = [32,64,128] # ,256]
+    BV_dqkg = [32,64,128] # ,256]
+    num_stages_dqkg = [1,2] # ,3,4]
     num_threads_dqkg = [128,256]
     
     # H100
@@ -820,9 +818,9 @@ def chunk_bwd_dqkg(
         return kernel
 
 def generate_config_dv(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100()):
-    BK_dvs = [32,64,128,256]
-    BV_dvs = [32,64,128,256]
-    num_stages_dvs = [1,2,3,4]
+    BK_dvs = [32,64,128]# ,256]
+    BV_dvs = [32,64,128] # ,256]
+    num_stages_dvs = [1,2] # ,3,4]
     num_threads_dvs = [128,256]
     
     # H100
@@ -987,6 +985,8 @@ def tune(tune_file, kernel_profiler, problem_keys)->Tuple:
                 tuned_latency = config['tuned_latency']
                 return tuned_config, tuned_latency
     if tuned_config is None:
+        print("tune: ", problem_keys)
+        # TODO: use a seperate process for autotune to avoid cuda context crash
         result = kernel_profiler(
             **problem_keys
         )
@@ -1016,7 +1016,7 @@ def get_problem_keys_ho(BT):
     
 def autotune_linearattn(file_path="mamba2"):
             
-    BTs = [32,64,128,192,256]
+    BTs = [32,64,128] # ,192,256]
  
     best_config_h, best_config_o = {}, {}
     best_latency = 1e6
@@ -1048,7 +1048,7 @@ def autotune_linearattn(file_path="mamba2"):
 
 def autotune_linearattn_bwd(file_path="mamba2"):
     
-    BTs = [32,64,128,192]# ,256]
+    BTs = [32,64,128] # ,192]# ,256]
  
     best_config_dh, best_config_dqkg, best_config_dv = {}, {}, {}
     best_latency = 1e6

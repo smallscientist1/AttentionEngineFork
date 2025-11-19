@@ -386,8 +386,8 @@ class AttentionEngine:
         tl_attn = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(tl_attn)
         self.attention = tl_attn.attention
-        if infer_mask:
-            self.block_mask = block_mask
+        if infer_mask and block_mask is not None:
+            self.block_mask = block_mask.to("cuda")
         else:
             self.block_mask = None
 

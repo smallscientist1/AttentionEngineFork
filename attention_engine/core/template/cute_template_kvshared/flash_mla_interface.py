@@ -7,6 +7,8 @@ import torch.utils.cpp_extension
 import os
 from pathlib import Path
 
+os.environ["TORCH_CUDA_ARCH_LIST"] = "9.0a"
+
 cc_flag = []
 cc_flag.append("-gencode")
 cc_flag.append("arch=compute_90a,code=sm_90a")

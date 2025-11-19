@@ -16,6 +16,7 @@ import sympy as sp
 import logging
 
 import torch.fx as fx
+import torch
 
 accum_type = "float"
 
@@ -722,9 +723,10 @@ def lower_tl(score_mod, block_mask, online_func,
     if infer_mask:
         lower_output.infer_mask_block_N = str(infer_mask_block_N)
         lower_output.infer_mask_block_M = str(infer_mask_block_M)
-        import torch
+
         if block_mask is not None:
-            block_mask = create_block_mask(block_mask, Batch, head, seqlen, seqlen, "cuda" if torch.cuda.is_available() else "cpu", infer_mask_block_M, infer_mask_block_N)
+            # TODO: block_mask on cpu or cuda
+            block_mask = create_block_mask(block_mask, Batch, head, seqlen, seqlen, "cpu", infer_mask_block_M, infer_mask_block_N)
         if block_mask is not None:
             lower_output.is_casual = "True" if is_less_causal_mask(block_mask,infer_mask_block_M, infer_mask_block_N) else "False"
         else:
