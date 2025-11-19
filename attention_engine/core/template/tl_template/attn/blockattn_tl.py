@@ -1,10 +1,26 @@
 # TL_IMPORT = """
 import torch
 import tilelang as tl
+import tilelang
 import tilelang.language as T
+from tilelang.autotuner import *
+
+import itertools
+from typing import Tuple
 
 import operator
+import json
+from functools import partial
 
+from autotuner.arch import AttnDevice, H100
+current_device = torch.cuda.current_device()
+device_cap = torch.cuda.get_device_capability(current_device)
+try:
+    attn_device = AttnDevice[device_cap]()
+except KeyError:
+    attn_device = H100()
+    
+    
 # TL_GLOBAL_FUNC = """
 def fast_tanh(A, B):
     return T.call_extern("handle", "fasttanh", T.address_of(A), T.address_of(B))
@@ -15,11 +31,64 @@ def make_dq_layout(dQ):
         dQ.shape, lambda b, l, h, d: [b, l // 8, h, d // 8, (d % 2), 4 * (l % 8) + (d % 8) // 2]
     )
 
+
+def get_configs(DHEAD, DHEADV, device=H100()):
+    
+    # scheduling space
+    block_M = [64, 128, 256]
+    block_N = [32, 64, 128, 256]
+    num_stages = [1, 2]
+    thread_num = [128, 256]
+    shared_fuse = [{{shared_fuse}},]# [True, False]
+    
+    # device config
+    MMA_ATOM_M = device.mma_primitive[0]# 64
+    MMA_ATOM_N = device.mma_primitive[1]# 16
+    MMA_ATOM_TRHEADS = device.threads_per_mma # 128
+    smem_cap = device.smem_cap # 232448
+    reg_cap = device.reg_cap * 4 # 65536 * 4
+    reg_cap_per_thread = device.register_per_thread * 4 # 255 * 4
+    
+    
+    _configs = list(itertools.product(block_M, block_N, num_stages, thread_num, shared_fuse))
+    
+    configs = []
+    # Inter tile
+    block_M = [bM for bM in block_M if bM % MMA_ATOM_M == 0]
+    block_N = [bN for bN in block_N if bN % MMA_ATOM_N == 0]
+    thread_num = [t_n for t_n in thread_num if t_n % MMA_ATOM_TRHEADS == 0]
+    for bM, bN, t_n in itertools.product(block_M, block_N, thread_num):
+        plans = []
+        # intra tile
+        shared_fuse.sort()
+        for s_fuse in shared_fuse:
+            for n_s in num_stages:
+                sharedmem = 2 * (bM * DHEAD + bN * DHEAD + bN * DHEADV) * n_s
+                if s_fuse:
+                    sharedmem += 2 * (bM * bN)
+                reg_mem = 4 * (bM * DHEADV) + 4 * (bM * bN)
+                conditions = [
+                    sharedmem <= smem_cap,
+                    reg_mem <= reg_cap and reg_mem <= reg_cap_per_thread * t_n,
+                ]
+                if all(conditions):
+                    plans.append({
+                        'block_M': bM,
+                        'block_N': bN,
+                        'num_stages': n_s,
+                        'thread_num': t_n,
+                        'shared_fuse': s_fuse
+                    })
+            if len(plans) > 0:
+                break
+        configs.extend(plans)
+                    
+    return configs
+ 
 # TL_KERNEL = """
 def kernel(batch, heads, seq_len, dim, dimv, 
-           downsample_len_q, downsample_len_kv,
-        block_M = None, block_N = None, num_stages = None, thread_num = None,
-        shared_fuse = None):
+           downsample_len_q, downsample_len_kv, tune=False):
+
     # scale = (1.0 / dim) ** 0.5 * 1.44269504  # log2(e) # 0.69314718  loge(2)
     shape = [batch, seq_len, heads, dim]
     shape_v = [batch, seq_len, heads, dimv]
@@ -29,137 +98,160 @@ def kernel(batch, heads, seq_len, dim, dimv,
     dtype = "{{tl_dtype}}" # "float16"
     accum_dtype = "float"
     block_mask_dtype = "int8"
-    
     is_casual = {{is_casual}} # True
-    # shared_fuse = True
-    assert(downsample_len_kv <= seq_len_kv // block_N)
-    assert(downsample_len_q <= seq_len // block_M)
-    block_M_ratio = seq_len // block_M // downsample_len_q
-    block_N_ratio = seq_len_kv // block_N // downsample_len_kv
-
-# TL_MAIN = """
-    @T.macro
-    {{score_mod_func_def | indent(4)}}
     
-    @T.macro
-    {{online_func_def | indent(4)}}
+    def kernel_func(
+        block_M = None, block_N = None, num_stages = None, thread_num = None,
+        shared_fuse = None):
 
         
-    @T.prim_func
-    def main(
-        Q: T.Buffer(shape, dtype), # type: ignore
-        K: T.Buffer(shape, dtype), # type: ignore
-        V: T.Buffer(shape_v, dtype), # type: ignore
-        {{custom_fwd_inputs | indent(8)}}
+        # shared_fuse = True
+        assert(downsample_len_kv <= seq_len_kv // block_N)
+        assert(downsample_len_q <= seq_len // block_M)
+        block_M_ratio = seq_len // block_M // downsample_len_q
+        block_N_ratio = seq_len_kv // block_N // downsample_len_kv
 
-        BlockSparseMask: T.Buffer(block_mask_shape, block_mask_dtype), # type: ignore
-        Output: T.Buffer(shape_v, dtype), # type: ignore
-        {{final_rowscales_output | indent(8)}}
-    ):
-        with T.Kernel(T.ceildiv(seq_len, block_M), heads, batch, threads=thread_num) as (bx, by, bz):
-            Q_shared = T.alloc_shared([block_M, dim], dtype)
-            K_shared = T.alloc_shared([block_N, dim], dtype)
-            V_shared = T.alloc_shared([block_N, dimv], dtype)
-            # V_local = T.alloc_fragment([block_N, dimv], dtype)
-            scores = T.alloc_fragment([block_M, block_N], accum_dtype)
-            scores_shared = T.alloc_shared([block_M, block_N], accum_dtype)
-            scores_1 = T.alloc_fragment([block_M, block_N], accum_dtype)
-            acc_s_cast = T.alloc_fragment([block_M, block_N], dtype)
-            acc_s_cast_1 = T.alloc_fragment([block_M, block_N], dtype)
-            # acc_o = T.alloc_fragment([block_M, dimv], accum_dtype)
+        # TL_MAIN = """
+        @T.macro
+        {{score_mod_func_def | indent(8)}}
+        
+        @T.macro
+        {{online_func_def | indent(8)}}
 
-            {{custom_fwd_inputs_init | indent(12)}}
             
-            block_mask = T.alloc_local([seq_len_kv//block_N], block_mask_dtype)
-            has_valid_block = T.alloc_var("bool")
-            q_idxl = T.alloc_fragment([1], "int32")
-            kv_idxl = T.alloc_fragment([1], "int32")
+        @T.prim_func
+        def main(
+            Q: T.Buffer(shape, dtype), # type: ignore
+            K: T.Buffer(shape, dtype), # type: ignore
+            V: T.Buffer(shape_v, dtype), # type: ignore
+            {{custom_fwd_inputs | indent(12)}}
 
-            T.annotate_layout({
-                Q_shared: tl.layout.make_swizzled_layout(Q_shared),
-                scores_shared: tl.layout.make_swizzled_layout(scores_shared),
-                {{swizzle_shared | indent(16)}}
-            })
-            T.copy(Q[bz, bx * block_M : (bx + 1) * block_M, by, :], Q_shared)
-            {{custom_fwd_inputs_load_prolog | indent(12)}}
-            T.fill(acc_o, 0)
-            T.fill({{o_scale_varname}}, 1.0)
+            BlockSparseMask: T.Buffer(block_mask_shape, block_mask_dtype), # type: ignore
+            Output: T.Buffer(shape_v, dtype), # type: ignore
+            {{final_rowscales_output | indent(12)}}
+        ):
+            with T.Kernel(T.ceildiv(seq_len, block_M), heads, batch, threads=thread_num) as (bx, by, bz):
+                Q_shared = T.alloc_shared([block_M, dim], dtype)
+                K_shared = T.alloc_shared([block_N, dim], dtype)
+                V_shared = T.alloc_shared([block_N, dimv], dtype)
+                # V_local = T.alloc_fragment([block_N, dimv], dtype)
+                scores = T.alloc_fragment([block_M, block_N], accum_dtype)
+                scores_shared = T.alloc_shared([block_M, block_N], accum_dtype)
+                scores_1 = T.alloc_fragment([block_M, block_N], accum_dtype)
+                acc_s_cast = T.alloc_fragment([block_M, block_N], dtype)
+                acc_s_cast_1 = T.alloc_fragment([block_M, block_N], dtype)
+                # acc_o = T.alloc_fragment([block_M, dimv], accum_dtype)
 
-            {{online_rowscales_initvalue | indent(12)}}
+                {{custom_fwd_inputs_init | indent(16)}}
+                
+                # block_mask = T.alloc_local([seq_len_kv//block_N], block_mask_dtype)
+                has_valid_block = T.alloc_var("bool")
+                q_idxl = T.alloc_fragment([1], "int32")
+                kv_idxl = T.alloc_fragment([1], "int32")
 
-            for vj in T.serial(seq_len_kv // block_N):
-                block_mask[vj] = BlockSparseMask[bz, by, bx//block_M_ratio, vj//block_N_ratio]
+                T.annotate_layout({
+                    Q_shared: tl.layout.make_swizzled_layout(Q_shared),
+                    scores_shared: tl.layout.make_swizzled_layout(scores_shared),
+                    {{swizzle_shared | indent(20)}}
+                })
+                T.copy(Q[bz, bx * block_M : (bx + 1) * block_M, by, :], Q_shared)
+                {{custom_fwd_inputs_load_prolog | indent(16)}}
+                T.fill(acc_o, 0)
+                T.fill({{o_scale_varname}}, 1.0)
 
-            # TODO: mask
-            loop_range = (
-                T.ceildiv((bx + 1) * block_M, block_N) if is_casual else T.ceildiv(seq_len, block_N)
-            )
-            has_valid_block = False
+                {{online_rowscales_initvalue | indent(16)}}
 
-            for k in T.Pipelined(loop_range, num_stages=num_stages):
-                if block_mask[k] != 0:
-                    has_valid_block = True
-                    T.copy(K[bz, k * block_N : (k + 1) * block_N, by, :], K_shared)
+                # for vj in T.serial(seq_len_kv // block_N):
+                #     block_mask[vj] = BlockSparseMask[bz, by, bx//block_M_ratio, vj//block_N_ratio]
 
-                    # TODO: copy custom_fwd_input_tensor in score_mod&online_func
-                    {{custom_fwd_inputs_load_shared | indent(20)}}
+                # TODO: mask
+                loop_range = (
+                    T.ceildiv((bx + 1) * block_M, block_N) if is_casual else T.ceildiv(seq_len, block_N)
+                )
+                has_valid_block = False
 
-                    # TODO: naive solution: if reduce_max, -T.inf; if reduce_sum, 0
-                    if (is_casual or {{is_mask_mod_code}}) and {{is_inf_mask}}:
-                        for i, j in T.Parallel(block_M, block_N):
-                            q_idxl[0] = bx * block_M + i
-                            kv_idxl[0] = k * block_N + j
-                            {{q_idx}} = q_idxl[0]
-                            {{kv_idx}} = kv_idxl[0]
-                            # {{q_idx}} = bx * block_M + i
-                            # {{kv_idx}} = k * block_N + j
-                            {{batch_idx}} = bz
-                            {{head_idx}} = by
-                            {{mask_mod_code | indent(28)}}
-                            scores[i, j] = T.if_then_else(
-                                {{mask_output}}, 0, -T.infinity(scores.dtype)
-                            )
-                    else:
-                        T.clear(scores)
-                    
-                    T.gemm(Q_shared, K_shared, scores, transpose_B=True, policy= (T.GemmWarpPolicy.FullRow if (not shared_fuse) else T.GemmWarpPolicy.FullCol))
-                    T.copy(V[bz, k * block_N : (k + 1) * block_N, by, :], V_shared)
+                for k in T.Pipelined(loop_range, num_stages=num_stages):
+                    if BlockSparseMask[bz, by, bx//block_M_ratio, k//block_N_ratio] != 0:
+                        has_valid_block = True
+                        T.copy(K[bz, k * block_N : (k + 1) * block_N, by, :], K_shared)
+
+                        # TODO: copy custom_fwd_input_tensor in score_mod&online_func
+                        {{custom_fwd_inputs_load_shared | indent(24)}}
+
+                        # TODO: naive solution: if reduce_max, -T.inf; if reduce_sum, 0
+                        if (is_casual or {{is_mask_mod_code}}) and {{is_inf_mask}}:
+                            for i, j in T.Parallel(block_M, block_N):
+                                q_idxl[0] = bx * block_M + i
+                                kv_idxl[0] = k * block_N + j
+                                {{q_idx}} = q_idxl[0]
+                                {{kv_idx}} = kv_idxl[0]
+                                # {{q_idx}} = bx * block_M + i
+                                # {{kv_idx}} = k * block_N + j
+                                {{batch_idx}} = bz
+                                {{head_idx}} = by
+                                {{mask_mod_code | indent(32)}}
+                                scores[i, j] = T.if_then_else(
+                                    {{mask_output}}, 0, -T.infinity(scores.dtype)
+                                )
+                        else:
+                            T.clear(scores)
                         
-                    {{custom_fwd_inputs_load_s2r | indent(20)}}
-                    # call score_mod
-                    {{call_score_mod | indent(20)}}
+                        T.gemm(Q_shared, K_shared, scores, transpose_B=True, policy= (T.GemmWarpPolicy.FullRow if (not shared_fuse) else T.GemmWarpPolicy.FullCol))
+                        T.copy(V[bz, k * block_N : (k + 1) * block_N, by, :], V_shared)
+                            
+                        {{custom_fwd_inputs_load_s2r | indent(24)}}
+                        # call score_mod
+                        {{call_score_mod | indent(24)}}
+                            
+                        # call online_func
+                        if shared_fuse:
+                            T.copy(scores, scores_shared)
+                            T.copy(scores_shared, scores_1)
+                            {{call_online_func | indent(28)}}
+                            T.copy(scores_1, acc_s_cast_1)
+
+                        else:
+                            {{call_online_func | indent(28)}}
+                            T.copy(scores, acc_s_cast)
+
+                        for i, j in T.Parallel(block_M, dimv):
+                            acc_o[i, j] *= {{o_scale_varname}}[i]
                         
-                    # call online_func
-                    if shared_fuse:
-                        T.copy(scores, scores_shared)
-                        T.copy(scores_shared, scores_1)
-                        {{call_online_func | indent(24)}}
-                        T.copy(scores_1, acc_s_cast_1)
+                        # update online_rowscales
+                        {{online_rowscales_update | indent(24)}}
 
-                    else:
-                        {{call_online_func | indent(24)}}
-                        T.copy(scores, acc_s_cast)
+                        if shared_fuse:
+                            T.gemm(acc_s_cast_1, V_shared, acc_o, policy=(T.GemmWarpPolicy.FullCol))
+                        else:
+                            T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                # online_fwd_epilogue
+                if has_valid_block:
+                    {{online_func_epilogue | indent(20)}}
 
-                    for i, j in T.Parallel(block_M, dimv):
-                        acc_o[i, j] *= {{o_scale_varname}}[i]
-                    
-                    # update online_rowscales
-                    {{online_rowscales_update | indent(20)}}
+                T.copy(acc_o, Output[bz, bx * block_M : (bx + 1) * block_M, by, :])
 
-                    if shared_fuse:
-                        T.gemm(acc_s_cast_1, V_shared, acc_o, policy=(T.GemmWarpPolicy.FullCol))
-                    else:
-                        T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
-            # online_fwd_epilogue
-            if has_valid_block:
-                {{online_func_epilogue | indent(16)}}
+                # save final_rowscale
+                {{final_rowscales_save | indent(16)}}
+            
+        return main
+    
+    if tune:
+        @autotune(
+            configs=get_configs(dim, dimv, device=attn_device),
+            warmup=10,
+            rep=10,
+        )
+        @jit(out_idx={{output_idx_list}}, supply_type=tilelang.TensorSupplyType.Auto, ref_prog=None)
+        def kernel(block_M=None, block_N=None, num_stages=None, thread_num=None, shared_fuse=None):
+            return kernel_func(block_M, block_N, num_stages, thread_num, shared_fuse)
 
-            T.copy(acc_o, Output[bz, bx * block_M : (bx + 1) * block_M, by, :])
+        return kernel()
 
-            # save final_rowscale
-            {{final_rowscales_save | indent(12)}}
+    else:
+        def kernel(block_M, block_N, num_stages, thread_num, shared_fuse):
+            return kernel_func(block_M, block_N, num_stages, thread_num, shared_fuse)
         
-    return main
+        return kernel
 
 # TL_KERNEL_BWD_DOO = """
 def flashattn_bwd_preprocess(batch, heads, seq_len, dim, dimv):
@@ -398,18 +490,77 @@ def flashattn_bwd_postprocess(batch, heads, seq_len, dim, dimv):
 
     return flash_bwd_post
 
-block_M = {{block_M}} # 128
-block_N = {{block_N}} # 128 if D_HEAD <= 128 else 64
-stages = {{stages}} # 2
-thread_num = {{thread_num}} # 256
-shared_fuse = {{shared_fuse}} # False
+TUNE = {{TUNE}}
+TUNE_FILE = "{{TUNE_FILE}}"
+TUNE_BWD = {{TUNE_BWD}}
+TUNE_FILE_BWD = "{{TUNE_FILE_BWD}}"
 
+def get_problem_keys():
+    return {
+        "batch": 4 if isinstance({{BATCH}}, T.Var) else {{BATCH}},
+        "heads": 32 if isinstance({{HEADS}}, T.Var) else {{HEADS}},
+        "seq_len": 2048 if isinstance({{SEQ_LEN}}, T.Var) else {{SEQ_LEN}},
+        "dim": {{DIM}},
+        "dimv": {{DIMV}},
+        "downsample_len_q": {{SEQ_LEN}} // {{infer_mask_block_M}},
+        "downsample_len_kv": {{SEQ_LEN}} // {{infer_mask_block_N}},
+    }
+    
+def tune(tune_file, kernel_profiler, problem_keys)->Tuple:
+    tuned_config = None
+    pk = problem_keys
+    if not os.path.exists(tune_file):
+        with open(tune_file, "w") as f:
+            json.dump([], f, indent=4)
+        configs = []
+    else:
+        with open(tune_file, "r") as f:
+            configs = json.load(f)
+        # find the config with the same problem size
+        for config in configs:
+            if all(config[k] == v for k, v in pk.items()):
+                tuned_config = config['tuned_config']
+                break
+    if tuned_config is None:
+        result = kernel_profiler(
+            **problem_keys
+        )
+        tuned_config = result.config
+        with open(tune_file, "w") as f:
+            configs.append({
+                **pk,
+                'tuned_config': tuned_config
+            })
+            json.dump(configs, f, indent=4)
+    return tuned_config
+
+    
+# forward
+tuned_config = None
+if TUNE:
+    pk = get_problem_keys()
+    _tuned_config = tune(TUNE_FILE, partial(kernel, tune=True), pk)
+    tuned_config = {
+        'block_M': _tuned_config[0],
+        'block_N': _tuned_config[1],
+        'num_stages': _tuned_config[2],
+        'thread_num': _tuned_config[3],
+        'shared_fuse': _tuned_config[4]
+    }
+else:
+    tuned_config = {
+        'block_M': {{block_M}},
+        'block_N': {{block_N}},
+        'num_stages': {{stages}},
+        'thread_num': {{thread_num}},
+        'shared_fuse': {{shared_fuse}}
+    }    
 block_mask_M = {{infer_mask_block_M}}# 128
 block_mask_N = {{infer_mask_block_N}}# 128
 downsample_len_q = {{SEQ_LEN}} // block_mask_M
 downsample_len_kv = {{SEQ_LEN}} // block_mask_N
 
-program = kernel({{BATCH}}, {{HEADS}}, {{SEQ_LEN}}, {{DIM}}, {{DIMV}}, downsample_len_q, downsample_len_kv, block_M, block_N, stages, thread_num, shared_fuse)
+program = kernel({{BATCH}}, {{HEADS}}, {{SEQ_LEN}}, {{DIM}}, {{DIMV}}, downsample_len_q, downsample_len_kv)(**tuned_config)
 mod = tl.compile(program, out_idx={{output_idx_list}})# , execution_backend="dlpack")# , pass_configs={"tl.disable_tma_lower": True})
         
 mod_prep = tl.compile(
