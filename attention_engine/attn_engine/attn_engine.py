@@ -112,7 +112,9 @@ class AttentionEngine:
                  tune_bwd=False, tune_file_bwd="",
                  infer_mask=True, infer_mask_block_M=128, infer_mask_block_N=128, 
                  extern_block_mask=False,
+                 use_varlen=False, # TODO
                  kv_shared=False):
+        self.use_varlen = use_varlen
         # tunner
         # need_engine_fuse, fuse_config = decider(qkv_meta, device)
         
@@ -274,7 +276,9 @@ class AttentionEngine:
                                       qkv_meta[2].shape[3],
                                       tl_dtype_map[qkv_meta[0].dtype],
                                       mask_value,
-                                      tuned_config)
+                                      tuned_config,
+                                      extern_block_mask,
+                                      infer_mask_block_N=infer_mask_block_N)
             return tl_code, block_mask
             
         # decode mha
@@ -394,10 +398,12 @@ class AttentionEngine:
 
     def __call__(self, *args, **kargs):
         if kargs.get("block_mask") is not None:
-            self.block_mask = kargs["block_mask"]
-        if self.block_mask is not None:
-            o = self.attention(*args, self.block_mask)
-        else:
-            o = self.attention(*args, **kargs)
+            args = args + (kargs["block_mask"],)
+        elif self.block_mask is not None:
+            args = args + (self.block_mask,)
+        if self.use_varlen:
+            args = args + (kargs.get("cache_seqlens"),)
+        
+        o = self.attention(*args)
         return o
 
