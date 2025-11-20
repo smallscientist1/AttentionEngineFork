@@ -260,7 +260,7 @@ def _write_ninja_file(path,
 
 
 # Monkey patching
-torch.utils.cpp_extension._write_ninja_file = _write_ninja_file
+# torch.utils.cpp_extension._write_ninja_file = _write_ninja_file
 
 
 def get_platform():

@@ -4,6 +4,7 @@ from examples.mha_decode import softmax_attention_decode
 from examples.mamba2 import mamba2
 from examples.gated_retention import gated_retention
 from examples.sigmoid_attn import sigmoid_attention
+from examples.sparse_gqa_decode import sparse_gqa_decode
 
 import torch
 import torch.nn.functional as F
@@ -20,7 +21,8 @@ def test_attention():
     # test_mamba2(1, 1, 2048, 128, 64, HK=1, HV=80, require_grad=True) # TODO: fix
     # test_gated_retention(8, 32, 2048, 256, 512)
     # test_sigmoid_attention(1, 16, 2048, 128, 128)
-    test_softmaxattention(1, 16, 2048, 128, 256, use_v2=True)
+    # test_softmaxattention(1, 16, 2048, 128, 256, use_v2=True)
+    test_sparse_gqa_decode(8, 32, 8, 2048, 128, 128)
 
     print("All tests pass.")
     
@@ -598,6 +600,90 @@ def test_sigmoid_attention(B, H, S, D, DV, device="cuda", dtype=torch.float16, r
             rtol=3e-2,
             atol=1e-2,
         )
+
+def test_sparse_gqa_decode(B, H, G, S, D, DV, device="cuda", dtype=torch.float16, require_grad=True):
+    attention_module = sparse_gqa_decode(B, H, G, S, D, DV, dtype=dtype)
+    
+    def ref_program_torch(query, key, value, block_mask, cache_seqlens, max_cache_seqlen, num_blocks,
+                      block_size):
+        query = query.squeeze(1)  # [batch_size, heads, dim]
+        batch, heads, dim = query.shape
+        heads_kv = key.shape[2]
+
+        num_head_groups = query.shape[1] // key.shape[2]
+        scale = dim**0.5
+        key = rearrange(key, 'b n h d -> b h n d')  # [batch_size, heads_kv, seqlen_kv, dim]
+        value = rearrange(value, 'b n h d -> b h n d')  # [batch_size, heads_kv, seqlen_kv, dim]
+
+        query = rearrange(
+            query, 'b (h g) d -> b g h d',
+            g=num_head_groups)  # [batch_size, num_head_groups, heads_kv, dim]
+
+        scores = einsum(
+            query, key,
+            'b g h d, b h s d -> b g h s')  # [batch_size, num_head_groups, heads_kv, seqlen_kv]
+
+        sparse_mask = torch.zeros_like(scores)
+        # Assign mask values
+        for b in range(batch):
+            for h in range(heads_kv):
+                for idx in range(num_blocks):
+                    if block_mask[b, h, idx]:
+                        sparse_mask[b, :, h, idx * block_size:(idx + 1) * block_size] = 1
+
+        scores = scores.masked_fill(sparse_mask == 0, float('-inf'))
+
+        range_len = torch.arange(scores.shape[-1], device='cuda').unsqueeze(0)
+        cache_seqlens_expanded = cache_seqlens.unsqueeze(1)
+        pad_mask = range_len >= cache_seqlens_expanded
+        pad_mask = pad_mask[:, None, None, :]
+        scores = scores.masked_fill(pad_mask, float('-inf'))
+        attention = F.softmax(
+            scores / scale, dim=-1)  # [batch_size, num_head_groups, heads_kv, seqlen_kv]
+
+        out = einsum(attention, value,
+                    'b g h s, b h s d -> b g h d')  # [batch_size, num_head_groups, heads_kv, dim]
+        out = rearrange(out, 'b g h d -> b (h g) d')  # [batch_size, heads, dim]
+        return out
+
+    block_size = 32
+    sparse_ratio = 0.5
+    # init input
+    query = torch.randn(B, 1, H, D, device=device, dtype=dtype)
+    key = torch.randn(B, S, G, D, device=device, dtype=dtype)
+    value = torch.randn(B, S, G, DV, device=device, dtype=dtype)
+    cache_seqlens = torch.randint(1, S, (B,), dtype=torch.int32, device=device)
+    random_index = torch.randint(0, B, (1,), device='cuda').item()  # Select a random index
+    cache_seqlens[random_index] = S  # Assign cache_seqlen to ensure at least one occurrence
+    # cache_seqlens = torch.full((batch,), max_cache_seqlen, dtype=torch.int32, device='cuda')
+    
+    def generate_block_mask(batch, heads_kv, max_cache_seqlen, sparse_ratio, cache_seqlens):
+        num_blocks = (max_cache_seqlen + block_size - 1) // block_size
+
+        valid_num_blocks = torch.ceil(cache_seqlens * (1 - sparse_ratio) / block_size).int()
+        # print("valid_num_blocks: ", valid_num_blocks)
+        max_valid_num_blocks = torch.ceil(cache_seqlens / block_size).int()
+        # print("max_valid_num_blocks: ", max_valid_num_blocks)
+        # Initialize block_mask with false (for padding blocks)
+        block_mask = torch.zeros((batch, heads_kv, num_blocks), dtype=torch.bool, device='cuda')
+
+        # Assign valid indices while ensuring no duplicates within each batch-group
+        for b in range(batch):
+            max_valid_block = max_valid_num_blocks[b].item()  # Max valid blocks for this batch
+            valid_num_block = valid_num_blocks[b].item()  # Valid blocks for this batch
+            if valid_num_block > 0:  # Ensure there's at least one valid block
+                for h in range(heads_kv):
+                    perm = torch.randperm(max_valid_block, device='cuda')[:valid_num_block]
+                    block_mask[b, h, perm] = True
+                    
+        return block_mask
+    block_mask = generate_block_mask(B, G, S, sparse_ratio, cache_seqlens)
+    
+    ref_o = ref_program_torch(query, key, value, block_mask, cache_seqlens, S,
+                              (S + block_size - 1) // block_size, block_size)
+    o = attention_module(query, key, value, block_mask=block_mask, cache_seqlens=cache_seqlens)
+    
+    torch.testing.assert_close(o, ref_o, rtol=1e-2, atol=1e-2)
     
 if __name__ == "__main__":
     test_attention()
