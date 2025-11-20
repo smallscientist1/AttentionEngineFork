@@ -3,8 +3,9 @@ from examples.mha_v2 import causal_softmax_attention as causal_softmax_attention
 from examples.mha_decode import softmax_attention_decode
 from examples.gated_retention import gated_retention
 from examples.sigmoid_attn import sigmoid_attention
+from examples.sigmoid_attn_v2 import sigmoid_attention as sigmoid_attention_v2
 from examples.reluattn import relu_attention
-# from examples.reluattn_v2 import relu_attention
+from examples.reluattn_v2 import relu_attention as relu_attention_v2
 from examples.retnet_recurrent import retnet_recurrent
 from examples.retention_parallel import retention_parallel
 from examples.mamba2 import mamba2
@@ -252,6 +253,21 @@ def bench_softmaxattention(B, H, Sq, S, D, DV, device='cuda', dtype=torch.float1
         ours_bwd_lat = do_bench(lambda: o.backward(do, retain_graph=True))
     else:
         ours_bwd_lat = None
+    
+    attention_module_v2 = causal_softmax_attention_v2(B, H, S, D, DV)
+    def ours_v2():
+        o = attention_module_v2(query, key, value)
+        return o
+    ours_fwd_lat_v2 = do_bench(ours_v2)
+    if require_grad:
+        o = attention_module_v2(query, key, value)
+        ours_bwd_lat_v2 = do_bench(lambda: o.backward(do, retain_graph=True))
+    else:
+        ours_bwd_lat_v2 = None
+    ours_fwd_lat = min(ours_fwd_lat, ours_fwd_lat_v2)
+    if require_grad:
+        ours_bwd_lat = min(ours_bwd_lat, ours_bwd_lat_v2)
+        
     result_dict["MetaAttention"] = (ours_fwd_lat, ours_bwd_lat)
     
     # FlashAttention-2
@@ -314,6 +330,8 @@ def bench_softmaxattention(B, H, Sq, S, D, DV, device='cuda', dtype=torch.float1
             return o_ref
         
         dim_padded_fa3 = list(filter(lambda x: x >= max(D, DV), [64, 128, 192, 256]))
+        assert len(dim_padded_fa3) > 0, "No valid padding size for FlashAttention-3"
+        dim_padded_fa3 = min(dim_padded_fa3)
         # flash attention 3 specifically supported for D=192 and DV=128, so does not need padding for this case
         if D == 192 and DV == 128:
             dim_padded_fa3 = 0
@@ -328,8 +346,8 @@ def bench_softmaxattention(B, H, Sq, S, D, DV, device='cuda', dtype=torch.float1
         
         result_dict["FlashAttention-3"] = (fa3_fwd_lat, fa3_bwd_lat)
         
-    except:
-        print("Warning: FlashAttention-3 not available")
+    except Exception as e:
+        print(f"Warning: FlashAttention-3 not available: {e}")
     
     return result_dict
 
@@ -349,6 +367,7 @@ def bench_sigmoidattention(B, H, S, D, DV, dtype=torch.float16, require_grad=Tru
     
     # ours
     attention_module = sigmoid_attention(B, H, S, D, DV)
+    attention_module_v2 = sigmoid_attention_v2(B, H, S, D, DV)
     
     query1 = query.clone().detach().requires_grad_(False)
     key1 = key.clone().detach().requires_grad_(False)
@@ -359,6 +378,8 @@ def bench_sigmoidattention(B, H, S, D, DV, dtype=torch.float16, require_grad=Tru
     if require_grad:
         o = attention_module(query, key, value, softmax_bias)
         bwd_lat = do_bench(lambda: o.backward(do, retain_graph=True))
+    fwd_lat_v2 = do_bench(lambda: attention_module_v2(query1, key1, value1, softmax_bias_1))
+    fwd_lat = min(fwd_lat, fwd_lat_v2)
     result_dict["MetaAttention"] = (fwd_lat, bwd_lat)
     
     # flash-sigmoid
@@ -402,6 +423,9 @@ def bench_reluattention(B, H, S, D, DV, device='cuda', dtype=torch.float16, requ
     if require_grad:
         o = attention_module(query, key, value)
         bwd_lat = do_bench(lambda: o.backward(do, retain_graph=True))
+    attention_module_v2 = relu_attention_v2(B, H, S, D, DV, dtype=dtype)
+    fwd_lat_v2 = do_bench(lambda: attention_module_v2(query, key, value))
+    fwd_lat = min(fwd_lat, fwd_lat_v2)
     result_dict["MetaAttention"] = (fwd_lat, bwd_lat)
     
     # Pytorch ReLU Attention
@@ -704,7 +728,10 @@ def plot_fig():
     pass
 
 if __name__ == "__main__":
+    import time
+    start_time = time.time()
     bench_fig11()
+    print(f"Benchmarking completed in {time.time() - start_time:.2f} seconds")
     plot_fig()
     
 

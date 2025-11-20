@@ -2,6 +2,6 @@
 #include "flash_bwd_launch_template.h"
 
 template<>
-void run_mha_bwd_<90, {{cutlass_dtype}}, {{dimqk}}, false>(Flash_bwd_params &params, cudaStream_t stream) {
-    run_mha_bwd_hdim{{dimqk}}<90, {{cutlass_dtype}}, false>(params, stream);
+void run_mha_bwd_<90, {{cutlass_dtype}}, {{dim_round}}, false>(Flash_bwd_params &params, cudaStream_t stream) {
+    run_mha_bwd_hdim{{dim_round}}<90, {{cutlass_dtype}}, false>(params, stream);
 }

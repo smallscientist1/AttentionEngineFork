@@ -136,6 +136,7 @@ class AttentionEngine:
                 kv_shared=kv_shared)
 
         elif backend == "cute" or backend == "cute_v2":
+            # TODO: implement lock for multiprocess
             from core.lower.lower_cute import lower_cute
             # must be same with cute_template.py
             OUTPUT_DIR = osp.join(

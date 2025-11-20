@@ -95,6 +95,6 @@ def causal_softmax_attention(B, H, S, D, DV, dtype=torch.float16):
         qkv_meta,
         custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
         online_func=online,
-        backend="cute"
+        backend="cute_v2",
     )
     return mod

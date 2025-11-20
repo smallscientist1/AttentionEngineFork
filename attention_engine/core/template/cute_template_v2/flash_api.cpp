@@ -790,7 +790,7 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
     TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
     if (head_size_v != head_size) {
         TORCH_CHECK((head_size > 128 && head_size <= 192 && head_size_v > 96 && head_size_v <= 128) ||
-                   (head_size <= 64 && head_size_v <= 512),
+                   (head_size <= 64 && head_size_v <= 512) || (head_size > 64 && head_size <=128 && head_size_v > 192 && head_size_v <=256),
                    "If V headdim is different from Q/K dim, we only support Q/K headdim in (128, 192] and V headdim in (96, 128], "
                    "or (Q/K <= 64 and V <= 512).");
         TORCH_CHECK(dprops->major == 9, "Only Hopper supports different V headdim");
@@ -1243,8 +1243,8 @@ void run_mha_bwd(Flash_bwd_params &params, cudaStream_t stream) {
         //     });
         // });
     // TODO: dimv > dimqk
-    if (params.d_rounded == {{dimqk}}) {
-        run_mha_bwd_<90, {{cutlass_dtype}}, {{dimqk}}, false>(params, stream);
+    if (params.d_rounded == {{dim_round}}) {
+        run_mha_bwd_<90, {{cutlass_dtype}}, {{dim_round}}, false>(params, stream);
     }
     // ARCH_SWITCH(params.arch, Arch, [&] {
     //     SOFTCAP_SWITCH(params.softcap > 0.f, Has_softcap, [&] {

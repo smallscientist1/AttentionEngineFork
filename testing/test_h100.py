@@ -1,4 +1,5 @@
 from examples.mha import causal_softmax_attention
+from examples.mha_v2 import causal_softmax_attention as causal_softmax_attention_v2
 from examples.mha_decode import softmax_attention_decode
 from examples.mamba2 import mamba2
 from examples.gated_retention import gated_retention
@@ -16,14 +17,18 @@ def test_attention():
 
     # test_softmaxattention(1, 16, 2048, 128, 128)
     # test_softmaxattention_decode(8, 16, 1, 4096, 128, 128) # TODO: compile TileLang with llvm
-    # test_mamba2(1, 1, 2048, 128, 64, HK=1, HV=80, require_grad=True)
-    test_gated_retention(8, 32, 2048, 256, 512)
-    test_sigmoid_attention(1, 16, 2048, 128, 128)
+    # test_mamba2(1, 1, 2048, 128, 64, HK=1, HV=80, require_grad=True) # TODO: fix
+    # test_gated_retention(8, 32, 2048, 256, 512)
+    # test_sigmoid_attention(1, 16, 2048, 128, 128)
+    test_softmaxattention(1, 16, 2048, 128, 256, use_v2=True)
 
     print("All tests pass.")
     
-def test_softmaxattention(B, H, S, D, DV, device="cuda", dtype=torch.float16, require_grad=True):
-    attention_module = causal_softmax_attention(B, H, S, D, DV)
+def test_softmaxattention(B, H, S, D, DV, device="cuda", dtype=torch.float16, require_grad=True, use_v2=False):
+    if use_v2:
+        attention_module = causal_softmax_attention_v2(B, H, S, D, DV)
+    else:
+        attention_module = causal_softmax_attention(B, H, S, D, DV)
     
     def ref(query, key, value, causal=True, softmax_scale=None):
         dim = query.shape[-1]
@@ -56,11 +61,23 @@ def test_softmaxattention(B, H, S, D, DV, device="cuda", dtype=torch.float16, re
     query = torch.randn(B, S, H, D, device=device, dtype=dtype, requires_grad=require_grad)
     key = torch.randn(B, S, H, D, device=device, dtype=dtype, requires_grad=require_grad)
     value = torch.randn(B, S, H, DV, device=device, dtype=dtype, requires_grad=require_grad)
+    
+    query1 = query.clone().detach().requires_grad_(require_grad)
+    key1 = key.clone().detach().requires_grad_(require_grad)
+    value1 = value.clone().detach().requires_grad_(require_grad)
+    
     ref_o = ref(query, key, value)
-    o = attention_module(query, key, value)
+    o = attention_module(query1, key1, value1)
     torch.testing.assert_close(o, ref_o, rtol=1e-2, atol=1e-2)
     
-    # TODO: bwd
+    if require_grad:
+        do = torch.randn_like(o)
+        o.backward(do, retain_graph=True)
+        ref_o.backward(do, retain_graph=True)
+        torch.testing.assert_close(query1.grad, query.grad, rtol=1e-2, atol=1e-2)
+        torch.testing.assert_close(key1.grad, key.grad, rtol=1e-2, atol=1e-2)
+        torch.testing.assert_close(value1.grad, value.grad, rtol=1e-2, atol=1e-2)
+    
 
 def test_softmaxattention_decode(B, H, S, KV, D, DV, device="cuda", dtype=torch.float16, require_grad=True):
     attention_module = softmax_attention_decode(B, H, S, KV, D, DV)

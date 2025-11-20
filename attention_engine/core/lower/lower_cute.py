@@ -10,6 +10,7 @@ from dataclasses import dataclass
 class LowerCuteOutput:
     dimqk: str = ""
     dimv: str = ""
+    dim_round: str = ""
     cutlass_dtype: str = ""
 
     online_rowscales_init: str = ""
@@ -248,6 +249,7 @@ def lower_cute(score_mod, block_mask, online_func,
     lower_cute_output = LowerCuteOutput()
     lower_cute_output.dimqk = str(dimqk)
     lower_cute_output.dimv = str(dimv)
+    lower_cute_output.dim_round = str(max(dimqk, dimv))
     lower_cute_output.cutlass_dtype = cutlass_dtype
 
     if score_mod:  # score_mod first

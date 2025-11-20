@@ -387,7 +387,7 @@ ext_modules = []
 # subprocess.run(["git", "submodule", "update", "--init", "../csrc/cutlass"])
 
 if not SKIP_CUDA_BUILD:
-    print("\n\ntorch.__version__  = {}\n\n".format(torch.__version__))
+    # print("\n\ntorch.__version__  = {}\n\n".format(torch.__version__))
     TORCH_MAJOR = int(torch.__version__.split(".")[0])
     TORCH_MINOR = int(torch.__version__.split(".")[1])
 
