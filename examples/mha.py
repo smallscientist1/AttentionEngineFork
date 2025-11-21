@@ -11,7 +11,7 @@ from core.utils import meta_tensor
 Example of causal attention with online softmax
 """
 
-def causal_softmax_attention(B, H, S, D, DV, dtype=torch.float16):
+def causal_softmax_attention(B, H, S, D, DV, dtype=torch.float16, tune=False):
 
     # mask on attention score
     def causal_mask(b, h, q_idx, kv_idx):
@@ -94,8 +94,8 @@ def causal_softmax_attention(B, H, S, D, DV, dtype=torch.float16):
         qkv_meta,
         custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
         online_func=online,
-        tune=True, tune_file="attn_tl.json",
-        tune_bwd=True,
+        tune=tune, tune_file="attn_tl.json",
+        tune_bwd=tune,
         tune_file_bwd="attn_tl_bwd.json",
         infer_mask=True,
     )

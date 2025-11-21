@@ -34,7 +34,7 @@ def test_softmaxattention(B, H, S, D, DV, device="cuda", dtype=torch.float16, re
     if use_v2:
         attention_module = causal_softmax_attention_v2(B, H, S, D, DV)
     else:
-        attention_module = causal_softmax_attention(B, H, S, D, DV)
+        attention_module = causal_softmax_attention(B, H, S, D, DV, tune=True)
     
     def ref(query, key, value, causal=True, softmax_scale=None):
         dim = query.shape[-1]

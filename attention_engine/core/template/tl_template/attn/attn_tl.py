@@ -481,8 +481,8 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, tune=False):
         return kernel()
 
     else:
-        def kernel(block_M, block_N, thread_num):
-            return kernel_func(block_M, block_N, thread_num)
+        def kernel(block_M, block_N, num_stages, thread_num):
+            return kernel_func(block_M, block_N, num_stages, thread_num)
         
         return kernel
 
@@ -605,12 +605,14 @@ if {{DIMV}} <= 256:
         tuned_bwd_config = {
             'block_M': _tuned_bwd_config['block_M'],
             'block_N': _tuned_bwd_config['block_N'],
+            'num_stages': _tuned_bwd_config['num_stages'],
             'thread_num': _tuned_bwd_config['thread_num'],
         }
     else:
         tuned_bwd_config = {
             'block_M': {{block_M_bwd}},
             'block_N': {{block_N_bwd}},
+            'num_stages': 2 if attn_device.platform == "CUDA" else 0,
             'thread_num': {{thread_num_bwd}},
         }
     program_bwd = flashattn_bwd(
