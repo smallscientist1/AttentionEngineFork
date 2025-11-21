@@ -14,11 +14,19 @@ import json
 from typing import Tuple
 from functools import partial
 
-from autotuner.arch import AttnDevice, H100
+from autotuner.arch import AttnDevice, AttnDeviceAMD, H100
+
+if torch.version.cuda is not None:
+    AttnDeviceDict = AttnDevice
+elif torch.version.hip is not None:
+    AttnDeviceDict = AttnDeviceAMD
+else:
+    raise RuntimeError("Unsupported device type")
+
 current_device = torch.cuda.current_device()
 device_cap = torch.cuda.get_device_capability(current_device)
 try:
-    attn_device = AttnDevice[device_cap]()
+    attn_device = AttnDeviceDict[device_cap]()
 except KeyError:
     attn_device = H100()
 
@@ -116,7 +124,7 @@ def chunk_fwd_h(
     # BT = 64
     # BK = 64
     # BV = 64
-    dtype = "bfloat16"
+    dtype = "bfloat16" # mi250: float16
     accum_dtype = "float"
     LOG2E = 1.44269504
     
@@ -286,7 +294,7 @@ def chunk_o(
     # BK = 64
     # BV = 64
     NT = seqlen // BT
-    dtype = "bfloat16"
+    dtype = "bfloat16" # mi250: float16
     accum_dtype = "float"
     LOG2E = 1.44269504
 
@@ -428,6 +436,9 @@ def generate_config_dh(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100(
     BV_dhs = [bv for bv in BV_dhs if D_HEADV % bv == 0]
     config_dh = []
     for BK_dh, BV_dh, num_stages_dh, num_threads_dh in itertools.product(BK_dhs, BV_dhs, num_stages_dhs, num_threads_dhs):
+        # bug mi250
+        if BT >= 128 and BK_dh > 64 and device.platform == "ROCM":
+            continue
         conditions_dh = [
             num_stages_dh > N_CTX // BT,
             BK_dh % (MMA_ATOM_M) != 0,
@@ -453,7 +464,7 @@ def chunk_bwd_kernel_dh(
         NT = seqlen // BT
         NK = dim // BK
         NV = dimv // BV
-        dtype = "bfloat16"
+        dtype = "bfloat16" # mi250 "float16"
         accum_dtype = "float"
         num_stages = num_stages
         thread_num = num_threads
@@ -567,6 +578,9 @@ def generate_config_dqkg(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H10
     
     config_dqkg = []
     for BK_dqk, BV_dqk, num_stages_dqk, num_threads_dqk in itertools.product(BK_dqkg, BV_dqkg, num_stages_dqkg, num_threads_dqkg):
+        # mi250 bug
+        if device.platform == "ROCM" and BT >= 128 and (BK_dqk > 32 or BV_dqk > 32):
+            continue
         conditions_dqk = [
             num_stages_dqk > D_HEADV // BV_dqk,
             BT % (MMA_ATOM_M*(num_threads_dqk//MMA_ATOM_TRHEADS)) != 0,
@@ -596,7 +610,7 @@ def chunk_bwd_dqkg(
         NT = seqlen // BT
         NK = dim // BK
         NV = dimv // BV
-        dtype = "bfloat16"
+        dtype = "bfloat16" # mi250 "float16"
         accum_dtype = "float"
         num_stages = num_stages
         thread_num = num_threads
@@ -865,7 +879,7 @@ def chunk_bwd_kernel_dv(
         NT = seqlen // BT
         NK = dim // BK
         NV = dimv // BV
-        dtype = "bfloat16"
+        dtype = "bfloat16" # mi250 "float16"
         accum_dtype = "float"
         num_stages = num_stages
         thread_num = num_threads

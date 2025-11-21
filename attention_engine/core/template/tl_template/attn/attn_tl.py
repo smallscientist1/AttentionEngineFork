@@ -12,11 +12,18 @@ from functools import partial
 
 import operator
 
-from autotuner.arch import AttnDevice, H100
+from autotuner.arch import AttnDevice, AttnDeviceAMD, H100
+
+if torch.version.cuda is not None:
+    AttnDeviceDict = AttnDevice
+elif torch.version.hip is not None:
+    AttnDeviceDict = AttnDeviceAMD
+else:
+    raise RuntimeError("Unsupported device type")
 current_device = torch.cuda.current_device()
 device_cap = torch.cuda.get_device_capability(current_device)
 try:
-    attn_device = AttnDevice[device_cap]()
+    attn_device = AttnDeviceDict[device_cap]()
 except KeyError:
     attn_device = H100()
 
@@ -31,10 +38,19 @@ def make_dq_layout(dQ):
     )
 
 def get_configs():
-    block_M = [64, 128, 256]
-    block_N = [32, 64, 128, 256]
-    num_stages = [1, 2]
-    thread_num = [128, 256]
+    # TODO: fix
+    if attn_device.platform == "CUDA":
+        # H100
+        block_M = [64, 128, 256]
+        block_N = [32, 64, 128, 256]
+        num_stages = [1, 2]
+        thread_num = [128, 256]
+    else:
+        # MI250
+        block_M = [32, 64, 128]
+        block_N = [32, 64, 128]
+        num_stages = [0, 1]
+        thread_num = [128, 256]
     shared_fuse = [{{shared_fuse}},]# [True, False]
     _configs = list(itertools.product(block_M, block_N, num_stages, thread_num, shared_fuse))
     
@@ -98,7 +114,7 @@ def kernel(batch, heads, seq_len, dim, dimv, tune=False):
                 {{custom_fwd_inputs_init | indent(16)}}
 
                 T.annotate_layout({
-                    Q_shared: tl.layout.make_swizzled_layout(Q_shared),
+                    # Q_shared: tl.layout.make_swizzled_layout(Q_shared),
                     scores_shared: tl.layout.make_swizzled_layout(scores_shared),
                     {{swizzle_shared | indent(20)}}
                 })
@@ -253,15 +269,23 @@ def flashattn_bwd_preprocess2(batch, heads, seq_len, dim, dimv):
     return flash_bwd_prep
 
 def get_bwd_configs():
-    block_M = [64, 128]
-    block_N = [64, 128] if isinstance(attn_device, H100) else [32, 64, 128]
-    thread_num = [128, 256]
-    _configs = list(itertools.product(block_M, block_N, thread_num))
+    if attn_device.platform == "CUDA": 
+        block_M = [64, 128]
+        block_N = [64, 128] if isinstance(attn_device, H100) else [32, 64, 128]
+        num_stages = [2,]
+        thread_num = [128, 256]
+    else:
+        block_M = [32, 64, 128]
+        block_N = [32, 64, 128]
+        num_stages = [0,]
+        thread_num = [128, 256]
+    _configs = list(itertools.product(block_M, block_N, num_stages, thread_num))
     
     configs = [{
         'block_M': c[0],
         'block_N': c[1],
-        'thread_num': c[2]
+        'num_stages': c[2],
+        'thread_num': c[3]
     } for c in _configs]
     return configs
 
@@ -278,7 +302,7 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, tune=False):
     is_casual = {{is_casual}}
     
     def kernel_func( 
-        block_M, block_N, thread_num = 128*2
+        block_M, block_N, num_stages, thread_num = 128*2
         ):
 
         # TL_MAIN_BWD = """
@@ -353,9 +377,9 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, tune=False):
                 T.annotate_layout(
                     {
                         dQ: make_dq_layout(dQ),
-                        K_shared: tl.layout.make_swizzled_layout(K_shared),
-                        dv_shared: tl.layout.make_swizzled_layout(dv_shared),
-                        dk_shared: tl.layout.make_swizzled_layout(dk_shared),
+                        # K_shared: tl.layout.make_swizzled_layout(K_shared),
+                        # dv_shared: tl.layout.make_swizzled_layout(dv_shared),
+                        # dk_shared: tl.layout.make_swizzled_layout(dk_shared),
                     }
                 )
                 T.copy(K[bz, by * block_M : (by + 1) * block_M, bx, :], K_shared)
@@ -371,7 +395,7 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, tune=False):
                 loop_st = T.floordiv(by * block_M, block_N) if is_casual else 0
                 loop_ed = T.ceildiv(seq_len, block_N)
 
-                for k in T.Pipelined(loop_st, loop_ed, num_stages=2):
+                for k in T.Pipelined(loop_st, loop_ed, num_stages=num_stages):
                     T.copy(Q[bz, k * block_N : (k + 1) * block_N, bx, :], q)
                     {{custom_fwd_inputs_load_shared_bwd | indent(20)}}
                     T.clear(qkT)
@@ -451,8 +475,8 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, tune=False):
             rep=10,
         )
         @tilelang.jit(out_idx={{bwd_output_idx_list}})
-        def kernel(block_M=None, block_N=None, thread_num=None):
-            return kernel_func(block_M, block_N, thread_num)
+        def kernel(block_M=None, block_N=None, num_stages=None, thread_num=None):
+            return kernel_func(block_M, block_N, num_stages, thread_num)
 
         return kernel()
 

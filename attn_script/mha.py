@@ -7,6 +7,8 @@ from core import SymbolicArray, SymbolScalar, SymbolicTensor
 from core import Var
 from core.utils import meta_tensor
 
+import time
+
 """
 Example of causal attention with online softmax
 """
@@ -121,6 +123,18 @@ def eval():
         from benchmark.bench_utils import do_bench_attention
         do_bench_attention(mod, B, H, S, D, DV, dtype=dtype, require_grad=True)
 
+    # st = time.time()
+    # mod = AttentionEngine(
+    #     qkv_meta,
+    #     custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
+    #     online_func=online,
+    #     tune=True, tune_file="attn_tl.json",
+    #     tune_bwd=True,
+    #     tune_file_bwd="attn_tl_bwd.json",
+    #     infer_mask=False if dynamic_shape else True,
+    # )
+    # ed = time.time()
+    # print("compile time: ", ed-st)
 
     
 if __name__ == "__main__":
