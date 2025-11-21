@@ -7,6 +7,8 @@ import torch.utils.cpp_extension
 import os
 from pathlib import Path
 
+os.environ["TORCH_CUDA_ARCH_LIST"] = "9.0a"
+
 cc_flag = []
 cc_flag.append("-gencode")
 cc_flag.append("arch=compute_90a,code=sm_90a")
@@ -24,7 +26,8 @@ flash_mla_cuda = torch.utils.cpp_extension.load(
     name="flash_mla_hopper_cuda"+"{{dimqk}}_{{dimv}}_{{cutlass_dtype}}".replace("::", "_").replace(" ", "_"),
     sources=sources,
     extra_cflags=[
-        "-O3", "-std=c++17", "-DNDEBUG", "-Wno-deprecated-declarations"
+        "-O3", "-std=c++17", "-DNDEBUG", "-Wno-deprecated-declarations",
+        # "-DFLASH_MLA_DISABLE_FP16"
     ],
     extra_cuda_cflags=[
         "-O3",
@@ -39,7 +42,9 @@ flash_mla_cuda = torch.utils.cpp_extension.load(
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",
         "--use_fast_math",
-        "--ptxas-options=-v,--register-usage-level=10"
+        "--ptxas-options=-v,--register-usage-level=10",
+        # "-DFLASH_MLA_DISABLE_FP16",
+        "-lineinfo"
     ] + cc_flag,
     extra_include_paths=[
         str(cutlass_dir / "include"),

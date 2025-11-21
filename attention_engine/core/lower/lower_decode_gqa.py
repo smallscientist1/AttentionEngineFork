@@ -20,6 +20,9 @@ THIS_FILE_PATH = osp.dirname(osp.abspath(__file__))
 TEMPLATE_PATH = osp.join(
     THIS_FILE_PATH,
     "../template/tl_template/attn/attn_gqa_decode_tl.py")
+TEMPLATE_PATH_SP = osp.join(
+    THIS_FILE_PATH,
+    "../template/tl_template/attn/blockattn_decode_varlen_tl.py")
 
 # TODO: bwd map
 shape_idx_map = {
@@ -74,6 +77,9 @@ class lowerOutput:
     SEQ_LEN_KV: str = "1"
     DIM: str = "1"
     DIMV: str = "1"
+    
+    # block_mask
+    infer_mask_block_N: str = "128"
     
     # score_mod name&code
     scores: str = "scores"
@@ -348,9 +354,11 @@ def lower_online_func(online_func, lower_output: lowerOutput,
 def lower_tl(score_mod, block_mask, online_func,
              custom_fwd_inputs,
              Batch, headq, head, seqlenkv,
-             dimqk, dimv, tl_dtype, mask_value, tuned_config=None):
+             dimqk, dimv, tl_dtype, mask_value, tuned_config=None,
+             extern_block_mask=False,
+             infer_mask_block_N=128):
 
-    lower_output = lowerOutput(DIM=str(dimqk), DIMV=str(dimv), GROUPS=str(head), HEADS=str(headq))
+    lower_output = lowerOutput(BATCH=str(Batch), DIM=str(dimqk), DIMV=str(dimv), GROUPS=str(head), HEADS=str(headq), infer_mask_block_N=str(infer_mask_block_N), SEQ_LEN_KV=str(seqlenkv))
     lower_output.tl_dtype = tl_dtype
     # TODO: mask_value: 0 or -inf
     lower_output.is_inf_mask = "True" if block_mask is not None and mask_value == "-inf" else "False"
@@ -387,16 +395,23 @@ def lower_tl(score_mod, block_mask, online_func,
 
     lower_kernel(kernel_options, kernel_code_template)
     
-    if block_mask is not None:
-        block_M = int(tune_output.block_M)
-        block_N = int(tune_output.block_N)
-        # block_mask = create_block_mask(block_mask, Batch, head, 1, seqlenkv, "cuda" if torch.cuda.is_available() else "cpu", block_M, block_N)
-        block_mask = create_mask(block_mask, Batch, head, 1, seqlenkv, "cuda" if torch.cuda.is_available() else "cpu", block_M, block_N)
+    # TODO: mask mod
+    assert(block_mask is None)
+    # if block_mask is not None:
+    #     block_M = int(tune_output.block_M)
+    #     block_N = int(tune_output.block_N)
+    #     # block_mask = create_block_mask(block_mask, Batch, head, 1, seqlenkv, "cuda" if torch.cuda.is_available() else "cpu", block_M, block_N)
+    #     block_mask = create_mask(block_mask, Batch, head, 1, seqlenkv, "cuda" if torch.cuda.is_available() else "cpu", block_M, block_N)
+    # else:
+    #     block_mask = torch.ones((Batch, head, 1, seqlenkv), dtype=torch.uint8, device="cuda" if torch.cuda.is_available() else "cpu")
+        
+    if extern_block_mask:
+        template_path = TEMPLATE_PATH_SP
     else:
-        block_mask = torch.ones((Batch, head, 1, seqlenkv), dtype=torch.uint8, device="cuda" if torch.cuda.is_available() else "cpu")
+        template_path = TEMPLATE_PATH
         
     return TlAttnTemplate(
-        TEMPLATE_PATH,
+        template_path,
         custom_fwd_inputs=kernel_code_template.input_args,
         **lower_online_func_output.__dict__,
         **lower_custom_inputs_output.__dict__,

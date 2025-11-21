@@ -112,7 +112,9 @@ class AttentionEngine:
                  tune_bwd=False, tune_file_bwd="",
                  infer_mask=True, infer_mask_block_M=128, infer_mask_block_N=128, 
                  extern_block_mask=False,
+                 use_varlen=False, # TODO
                  kv_shared=False):
+        self.use_varlen = use_varlen
         # tunner
         # need_engine_fuse, fuse_config = decider(qkv_meta, device)
         
@@ -135,24 +137,37 @@ class AttentionEngine:
                 tune_file_bwd=tune_file_bwd,
                 kv_shared=kv_shared)
 
-        elif backend == "cute":
+        elif backend == "cute" or backend == "cute_v2":
+            # TODO: implement lock for multiprocess
             from core.lower.lower_cute import lower_cute
             # must be same with cute_template.py
             OUTPUT_DIR = osp.join(
                 osp.dirname(
                     osp.abspath(__file__)),
-                "../core/template/cute_template_output")
+                f"../core/template/{backend}_template_output")
             if not kv_shared:
-                template_dir = osp.join(
-                    osp.dirname(
-                        osp.abspath(__file__)),
-                    "../core/template/cute_template")
+                if backend == "cute_v2":
+                    template_dir = osp.join(
+                        osp.dirname(
+                            osp.abspath(__file__)),
+                        "../core/template/cute_template_v2")
+                else:
+                    template_dir = osp.join(
+                        osp.dirname(
+                            osp.abspath(__file__)),
+                        "../core/template/cute_template")
                 file_path = os.path.join(OUTPUT_DIR, "flash_attn_interface.py")
             else:
                 template_dir = osp.join(
                     osp.dirname(
                         osp.abspath(__file__)),
                     "../core/template/cute_template_kvshared")
+                dimqk = qkv_meta[0].shape[3]
+                dimv = qkv_meta[2].shape[3]
+                OUTPUT_DIR = osp.join(
+                    osp.dirname(
+                        osp.abspath(__file__)),
+                    f"../core/template/cute_template_output_{dimqk}_{dimv}")
                 file_path = os.path.join(OUTPUT_DIR, "flash_mla_interface.py")
             cutlass_dtype_map = {
                 torch.float16: "cutlass::half_t",
@@ -165,7 +180,8 @@ class AttentionEngine:
                        qkv_meta[0].shape[3],
                        qkv_meta[2].shape[3],
                        cutlass_dtype_map[qkv_meta[0].dtype],
-                       template_dir=template_dir)
+                       template_dir=template_dir,
+                       output_dir=OUTPUT_DIR,)
             spec = importlib.util.spec_from_file_location(
                 "cute_attn", file_path)
             cute_attn = importlib.util.module_from_spec(spec)
@@ -189,6 +205,8 @@ class AttentionEngine:
                     s_q * h_q // h_kv,
                     h_kv,
                 )
+                # print("num_split", num_split)
+                # print("tile_scheduler_metadata", tile_scheduler_metadata)
                 max_seqlen = cache_seqlens.max().item()
                 max_seqlen_pad = ((max_seqlen+255) // 256) * 256
                 block_size = 64
@@ -258,7 +276,9 @@ class AttentionEngine:
                                       qkv_meta[2].shape[3],
                                       tl_dtype_map[qkv_meta[0].dtype],
                                       mask_value,
-                                      tuned_config)
+                                      tuned_config,
+                                      extern_block_mask,
+                                      infer_mask_block_N=infer_mask_block_N)
             return tl_code, block_mask
             
         # decode mha
@@ -371,17 +391,19 @@ class AttentionEngine:
         tl_attn = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(tl_attn)
         self.attention = tl_attn.attention
-        if infer_mask:
-            self.block_mask = block_mask
+        if infer_mask and block_mask is not None:
+            self.block_mask = block_mask.to("cuda")
         else:
             self.block_mask = None
 
     def __call__(self, *args, **kargs):
         if kargs.get("block_mask") is not None:
-            self.block_mask = kargs["block_mask"]
-        if self.block_mask is not None:
-            o = self.attention(*args, self.block_mask)
-        else:
-            o = self.attention(*args, **kargs)
+            args = args + (kargs["block_mask"],)
+        elif self.block_mask is not None:
+            args = args + (self.block_mask,)
+        if self.use_varlen:
+            args = args + (kargs.get("cache_seqlens"),)
+        
+        o = self.attention(*args)
         return o
 

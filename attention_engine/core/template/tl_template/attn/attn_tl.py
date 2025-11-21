@@ -3,7 +3,7 @@ import torch
 import tilelang as tl
 import tilelang
 import tilelang.language as T
-from tilelang.autotuner import *
+# from tilelang.autotuner import *
 import itertools
 import os
 import json
@@ -179,12 +179,12 @@ def kernel(batch, heads, seq_len, dim, dimv, tune=False):
         return main
     
     if tune:
-        @autotune(
+        @tilelang.autotune(
             configs=get_configs(),
             warmup=10,
             rep=10,
         )
-        @jit(out_idx={{output_idx_list}}, supply_type=tilelang.TensorSupplyType.Auto, ref_prog=None)
+        @tilelang.jit(out_idx={{output_idx_list}})
         def kernel(block_M=None, block_N=None, num_stages=None, thread_num=None, shared_fuse=None):
             return kernel_func(block_M, block_N, num_stages, thread_num, shared_fuse)
 
@@ -218,6 +218,36 @@ def flashattn_bwd_preprocess(batch, heads, seq_len, dim, dimv):
             delta = T.alloc_fragment([blk], accum_dtype)
             T.clear(acc)
             for k in range(T.ceildiv(dimv, blk)):
+                T.copy(O[bz, by * blk : (by + 1) * blk, bx, k * blk : (k + 1) * blk], o)
+                T.copy(dO[bz, by * blk : (by + 1) * blk, bx, k * blk : (k + 1) * blk], do)
+                for i, j in T.Parallel(blk, blk):
+                    acc[i, j] += o[i, j] * do[i, j]
+            T.reduce_sum(acc, delta, 1)
+            T.copy(delta, Delta[bz, bx, by * blk : (by + 1) * blk])
+
+    return flash_bwd_prep
+
+# TL_KERNEL_BWD_DOO = """
+def flashattn_bwd_preprocess2(batch, heads, seq_len, dim, dimv):
+    dtype = "{{tl_dtype}}" # "float16"
+    accum_dtype = "float"
+    shape = [batch, seq_len, heads, dim]
+    shape_v = [batch, seq_len, heads, dimv]
+    blk = 32
+
+    @T.prim_func
+    def flash_bwd_prep(
+        O: T.Buffer(shape_v, dtype), # type: ignore
+        dO: T.Buffer(shape_v, dtype), # type: ignore
+        Delta: T.Buffer([batch, heads, seq_len], accum_dtype), # type: ignore
+    ):
+        with T.Kernel(1, T.ceildiv(blk, blk), 1) as (bx, by, bz):
+            o = T.alloc_fragment([blk, blk], dtype)
+            do = T.alloc_fragment([blk, blk], dtype)
+            acc = T.alloc_fragment([blk, blk], accum_dtype)
+            delta = T.alloc_fragment([blk], accum_dtype)
+            T.clear(acc)
+            for k in range(T.ceildiv(blk, blk)):
                 T.copy(O[bz, by * blk : (by + 1) * blk, bx, k * blk : (k + 1) * blk], o)
                 T.copy(dO[bz, by * blk : (by + 1) * blk, bx, k * blk : (k + 1) * blk], do)
                 for i, j in T.Parallel(blk, blk):
@@ -424,12 +454,12 @@ def flashattn_bwd(batch, heads, seq_len, dim, dimv, tune=False):
         return flash_bwd     
     
     if tune:
-        @autotune(
+        @tilelang.autotune(
             configs=get_bwd_configs(),
             warmup=10,
             rep=10,
         )
-        @jit(out_idx={{bwd_output_idx_list}}, supply_type=tilelang.TensorSupplyType.Auto, ref_prog=None)
+        @tilelang.jit(out_idx={{bwd_output_idx_list}})
         def kernel(block_M=None, block_N=None, thread_num=None):
             return kernel_func(block_M, block_N, thread_num)
 
@@ -514,11 +544,11 @@ if TUNE:
     pk = get_problem_keys()
     _tuned_config = tune(TUNE_FILE, partial(kernel, tune=True), pk)
     tuned_config = {
-        'block_M': _tuned_config[0],
-        'block_N': _tuned_config[1],
-        'num_stages': _tuned_config[2],
-        'thread_num': _tuned_config[3],
-        'shared_fuse': _tuned_config[4]
+        'block_M': _tuned_config['block_M'],
+        'block_N': _tuned_config['block_N'],
+        'num_stages': _tuned_config['num_stages'],
+        'thread_num': _tuned_config['thread_num'],
+        'shared_fuse': _tuned_config['shared_fuse']
     }
 else:
     tuned_config = {
@@ -538,37 +568,48 @@ mod = tl.compile(
 
 # bwd
 
-mod_prep = tl.compile(
-    flashattn_bwd_preprocess({{BATCH}}, {{HEADS}}, {{SEQ_LEN}}, {{DIM}}, {{DIMV}}),
-    out_idx=[2],
-)
-mod_post = tl.compile(
-    flashattn_bwd_postprocess({{BATCH}}, {{HEADS}}, {{SEQ_LEN}}, {{DIM}}, {{DIMV}}),
-    out_idx=[1],
-)
+# TODO: currently this template only support dimv <= 256 for backward
+if {{DIMV}} <= 256:
+    mod_prep = tl.compile(
+        flashattn_bwd_preprocess({{BATCH}}, {{HEADS}}, {{SEQ_LEN}}, {{DIM}}, {{DIMV}}),
+        out_idx=[2],
+    )
+    mod_prep2 = tl.compile(
+        flashattn_bwd_preprocess2({{BATCH}}, {{HEADS}}, {{SEQ_LEN}}, {{DIM}}, {{DIMV}}),
+        out_idx=[2],
+    )
+    mod_post = tl.compile(
+        flashattn_bwd_postprocess({{BATCH}}, {{HEADS}}, {{SEQ_LEN}}, {{DIM}}, {{DIMV}}),
+        out_idx=[1],
+    )
 
-tuned_bwd_config = None
-if TUNE_BWD:
-    pk = get_problem_keys()
-    _tuned_bwd_config = tune(TUNE_FILE_BWD, partial(flashattn_bwd, tune=True), pk)
-    tuned_bwd_config = {
-        'block_M': _tuned_bwd_config[0],
-        'block_N': _tuned_bwd_config[1],
-        'thread_num': _tuned_bwd_config[2],
-    }
+    tuned_bwd_config = None
+    if TUNE_BWD:
+        pk = get_problem_keys()
+        _tuned_bwd_config = tune(TUNE_FILE_BWD, partial(flashattn_bwd, tune=True), pk)
+        tuned_bwd_config = {
+            'block_M': _tuned_bwd_config['block_M'],
+            'block_N': _tuned_bwd_config['block_N'],
+            'thread_num': _tuned_bwd_config['thread_num'],
+        }
+    else:
+        tuned_bwd_config = {
+            'block_M': {{block_M_bwd}},
+            'block_N': {{block_N_bwd}},
+            'thread_num': {{thread_num_bwd}},
+        }
+    program_bwd = flashattn_bwd(
+        {{BATCH}}, {{HEADS}}, {{SEQ_LEN}}, {{DIM}}, {{DIMV}})
+    mod_bwd = tl.compile(
+        program_bwd(**tuned_bwd_config),
+        out_idx={{bwd_output_idx_list}},
+    )
+
 else:
-    tuned_bwd_config = {
-        'block_M': {{block_M_bwd}},
-        'block_N': {{block_N_bwd}},
-        'thread_num': {{thread_num_bwd}},
-    }
-program_bwd = flashattn_bwd(
-    {{BATCH}}, {{HEADS}}, {{SEQ_LEN}}, {{DIM}}, {{DIMV}})
-mod_bwd = tl.compile(
-    program_bwd(**tuned_bwd_config),
-    out_idx={{bwd_output_idx_list}},
-)
-
+    mod_prep = None
+    mod_prep2 = None
+    mod_post = None
+    mod_bwd = None
 
 
 # pytorch compatible func
@@ -601,6 +642,9 @@ class _attention(torch.autograd.Function):
         global mod_prep, mod_post, mod_bwd
         if {{isused_doosum}}:
             delta = mod_prep(o, do)
+        else: # avoid strange TMA error for sigmoidattn
+            global mod_prep2
+            mod_prep2(o, do)
         if {{isused_doosum}}:
             dq, dk, dv = mod_bwd(q, k, v, do, *tmp, delta)
         else:

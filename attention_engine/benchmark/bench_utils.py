@@ -156,27 +156,53 @@ def check_close(o, O_ref, rtol=1e-3, atol=1e-3):
 
 
 def print_debug(o, O_ref, rtol=1e-3, atol=1e-3, save_file=True):
-    close_mask = torch.isclose(o, O_ref, rtol=rtol, atol=atol)
+    # 计算容差阈值
+    tolerance_threshold = atol + rtol * torch.abs(O_ref)
+    
+    # 计算绝对差异
+    abs_diff = torch.abs(o - O_ref)
+    
+    # 找出超过容差的元素
+    exceed_mask = abs_diff > tolerance_threshold
     total_elements = o.numel()
-    num_not_close = (~close_mask).sum().item()
-    percentage_not_close = (num_not_close / total_elements) * 100
-    print(f"{num_not_close} elements are not close.")
-    print(f"{percentage_not_close:.2f}% of the elements are not close.")
-    print(
-        f"Total elements: {total_elements}, Not close elements: {num_not_close}")
-    # max diff and idx
-    max_diff = (o - O_ref).abs().max().item()
-    max_diff_idx = (o - O_ref).abs().argmax().item()
+    num_exceed = exceed_mask.sum().item()
+    percentage_exceed = (num_exceed / total_elements) * 100
+    
+    print(f"{num_exceed} elements exceed tolerance.")
+    print(f"{percentage_exceed:.2f}% of the elements exceed tolerance.")
+    print(f"Total elements: {total_elements}, Exceed tolerance elements: {num_exceed}")
+    
+    # 找出超过容差的最大差异值和索引
+    if num_exceed > 0:
+        # 只在有超过容差的元素时计算
+        exceed_diff = torch.where(exceed_mask, abs_diff, torch.tensor(0.0, device=o.device))
+        max_exceed_diff = exceed_diff.max().item()
+        max_exceed_idx = exceed_diff.argmax().item()
+        max_exceed_idx = torch.unravel_index(torch.tensor(max_exceed_idx), o.shape)
+        
+        print(f"Max exceed diff: {max_exceed_diff} at index {max_exceed_idx}")
+        print(f"Tolerance threshold: {tolerance_threshold[max_exceed_idx].item()}")
+        print(f"Reference: {O_ref[max_exceed_idx]}")
+        print(f"Library: {o[max_exceed_idx]}")
+        print(f"Absolute diff: {abs_diff[max_exceed_idx].item()}")
+    else:
+        print("No elements exceed tolerance.")
+        max_exceed_diff = 0.0
+        max_exceed_idx = None
+    
+    # 原有的最大绝对差异计算
+    max_diff = abs_diff.max().item()
+    max_diff_idx = abs_diff.argmax().item()
     max_diff_idx = torch.unravel_index(torch.tensor(max_diff_idx), o.shape)
     print(f"Max diff: {max_diff} at index {max_diff_idx}")
-    print(f"Reference: {O_ref[max_diff_idx]}")
-    print(f"Library: {o[max_diff_idx]}")
+    print(f"Reference: {O_ref[max_exceed_idx]}")
+    print(f"Library: {o[max_exceed_idx]}")
     print(torch.allclose(o, O_ref, rtol=rtol, atol=atol))
-    # max relative diff and idx
-    max_rel_diff = ((o - O_ref).abs() / O_ref.abs()).max().item()
-    max_rel_diff_idx = ((o - O_ref).abs() / O_ref.abs()).argmax().item()
-    max_rel_diff_idx = torch.unravel_index(
-        torch.tensor(max_rel_diff_idx), o.shape)
+    
+    # 最大相对差异计算
+    max_rel_diff = (abs_diff / torch.abs(O_ref)).max().item()
+    max_rel_diff_idx = (abs_diff / torch.abs(O_ref)).argmax().item()
+    max_rel_diff_idx = torch.unravel_index(torch.tensor(max_rel_diff_idx), o.shape)
     print(f"Max rel diff: {max_rel_diff} at index {max_rel_diff_idx}")
     print(f"Reference: {O_ref[max_rel_diff_idx]}")
     print(f"Library: {o[max_rel_diff_idx]}")
@@ -184,13 +210,12 @@ def print_debug(o, O_ref, rtol=1e-3, atol=1e-3, save_file=True):
     if save_file:
         with open("o_ref.txt", "w") as f:
             O_ref_1 = O_ref.cpu()
-            for idx, element in enumerate(O_ref_1):  # .flatten()):
+            for idx, element in enumerate(O_ref_1):
                 f.write(f"{idx}: {element}\n")
         with open("o.txt", "w") as f:
             o_1 = o.cpu()
-            for idx, element in enumerate(o_1):  # .flatten()):
+            for idx, element in enumerate(o_1):
                 f.write(f"{idx}: {element}\n")
-
 
 # def bench_func_fwd(attn, B, H, S, D, DV, custom_fwd_input={}, causal=True, dtype=torch.float16):
 #     tflops = 2 * B * H * S * S * D + 2 * B * H * S * S * DV
@@ -733,7 +758,36 @@ def do_bench_sigmoidattn(attn, B, H, S, D, DV,
         dK, key.grad = key.grad.clone(), None
         dV, value.grad = value.grad.clone(), None
 
-    from flash_sigmoid import flash_attn_func
+    try:
+        from flash_sigmoid import flash_attn_func
+    except:
+        def flash_attn_func(query, key, value, softmax_scale, causal, sigmoid_bias):
+            dim = query.shape[-1]
+            num_head_groups = query.shape[2] // key.shape[2]
+            if softmax_scale is None:
+                softmax_scale = 1 / dim** 0.5
+
+            query = rearrange(
+                query, 'b s (h g) d -> b s g h d',
+                g=num_head_groups)  # [batch_size, num_head_groups, groups, dim]
+            scores = einsum(query, key,
+            'b s g h d, b t h d -> b g h s t')
+            if causal:
+                seqlenq = query.shape[1]
+                seqlenk = key.shape[1]
+                mask = torch.tril(
+                    torch.ones(
+                        seqlenq, seqlenk, device=scores.device))
+                mask = mask.unsqueeze(0).unsqueeze(0)
+                scores = scores.masked_fill(mask == 0, float('-inf'))
+            scores *= softmax_scale
+            scores += sigmoid_bias.to(scores.device)
+            attention = F.sigmoid(scores)
+
+            out = einsum(attention, value,
+                 'b g h s t, b t h d -> b g h s d')
+            out = rearrange(out, 'b g h s d -> b s (h g) d') 
+            return out
 
     o_ref = flash_attn_func(
         query,
@@ -1218,10 +1272,11 @@ def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16,
         flash_attn_func_hopper = None
         enable_fa3 = False
 
-    DIM_HOPPER = [64, 128, 256]
-    dim_padded_fa3 = list(filter(lambda x: x >= max(D, DV), DIM_HOPPER))
-    assert (len(dim_padded_fa3) > 0)
-    dim_padded_fa3 = min(dim_padded_fa3)
+    # DIM_HOPPER = [64, 128, 256]
+    # dim_padded_fa3 = list(filter(lambda x: x >= max(D, DV), DIM_HOPPER))
+    # assert (len(dim_padded_fa3) > 0)
+    # dim_padded_fa3 = min(dim_padded_fa3)
+    dim_padded_fa3 = 0
 
     def fa3(dim_padded):
         if D < dim_padded:
@@ -1236,7 +1291,7 @@ def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16,
             value_padded = value
         o_ref = flash_attn_func_hopper(
             query_padded, key_padded, value_padded, softmax_scale=(
-                1 / D)**0.5, causal=causal)[0]
+                1 / D)**0.5, causal=causal)
         if DV < dim_padded:
             o_ref = o_ref[:, :, :, :DV]
         return o_ref
@@ -1305,7 +1360,7 @@ def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16,
         print_debug(key.grad, dK)
         print_debug(value.grad, dV)
 
-    # from tilelang.profiler import do_bench
+    from tilelang.profiler import do_bench
     def run():
         o = attn(query, key, value)
 
@@ -1354,7 +1409,7 @@ def do_bench_attention(attn, B, H, S, D, DV, mod=None, dtype=torch.float16,
         latency_ref = do_bench(run_bacward_ref, warmup=50, rep=100)
         print("flash bwd: {:.2f} ms".format(latency_ref))
         print("tflops: {:.2f}".format(bwd_tflops / latency_ref * 1e-9))
-        if enable_fa3 and dim_padded_fa3 <= 128:
+        if enable_fa3:
             latency_reffa3 = do_bench(run_bacward_ref_fa3, warmup=50, rep=100)
             print("flash fa3 bwd: {:.2f} ms".format(latency_reffa3))
             print("tflops: {:.2f}".format(bwd_tflops / latency_reffa3 * 1e-9))

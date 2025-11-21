@@ -12,7 +12,7 @@ Example of attention decode with online softmax
 """
 
 
-D = 128
+D = 192
 softmax_scale = 1/D ** 0.5
 # elementwise on attention scores
 def score_mod(score, custom_fwd_inputs, b, h, q_idx, kv_idx):
@@ -102,7 +102,7 @@ class OnlineSoftmax(OnlineFunc):
         return dscores
 
 if __name__ == "__main__":
-    B, H ,S, D, DV = 1,32,8192,D, 128
+    B, H ,S, D, DV = 8, 16, 8192, D, 128
     dtype = torch.float16 # performance regression for bfloat16
     qkv_meta = (
         meta_tensor(B, H, 128, D, dtype=dtype),
