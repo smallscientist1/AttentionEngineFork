@@ -10,6 +10,7 @@ from examples.retnet_recurrent import retnet_recurrent
 from examples.retention_parallel import retention_parallel
 from examples.mamba2 import mamba2
 from examples.mla_decode_v2 import mla_decode
+from examples.sparse_gqa_decode import sparse_gqa_decode
 
 # from attention_engine.benchmark.bench_utils import do_bench
 from tilelang.profiler import do_bench
@@ -113,7 +114,7 @@ def bench_fig11():
 
     # (l) Sparse Group Query Attention
     sparse_gqa_data = []
-    for b, s in [(B, S) for B in [1,] for S in seqlens]:
+    for b, s in [(B, S) for B in [8,] for S in seqlens]:
         result_dict = bench_attention("sparse_gqa", b, 32, 1, s, 128, 128, head_k=8, head_v=8)
         sparse_gqa_data.append((f"BS{b}S1\nKV{s}", result_dict))
     dump_bench_result("sparse_gqa", sparse_gqa_data)
@@ -218,7 +219,8 @@ def bench_attention(attn_type:str, Batch:int, head:int, seqlen_q:int, seqlen_kv:
         result_dict = bench_mamba2_ssm(Batch, head, seqlen_q, dim_qk, dim_v, HK=head_k, HV=head_v)
     elif attn_type == "mla_attn":
         result_dict = bench_mla_decode(Batch, head, seqlen_kv, dim_qk, dim_v, HKV=head_k)
-        
+    elif attn_type == "sparse_gqa":
+        result_dict = bench_sparse_gqa_decode(Batch, head, head_k, seqlen_kv, dim_qk, dim_v)
     else:
         # raise ValueError(f"Undefined attention type: {attn_type}")
         print(f"Warning: Undefined attention type {attn_type}, skipping benchmark.")
@@ -723,6 +725,62 @@ def bench_mla_decode(B, HQ, SKV, D, DV, HKV=1, dtype=torch.bfloat16):
         print(f"Warning: flashMLA not available: {e}")
         
     return result_dict
+
+def bench_sparse_gqa_decode(B, HQ, HKV, SKV, D, DV, dtype=torch.float16):
+    
+    result_dict = {}
+    
+    block_size = 32
+    sparse_ratio = 0.8
+    
+    q = torch.randn(B, 1, HQ, D, dtype=dtype, device="cuda")
+    key = torch.randn(B, SKV, HKV, D, dtype=dtype, device="cuda")
+    value = torch.randn(B, SKV, HKV, DV, dtype=dtype, device="cuda")
+    cache_seqlens = torch.full((B,), SKV, dtype=torch.int32, device="cuda")
+    
+    def generate_block_mask(batch, heads_kv, max_cache_seqlen, sparse_ratio, cache_seqlens):
+        num_blocks = (max_cache_seqlen + block_size - 1) // block_size
+
+        valid_num_blocks = torch.ceil(cache_seqlens * (1 - sparse_ratio) / block_size).int()
+        # print("valid_num_blocks: ", valid_num_blocks)
+        max_valid_num_blocks = torch.ceil(cache_seqlens / block_size).int()
+        # print("max_valid_num_blocks: ", max_valid_num_blocks)
+        # Initialize block_mask with false (for padding blocks)
+        block_mask = torch.zeros((batch, heads_kv, num_blocks), dtype=torch.bool, device='cuda')
+
+        # Assign valid indices while ensuring no duplicates within each batch-group
+        for b in range(batch):
+            max_valid_block = max_valid_num_blocks[b].item()  # Max valid blocks for this batch
+            valid_num_block = valid_num_blocks[b].item()  # Valid blocks for this batch
+            if valid_num_block > 0:  # Ensure there's at least one valid block
+                for h in range(heads_kv):
+                    perm = torch.randperm(max_valid_block, device='cuda')[:valid_num_block]
+                    block_mask[b, h, perm] = True
+                    
+        return block_mask
+    
+    block_mask = generate_block_mask(B, HKV, SKV, sparse_ratio, cache_seqlens)
+    
+    # ours
+    attention_module = sparse_gqa_decode(B, HQ, HKV, SKV, D, DV, dtype=dtype, BLOCK=block_size)
+    fwd_lat = do_bench(lambda: attention_module(q, key, value, block_mask=block_mask, cache_seqlens=cache_seqlens), warmup=100)
+    
+    result_dict["MetaAttention"] = (fwd_lat, None)
+    
+    # triton ref
+    # try:
+    from ref.sparse_gqa_decode_varlen_triton import block_sparse_flash_decode_gqa_mask_triton
+    
+    fwd_lat_ref = do_bench(lambda: block_sparse_flash_decode_gqa_mask_triton(
+        q, key, value, cache_seqlens, SKV, block_mask, block_size), warmup=100
+    )
+    
+    result_dict["SeerAttention"] = (fwd_lat_ref, None)
+    # except Exception as e:
+    #     print(f"Warning: Triton Sparse GQA not available: {e}")
+    
+    return result_dict
+
 
 def plot_fig():
     pass

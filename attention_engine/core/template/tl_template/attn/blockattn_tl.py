@@ -612,10 +612,11 @@ class _attention(torch.autograd.Function):
             delta = mod_prep(o, do)
         # TODO: causal
         
+        dq = torch.zeros_like(q, dtype=torch.float32)
         if {{isused_doosum}}:
-            dq, dk, dv = mod_bwd(q, k, v, do, *tmp, delta, block_sparse_mask)
+            dk, dv = mod_bwd(q, k, v, do, *tmp, delta, block_sparse_mask, dq)
         else:
-            dq, dk, dv = mod_bwd(q, k, v, do, *tmp, block_sparse_mask)
+            dk, dv = mod_bwd(q, k, v, do, *tmp, block_sparse_mask, dq)
         dq = mod_post(dq)
         none_list = [None] * len(tmp)
         return dq, dk, dv, *none_list, None

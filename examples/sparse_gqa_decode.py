@@ -11,9 +11,8 @@ from core import meta_tensor
 Example of block sparse attention(seer attention)
 """
 
-def sparse_gqa_decode(B, H, G, S, D, DV, dtype=torch.float16):
+def sparse_gqa_decode(B, H, G, S, D, DV, dtype=torch.float16, BLOCK=32):
     
-    BLOCK = 32
 
     softmax_scale = 1/D ** 0.5
     # elementwise on attention scores

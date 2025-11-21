@@ -697,7 +697,7 @@ def lower_tl(score_mod, block_mask, online_func,
     bwd_output_idx_list = [i for i in range(4 +
                                             len(custom_fwd_inputs.input_tensors) +
                                             len(online_func.final_rowscales) +
-                                            int(lower_online_func_output.isused_doosum), 4 +
+                                            int(lower_online_func_output.isused_doosum) + 1, 4 +
                                             len(custom_fwd_inputs.input_tensors) +
                                             len(online_func.final_rowscales) +
                                             int(lower_online_func_output.isused_doosum) +

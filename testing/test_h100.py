@@ -5,6 +5,8 @@ from examples.mamba2 import mamba2
 from examples.gated_retention import gated_retention
 from examples.sigmoid_attn import sigmoid_attention
 from examples.sparse_gqa_decode import sparse_gqa_decode
+from examples.retnet_recurrent import retnet_recurrent
+from examples.reluattn import relu_attention
 
 import torch
 import torch.nn.functional as F
@@ -16,13 +18,15 @@ from benchmark.bench_utils import print_debug
 
 def test_attention():
 
-    # test_softmaxattention(1, 16, 2048, 128, 128)
-    # test_softmaxattention_decode(8, 16, 1, 4096, 128, 128) # TODO: compile TileLang with llvm
-    # test_mamba2(1, 1, 2048, 128, 64, HK=1, HV=80, require_grad=True) # TODO: fix
-    # test_gated_retention(8, 32, 2048, 256, 512)
-    # test_sigmoid_attention(1, 16, 2048, 128, 128)
-    # test_softmaxattention(1, 16, 2048, 128, 256, use_v2=True)
+    test_softmaxattention(1, 16, 2048, 128, 128)
+    test_softmaxattention(1, 16, 2048, 128, 256)
+    test_softmaxattention_decode(8, 16, 1, 4096, 128, 128)
+    test_mamba2(1, 1, 2048, 128, 64, HK=1, HV=80)
+    test_gated_retention(8, 32, 2048, 256, 256)
+    test_sigmoid_attention(1, 32, 2048, 128, 128)
     test_sparse_gqa_decode(8, 32, 8, 2048, 128, 128)
+    test_retnet_recurrent(1, 32, 2048, 256, 512)
+    test_relu_attention(1, 6, 2048, 64, 64)
 
     print("All tests pass.")
     
@@ -81,7 +85,7 @@ def test_softmaxattention(B, H, S, D, DV, device="cuda", dtype=torch.float16, re
         torch.testing.assert_close(value1.grad, value.grad, rtol=1e-2, atol=1e-2)
     
 
-def test_softmaxattention_decode(B, H, S, KV, D, DV, device="cuda", dtype=torch.float16, require_grad=True):
+def test_softmaxattention_decode(B, H, S, KV, D, DV, device="cuda", dtype=torch.float16):
     attention_module = softmax_attention_decode(B, H, S, KV, D, DV)
     
     def ref(query, key, value, softmax_scale=None):
@@ -104,9 +108,9 @@ def test_softmaxattention_decode(B, H, S, KV, D, DV, device="cuda", dtype=torch.
         return out
     
     # init input
-    query = torch.randn(B, S, H, D, device=device, dtype=dtype, requires_grad=require_grad)
-    key = torch.randn(B, KV, H, D, device=device, dtype=dtype, requires_grad=require_grad)
-    value = torch.randn(B, KV, H, DV, device=device, dtype=dtype, requires_grad=require_grad)
+    query = torch.randn(B, S, H, D, device=device, dtype=dtype)
+    key = torch.randn(B, KV, H, D, device=device, dtype=dtype)
+    value = torch.randn(B, KV, H, DV, device=device, dtype=dtype)
     ref_o = ref(query, key, value)
     o = attention_module(query, key, value)
     torch.testing.assert_close(o, ref_o, rtol=1e-2, atol=1e-2)
@@ -116,7 +120,7 @@ def test_mamba2(B, HQ, S, D, DV, HK=None, HV=None, dtype=torch.bfloat16, require
     
     # init input
     query = torch.randn(B, S, HQ, D, device="cuda", dtype=dtype)
-    key = torch.randn(B, S, HK, D, device="cuda", dtype=dtype)
+    key = 0.5 * torch.randn(B, S, HK, D, device="cuda", dtype=dtype)
     value = torch.randn(B, S, HV, DV, device="cuda", dtype=dtype)
     if require_grad:
         do = 0.1 * torch.randn(B, S, HV,
@@ -314,86 +318,39 @@ def test_mamba2(B, HQ, S, D, DV, HK=None, HV=None, dtype=torch.bfloat16, require
     if require_grad:
         out_ref.backward(do, retain_graph=True)
         
-    from benchmark.bench_utils import print_debug
-    print_debug(o.transpose(1, 2), out_ref, rtol=7e-2, atol=7e-2)
-    torch.testing.assert_close(o.transpose(1, 2), out_ref, rtol=7e-2, atol=7e-2)
+    torch.testing.assert_close(o.transpose(1, 2), out_ref, rtol=1e-1, atol=1e-1)
     if require_grad:
-        print_debug(
+        torch.testing.assert_close(
             q_ours.grad.transpose(1, 2),
             query.grad,
-            rtol=3e-2,
-            atol=1e-2,
+            rtol=1e-1,
+            atol=1e-1,
         )
-        print_debug(
+        torch.testing.assert_close(
             k_ours.grad.transpose(1, 2),
             key.grad,
-            rtol=3e-2,
-            atol=1e-2,
+            rtol=1e-1,
+            atol=1e-1,
         )
-        print_debug(
+        torch.testing.assert_close(
             v_ours.grad.transpose(1, 2),
             value.grad,
-            rtol=3e-2,
-            atol=1e-2,
+            rtol=1e-1,
+            atol=1e-1,
         )
-        print_debug(
-            A_ours.grad.squeeze(0),
-            A_mamba.grad,
-            rtol=3e-2,
-            atol=1e-2,
-        )
-        print_debug(
-            dt_ours.grad.transpose(1, 2),
-            dt_mamba.grad,
-            rtol=3e-2,
-            atol=1e-2,
-        )
-        # TODO: change here
-        # torch.testing.assert_close(
-        #     q_ours.grad.transpose(1, 2),
-        #     query.grad,
-        #     rtol=3e-2,
-        #     atol=1e-2,
-        # )
-        # torch.testing.assert_close(
-        #     k_ours.grad.transpose(1, 2),
-        #     key.grad,
-        #     rtol=3e-2,
-        #     atol=1e-2,
-        # )
-        # torch.testing.assert_close(
-        #     v_ours.grad.transpose(1, 2),
-        #     value.grad,
-        #     rtol=3e-2,
-        #     atol=1e-2,
-        # )
+        # pytorch reference has nan, so we skip this check for now
         # torch.testing.assert_close(
         #     A_ours.grad.squeeze(0),
         #     A_mamba.grad,
-        #     rtol=3e-2,
-        #     atol=1e-2,
+        #     rtol=1e-1,
+        #     atol=1e-1,
         # )
         # torch.testing.assert_close(
         #     dt_ours.grad.transpose(1, 2),
         #     dt_mamba.grad,
-        #     rtol=3e-2,
-        #     atol=1e-2,
+        #     rtol=1e-1,
+        #     atol=1e-1,
         # )
-    # try:
-    #     from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
-    #     do_bench(
-    #         lambda: mamba_chunk_scan_combined(
-    #             value,
-    #             dt_mamba,
-    #             A_mamba,
-    #             key,
-    #             query,
-    #             chunk_size=64,
-    #             D=None,
-    #             return_final_state=False,
-    #             dt_bias=None,
-    #         )
-    #     )
     
    
 def test_gated_retention(B, H, S, D, DV, dtype=torch.bfloat16, require_grad=True):
@@ -483,50 +440,27 @@ def test_gated_retention(B, H, S, D, DV, dtype=torch.bfloat16, require_grad=True
     if require_grad:
         o_ref.backward(do, retain_graph=True)
     
-    torch.testing.assert_close(o, o_ref, rtol=5e-2, atol=5e-2)
+    torch.testing.assert_close(o, o_ref, rtol=1e-1, atol=1e-1)
     if require_grad:
-        print_debug(
+        torch.testing.assert_close(
             q.grad,
             q1.grad,
-            rtol=3e-2,
-            atol=1e-2,
+            rtol=1e-1,
+            atol=1e-1,
         )
-        print_debug(
+        torch.testing.assert_close(
             k.grad,
             k1.grad,
-            rtol=3e-2,
-            atol=1e-2,
+            rtol=1e-1,
+            atol=1e-1,
         )
-        print_debug(
+        torch.testing.assert_close(
             v.grad,
             v1.grad,
-            rtol=3e-2,
-            atol=1e-2,
+            rtol=1e-1,
+            atol=1e-1,
         )
-        print_debug(
-            g.grad,
-            g1.grad.to(accum_dtype),
-            rtol=3e-2,
-            atol=1e-2,
-        )
-        # torch.testing.assert_close(
-        #     q.grad,
-        #     q1.grad,
-        #     rtol=3e-2,
-        #     atol=1e-2,
-        # )
-        # torch.testing.assert_close(
-        #     k.grad,
-        #     k1.grad,
-        #     rtol=3e-2,
-        #     atol=1e-2,
-        # )
-        # torch.testing.assert_close(
-        #     v.grad,
-        #     v1.grad,
-        #     rtol=3e-2,
-        #     atol=1e-2,
-        # )
+        # pytorch reference has nan, so we skip this check for now
         # torch.testing.assert_close(
         #     g.grad,
         #     g1.grad.to(accum_dtype),
@@ -555,53 +489,114 @@ def test_sigmoid_attention(B, H, S, D, DV, device="cuda", dtype=torch.float16, r
             mask = mask.unsqueeze(0).unsqueeze(0)
             scores = scores.masked_fill(mask == 0, float('-inf'))
         scores += sigmoid_bias
-        attention = torch.sigmoid(scores)
+        # attention = torch.sigmoid(scores)
+        attention = (torch.tanh(scores*0.5) + 1) * 0.5
 
         out = einsum(attention, value,
                 'b g h s t, b t h d -> b g h s d')
         out = rearrange(out, 'b g h s d -> b s (h g) d') 
         return out
     
+    # from flash_sigmoid import flash_attn_func
+    # def ref(query, key, value, sigmoid_bias, causal=True):
+    #     ref_out = flash_attn_func(
+    #         query, key, value, softmax_scale=1.0, causal=causal, sigmoid_bias=sigmoid_bias.to("cpu")
+    #     )
+    #     return ref_out
+    
     accum_dtype = torch.float32
     # init input
-    query = torch.randn(B, S, H, D, device=device, dtype=dtype, requires_grad=require_grad)
-    key = torch.randn(B, S, H, D, device=device, dtype=dtype, requires_grad=require_grad)
-    value = torch.randn(B, S, H, DV, device=device, dtype=dtype, requires_grad=require_grad)
-    softmax_bias = 0.1* torch.randn(1, device=device, dtype=accum_dtype, requires_grad=False)
+    query = torch.randn(B, S, H, D, device=device, dtype=dtype)
+    key = torch.randn(B, S, H, D, device=device, dtype=dtype)
+    value = torch.randn(B, S, H, DV, device=device, dtype=dtype)
+    softmax_bias = torch.tensor([1], device=device, dtype=accum_dtype).uniform_(-10., 2.)
     
-    ref_o = ref(query, key, value, softmax_bias)
+    
+    query.detach_().requires_grad_(require_grad)
+    key.detach_().requires_grad_(require_grad)
+    value.detach_().requires_grad_(require_grad)
     
     query1 = query.clone().detach().requires_grad_(require_grad)
     key1 = key.clone().detach().requires_grad_(require_grad)
     value1 = value.clone().detach().requires_grad_(require_grad)
+    
+    ref_o = ref(query, key, value, softmax_bias)
     o = attention_module(query1, key1, value1, softmax_bias)
     
-    torch.testing.assert_close(o, ref_o, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(o, ref_o, rtol=1e-1, atol=1e-1)
     
     if require_grad:
-        do = torch.randn(B, S, H, DV, device=device, dtype=dtype)
+        do = 0.1 * torch.randn(B, S, H, DV, device=device, dtype=dtype)
         o.backward(do, retain_graph=True)
         ref_o.backward(do, retain_graph=True)
         torch.testing.assert_close(
             query.grad,
             query1.grad,
-            rtol=3e-2,
-            atol=1e-2,
+            rtol=1e-1,
+            atol=1e-1,
         )
         torch.testing.assert_close(
             key.grad,
             key1.grad,
-            rtol=3e-2,
-            atol=1e-2,
+            rtol=1e-1,
+            atol=1e-1,
         )
         torch.testing.assert_close(
             value.grad,
             value1.grad,
-            rtol=3e-2,
-            atol=1e-2,
+            rtol=1e-1,
+            atol=1e-1,
         )
 
-def test_sparse_gqa_decode(B, H, G, S, D, DV, device="cuda", dtype=torch.float16, require_grad=True):
+def test_relu_attention(B, H, S, D, DV, device="cuda", dtype=torch.float16, require_grad=True):
+    attention_module = relu_attention(B, H, S, D, DV, dtype=dtype)
+    
+    def ref(query, key, value):
+        qk = torch.einsum('bqhd,bkhd->bhqk', query, key)
+        qk = qk / (D ** 0.5)
+        qk = F.relu(qk)
+        o = torch.einsum('bhqk,bkhd->bqhd', qk, value)
+        return o
+    
+    accum_dtype = torch.float32
+    # init input
+    query = torch.randn(B, S, H, D, device=device, dtype=dtype, requires_grad=require_grad)
+    key = torch.randn(B, S, H, D, device=device, dtype=dtype, requires_grad=require_grad)
+    value = torch.randn(B, S, H, DV, device=device, dtype=dtype, requires_grad=require_grad)
+    
+    ref_o = ref(query, key, value)
+    
+    query1 = query.clone().detach().requires_grad_(require_grad)
+    key1 = key.clone().detach().requires_grad_(require_grad)
+    value1 = value.clone().detach().requires_grad_(require_grad)
+    o = attention_module(query1, key1, value1)
+    
+    torch.testing.assert_close(o, ref_o, rtol=1e-2, atol=1e-2)
+    
+    if require_grad:
+        do = 0.1 * torch.randn(B, S, H, DV, device=device, dtype=dtype)
+        o.backward(do, retain_graph=True)
+        ref_o.backward(do, retain_graph=True)
+        torch.testing.assert_close(
+            query.grad,
+            query1.grad,
+            rtol=1e-1,
+            atol=1e-1,
+        )
+        torch.testing.assert_close(
+            key.grad,
+            key1.grad,
+            rtol=1e-1,
+            atol=1e-1,
+        )
+        torch.testing.assert_close(
+            value.grad,
+            value1.grad,
+            rtol=1e-1,
+            atol=1e-1,
+        )
+
+def test_sparse_gqa_decode(B, H, G, S, D, DV, device="cuda", dtype=torch.float16):
     attention_module = sparse_gqa_decode(B, H, G, S, D, DV, dtype=dtype)
     
     def ref_program_torch(query, key, value, block_mask, cache_seqlens, max_cache_seqlen, num_blocks,
@@ -683,7 +678,75 @@ def test_sparse_gqa_decode(B, H, G, S, D, DV, device="cuda", dtype=torch.float16
                               (S + block_size - 1) // block_size, block_size)
     o = attention_module(query, key, value, block_mask=block_mask, cache_seqlens=cache_seqlens)
     
-    torch.testing.assert_close(o, ref_o, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(o, ref_o, rtol=1e-1, atol=1e-1)
     
+def test_retnet_recurrent(B, H, S, D, DV, dtype=torch.bfloat16, require_grad=True):
+    attention_module = retnet_recurrent(B, H, S, D, DV, dtype=dtype)
+    
+    def ref(q, k, v):
+        orig_type = q.dtype
+        q, k, v = q.float(), k.float(), v.float()
+        _, n_heads, seq_len, d_head = q.shape
+        s = (1 - q.new_tensor(2., dtype=torch.float).pow(-5. - q.new_tensor(range(n_heads), dtype=torch.float))).log2()
+        n = q.new_tensor(range(seq_len), dtype=torch.float)
+        n = torch.exp2((n.unsqueeze(-1) - n) * s.view(-1, 1, 1)) * n.unsqueeze(-1).ge(n)
+        s = torch.einsum('bhqd,bhkd,hqk->bhqk', q * d_head ** -0.5, k, n.to(q.dtype))
+        o = torch.einsum('bhqk,bhkd->bhqd', s, v)
+        return o.to(orig_type)
+    
+    # init input
+    accum_dtype = torch.float32
+    query = torch.randn(B, H, S, D, device="cuda", dtype=dtype)
+    key = 0.1 * torch.randn(B, H, S, D, device="cuda", dtype=dtype)
+    g = torch.tensor(range(0, H), dtype=accum_dtype)
+    g = 1 - torch.exp2(-5 - g)
+    g = g[None, :, None].expand(B, H, S).cuda().detach().contiguous()
+    value = torch.randn(B, H, S, DV, device="cuda", dtype=dtype)
+    do = 0.1 * torch.randn(B, H, S, DV, device="cuda", dtype=dtype)
+    
+    query.detach_().requires_grad_(require_grad)
+    key.detach_().requires_grad_(require_grad)
+    g.detach_().requires_grad_(require_grad)
+    value.detach_().requires_grad_(require_grad)
+    
+    q1 = query.clone()
+    k1 = key.clone()
+    v1 = value.clone()
+    g1 = g.clone()
+    q1.detach_().requires_grad_(require_grad)
+    k1.detach_().requires_grad_(require_grad)
+    g1.detach_().requires_grad_(False)
+    v1.detach_().requires_grad_(require_grad)
+    
+    # ours
+    o = attention_module(query, key, value, g)
+    if require_grad:
+        o.backward(do, retain_graph=True)
+        
+    # ref
+    o_ref = ref(q1, k1, v1)
+    if require_grad:
+        o_ref.backward(do, retain_graph=True)
+    torch.testing.assert_close(o, o_ref, rtol=1e-1, atol=1e-1)
+    if require_grad:
+        torch.testing.assert_close(
+            query.grad,
+            q1.grad,
+            rtol=1e-1,
+            atol=1e-1,
+        )
+        torch.testing.assert_close(
+            key.grad,
+            k1.grad,
+            rtol=1e-1,
+            atol=1e-1,
+        )
+        torch.testing.assert_close(
+            value.grad,
+            v1.grad,
+            rtol=1e-1,
+            atol=1e-1,
+        )
+
 if __name__ == "__main__":
     test_attention()

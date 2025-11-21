@@ -241,7 +241,7 @@ class SparseFlashAttn(torch.nn.Module):
             num_blocks=T.symbolic("num_blocks"))
 
         self.kernel = tilelang.compile(
-            program, out_idx=-1, target='cuda', execution_backend="cython")
+            program, out_idx=-1, execution_backend="cython")
 
         props = torch.cuda.get_device_properties(torch.device("cuda:0"))
         self.num_sm = props.multi_processor_count

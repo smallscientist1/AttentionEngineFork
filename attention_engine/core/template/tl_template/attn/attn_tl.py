@@ -636,10 +636,11 @@ class _attention(torch.autograd.Function):
         else: # avoid strange TMA error for sigmoidattn
             global mod_prep2
             mod_prep2(o, do)
+        dq = torch.zeros_like(q, dtype=torch.float32)
         if {{isused_doosum}}:
-            dq, dk, dv = mod_bwd(q, k, v, do, *tmp, delta)
+            dk, dv = mod_bwd(q, k, v, do, *tmp, delta, dq)
         else:
-            dq, dk, dv = mod_bwd(q, k, v, do, *tmp)
+            dk, dv = mod_bwd(q, k, v, do, *tmp, dq)
         dq = mod_post(dq)
         none_list = [None] * len(tmp)
         return dq, dk, dv, *none_list
