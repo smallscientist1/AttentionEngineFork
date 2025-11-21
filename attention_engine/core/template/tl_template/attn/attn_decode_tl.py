@@ -214,7 +214,6 @@ program = kernel(
 mod = tl.compile(
     program,
     out_idx={{output_idx_list}},
-    target="cuda",
     execution_backend="dlpack",
 )
 # TL_INFERFACE = """
