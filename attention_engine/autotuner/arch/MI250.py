@@ -15,6 +15,6 @@ class MI250(Arch):
 
         self.sm_partition = 4
         self.transaction_size = [32, 128]   # in bytes
-        self.bandwidth = [1319, 16308]
-        self.platform = "CUDA"
+        # self.bandwidth = [0, 0]
+        self.platform = "ROCM"
         self.compute_capability = "90a"
