@@ -245,7 +245,7 @@ def bench_softmaxattention(B, H, Sq, S, D, DV, device='cuda', dtype=torch.float1
         assert require_grad == False
         attention_module = softmax_attention_decode(B, H, Sq, S, D, DV)
     else:
-        attention_module = causal_softmax_attention(B, H, S, D, DV)
+        attention_module = causal_softmax_attention(B, H, S, D, DV, tune=True)
     def ours():
         o = attention_module(query, key, value)
         return o
@@ -368,7 +368,7 @@ def bench_sigmoidattention(B, H, S, D, DV, dtype=torch.float16, require_grad=Tru
     softmax_bias_2 = softmax_bias.to("cpu")
     
     # ours
-    attention_module = sigmoid_attention(B, H, S, D, DV)
+    attention_module = sigmoid_attention(B, H, S, D, DV, tune=True)
     attention_module_v2 = sigmoid_attention_v2(B, H, S, D, DV)
     
     query1 = query.clone().detach().requires_grad_(False)
@@ -420,7 +420,7 @@ def bench_reluattention(B, H, S, D, DV, device='cuda', dtype=torch.float16, requ
     do = torch.randn(B, S, H, DV, device=device, dtype=dtype, requires_grad=False)
     
     # ours
-    attention_module = relu_attention(B, H, S, D, DV, dtype=dtype)
+    attention_module = relu_attention(B, H, S, D, DV, dtype=dtype, tune=True)
     fwd_lat = do_bench(lambda: attention_module(query, key, value))
     if require_grad:
         o = attention_module(query, key, value)

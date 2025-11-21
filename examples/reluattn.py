@@ -8,7 +8,7 @@ from core import Var
 from core import meta_tensor
 
 
-def relu_attention(B, H, S, D, DV, dtype=torch.float16):
+def relu_attention(B, H, S, D, DV, dtype=torch.float16, tune=False):
     
     scores_scale = 1/D**0.5
     def score_mod(score, custom_fwd_inputs, b, h, q_idx, kv_idx):
@@ -58,7 +58,8 @@ def relu_attention(B, H, S, D, DV, dtype=torch.float16):
         qkv_meta,
         custom_fwd_inputs, score_mod=score_mod, mask_mod=None,
         online_func=OnlineIdentity(),
-        tune = False, tune_file = "reluattn_tune.json"
+        tune=tune, tune_file ="reluattn_tune.json",
+        tune_bwd=tune, tune_file_bwd="reluattn_bwd.json"
     )
 
     return mod

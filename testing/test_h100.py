@@ -18,15 +18,15 @@ from benchmark.bench_utils import print_debug
 
 def test_attention():
 
-    test_softmaxattention(1, 16, 2048, 128, 128)
+    test_softmaxattention(1, 16, 2048, 128, 128) # amd bug bwd
     test_softmaxattention(1, 16, 2048, 128, 256)
     test_softmaxattention_decode(8, 16, 1, 4096, 128, 128)
-    test_mamba2(1, 1, 2048, 128, 64, HK=1, HV=80)
-    test_gated_retention(8, 32, 2048, 256, 256)
+    test_mamba2(1, 1, 2048, 128, 64, HK=1, HV=80) # 1
+    test_gated_retention(8, 32, 2048, 256, 256) # 1
     test_sigmoid_attention(1, 32, 2048, 128, 128)
     test_sparse_gqa_decode(8, 32, 8, 2048, 128, 128)
-    test_retnet_recurrent(1, 32, 2048, 256, 512)
-    test_relu_attention(1, 6, 2048, 64, 64)
+    test_retnet_recurrent(1, 32, 2048, 256, 512) # 1
+    test_relu_attention(1, 6, 2048, 64, 64) # fwd: RuntimeError: Initialization failed: Failed to set the allowed dynamic shared memory size for main_kernel to 81920
 
     print("All tests pass.")
     
@@ -469,7 +469,7 @@ def test_gated_retention(B, H, S, D, DV, dtype=torch.bfloat16, require_grad=True
         # )
     
 def test_sigmoid_attention(B, H, S, D, DV, device="cuda", dtype=torch.float16, require_grad=True):
-    attention_module = sigmoid_attention(B, H, S, D, DV)
+    attention_module = sigmoid_attention(B, H, S, D, DV, tune=True)
     
     def ref(query, key, value, sigmoid_bias, causal=True):
         dim = query.shape[-1]
@@ -549,7 +549,7 @@ def test_sigmoid_attention(B, H, S, D, DV, device="cuda", dtype=torch.float16, r
         )
 
 def test_relu_attention(B, H, S, D, DV, device="cuda", dtype=torch.float16, require_grad=True):
-    attention_module = relu_attention(B, H, S, D, DV, dtype=dtype)
+    attention_module = relu_attention(B, H, S, D, DV, dtype=dtype, tune=True)
     
     def ref(query, key, value):
         qk = torch.einsum('bqhd,bkhd->bhqk', query, key)

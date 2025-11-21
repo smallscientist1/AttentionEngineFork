@@ -7,7 +7,7 @@ from core import SymbolicArray, SymbolScalar, SymbolicTensor
 from core import Var
 from core.utils import meta_tensor
 
-def sigmoid_attention(B, H, S, D, DV):
+def sigmoid_attention(B, H, S, D, DV, tune=False):
     
     def causal_mask(b, h, q_idx, kv_idx):
         return q_idx >= kv_idx
@@ -65,7 +65,8 @@ def sigmoid_attention(B, H, S, D, DV):
         qkv_meta,
         custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
         online_func=OnlineIdentity(),
-        tune_bwd=True, tune_file_bwd="sigmoid_bwd.json",
+        tune=tune, tune_file ="sigmoid_tune.json",
+        tune_bwd=tune, tune_file_bwd="sigmoid_bwd.json",
     )
     
     return mod
