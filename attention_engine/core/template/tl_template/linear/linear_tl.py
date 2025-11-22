@@ -13,6 +13,8 @@ import os
 import json
 from typing import Tuple
 from functools import partial
+import multiprocessing
+import traceback
 
 from autotuner.arch import AttnDevice, AttnDeviceAMD, H100
 
@@ -420,9 +422,9 @@ def chunk_o(
         
 
 def generate_config_dh(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100()):
-    BK_dhs = [32,64,128] # ,192,256]
-    BV_dhs = [32,64,128] # ,192,256]
-    num_stages_dhs = [1,2] # ,3,4]
+    BK_dhs = [32,64] if device.platform=="ROCM" else [32, 64,128] # ,192,256]
+    BV_dhs = [32,64] if device.platform=="ROCM" else [32,64,128] # ,192,256]
+    num_stages_dhs = [1,2] if device.platform=="CUDA" else [1,] # ,3,4]
     num_threads_dhs = [128,256]
     # H100
     MMA_ATOM_M = device.mma_primitive[0]# 64
@@ -557,9 +559,9 @@ def chunk_bwd_kernel_dh(
         return kernel
 
 def generate_config_dqkg(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100()):
-    BK_dqkg = [32,64,128] # ,256]
-    BV_dqkg = [32,64,128] # ,256]
-    num_stages_dqkg = [1,2] # ,3,4]
+    BK_dqkg = [32,64,128] if BT<128 or device.platform=="CUDA" else [32,64]
+    BV_dqkg = [32,64,128] if BT<128 or device.platform=="CUDA" else [32,64]
+    num_stages_dqkg = [1,2] if device.platform=="CUDA" else [1]
     num_threads_dqkg = [128,256]
     
     # H100
@@ -836,8 +838,9 @@ def chunk_bwd_dqkg(
 def generate_config_dv(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT,device=H100()):
     BK_dvs = [32,64,128]# ,256]
     BV_dvs = [32,64,128] # ,256]
-    num_stages_dvs = [1,2] # ,3,4]
+    num_stages_dvs = [1,2] if device.platform=="CUDA" else [1]
     num_threads_dvs = [128,256]
+    # TODO: tune mi250 D=256,512 bug
     
     # H100
     MMA_ATOM_M = device.mma_primitive[0]# 64
@@ -977,11 +980,24 @@ def chunk_bwd_kernel_dv(
 
 # # compile tilelang program
 
-TUNE = {{TUNE}}
-TUNE_FILE = "{{TUNE_FILE}}"
-TUNE_BWD = {{TUNE_BWD}}
-TUNE_FILE_BWD = "{{TUNE_FILE_BWD}}"
-
+# 定义在全局作用域，确保可以被 multiprocessing 序列化
+def _profiling_worker(profiler_func, kwargs, queue):
+    try:
+        # 在新进程中执行 profile
+        result = profiler_func(**kwargs)
+        
+        # 获取配置结果 (result.config)
+        # 注意：我们只把纯 Python 数据(dict)传回主进程，避免传递包含 CUDA 句柄的对象
+        if hasattr(result, 'config'):
+            ret = result.config, result.latency
+        else:
+            ret = result # 假设 result 本身就是配置
+            
+        queue.put(("success", ret))
+    except Exception as e:
+        # 捕获所有异常并传回主进程
+        err_msg = traceback.format_exc()
+        queue.put(("error", err_msg))
     
 def tune(tune_file, kernel_profiler, problem_keys)->Tuple:
     tuned_config = None
@@ -1003,12 +1019,28 @@ def tune(tune_file, kernel_profiler, problem_keys)->Tuple:
     if tuned_config is None:
         print("tune: ", problem_keys)
         # TODO: use a seperate process for autotune to avoid cuda context crash
-        result = kernel_profiler(
-            **problem_keys
-        )
-        if result is not None:
-            tuned_config = result.config
-            tuned_latency = result.latency
+        ctx = multiprocessing.get_context('spawn')
+        queue = ctx.Queue()
+        p = ctx.Process(target=_profiling_worker, args=(kernel_profiler, problem_keys, queue))
+        p.start()
+        p.join()
+        if not queue.empty():
+            status, data = queue.get()
+            if status == "success":
+                if data is not None: # maybe no valid config found
+                    tuned_config, tuned_latency = data
+            else:
+                raise RuntimeError(f"Profiling process failed with error:\n{data}")
+        else:
+            # 子进程可能因为段错误(Segfault)直接崩溃，没有向 queue 放数据
+            exit_code = p.exitcode
+            raise RuntimeError(f"Profiling process crashed silently (Exit code: {exit_code}). This usually indicates a Segmentation Fault or CUDA Illegal Access.")
+        # result = kernel_profiler(
+        #     **problem_keys
+        # )
+        # if result is not None:
+        #     tuned_config = result.config
+        #     tuned_latency = result.latency
         with open(tune_file, "w") as f:
             configs.append({
                 **pk,
@@ -1107,69 +1139,96 @@ def autotune_linearattn_bwd(file_path="mamba2"):
     
     return best_BT, best_config_h, best_config_dh, best_config_dqkg, best_config_dv, best_latency
 
-   
-tuned_config_h = None
-tuned_config_o = None
-BT=None
-if TUNE:
-    BT, tuned_config_h, tuned_config_o, _ = autotune_linearattn(TUNE_FILE)
-else:
-    BT = {{BT}}
-    tuned_config_h = {
-        'BK': {{BK_h}},
-        'BV': {{BV_h}},
-        'num_stages': {{num_stages_h}},
-        'num_threads': {{num_threads_h}}
-    }
-    tuned_config_o = {
-        'BK': {{BK_o}},
-        'BV': {{BV_o}},
-        'num_stages': {{num_stages_o}},
-        'num_threads': {{num_threads_o}}
-    }
+
+BT = None
+BT_BWD = None
+chunk_fwd_h_mod = None
+chunk_fwd_o_mod = None
+chunk_fwd_h_mod_2 = None
+chunk_bwd_dh_mod = None
+chunk_bwd_dqkg_mod = None
+chunk_bwd_dv_mod = None
+
+# 初始化标志位
+_IS_INITIALIZED = False
+
+def initialize_module():
+    global _IS_INITIALIZED
+    if _IS_INITIALIZED:
+        return
     
+    global BT, BT_BWD
+    global chunk_fwd_h_mod, chunk_fwd_o_mod
+    global chunk_fwd_h_mod_2, chunk_bwd_dh_mod, chunk_bwd_dqkg_mod, chunk_bwd_dv_mod
     
-BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV = {{BATCH}}, {{HQ}}, {{HK}}, {{H}}, {{N_CTX}}, {{D_HEAD}}, {{D_HEADV}}
+    TUNE = {{TUNE}}
+    TUNE_FILE = "{{TUNE_FILE}}"
+    TUNE_BWD = {{TUNE_BWD}}
+    TUNE_FILE_BWD = "{{TUNE_FILE_BWD}}"
 
-chunk_fwd_h_mod = tl.compile(chunk_fwd_h(BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT)(**tuned_config_h), {{output_idx_list_h}})
-output_idx_list = {{output_idx_list_o}}# [5,]
-chunk_fwd_o_mod = tl.compile(chunk_o(BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT)(**tuned_config_o), output_idx_list, )
+    tuned_config_h = None
+    tuned_config_o = None
+    BT=None
+    if TUNE:
+        BT, tuned_config_h, tuned_config_o, _ = autotune_linearattn(TUNE_FILE)
+    else:
+        BT = {{BT}}
+        tuned_config_h = {
+            'BK': {{BK_h}},
+            'BV': {{BV_h}},
+            'num_stages': {{num_stages_h}},
+            'num_threads': {{num_threads_h}}
+        }
+        tuned_config_o = {
+            'BK': {{BK_o}},
+            'BV': {{BV_o}},
+            'num_stages': {{num_stages_o}},
+            'num_threads': {{num_threads_o}}
+        }
+        
+        
+    BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV = {{BATCH}}, {{HQ}}, {{HK}}, {{H}}, {{N_CTX}}, {{D_HEAD}}, {{D_HEADV}}
 
-# bwd
-BT_BWD=None
-if TUNE_BWD:
-    BT_BWD, tuned_config_h_2, tuned_config_dh, tuned_config_dqkg, tuned_config_dv,_ = autotune_linearattn_bwd(TUNE_FILE_BWD)
-else:
-    BT_BWD = {{BT_BWD}}
-    tuned_config_h_2 = {
-        'BK': {{BK_h}},
-        'BV': {{BV_h}},
-        'num_stages': {{num_stages_h}},
-        'num_threads': {{num_threads_h}}
-    }
-    tuned_config_dh = {
-        'BK': {{BK_dh}},
-        'BV': {{BV_dh}},
-        'num_stages': {{num_stages_dh}},
-        'num_threads': {{num_threads_dh}}
-    }
-    tuned_config_dqkg = {
-        'BK': {{BK_dqkg}},
-        'BV': {{BV_dqkg}},
-        'num_stages': {{num_stages_dqkg}},
-        'num_threads': {{num_threads_dqkg}}
-    }
-    tuned_config_dv = {
-        'BK': {{BK_dv}},
-        'BV': {{BV_dv}},
-        'num_stages': {{num_stages_dv}},
-        'num_threads': {{num_threads_dv}}
-    }
-chunk_fwd_h_mod_2 = tl.compile(chunk_fwd_h(BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT_BWD)(**tuned_config_h_2), {{output_idx_list_h}})
-chunk_bwd_dh_mod = tl.compile(chunk_bwd_kernel_dh(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT_BWD)(**tuned_config_dh), [5,])
-chunk_bwd_dqkg_mod = tl.compile(chunk_bwd_dqkg(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT_BWD)( **tuned_config_dqkg), [7,8,9,])
-chunk_bwd_dv_mod = tl.compile(chunk_bwd_kernel_dv(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT_BWD)( **tuned_config_dv), [5,])
+    chunk_fwd_h_mod = tl.compile(chunk_fwd_h(BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT)(**tuned_config_h), {{output_idx_list_h}})
+    output_idx_list = {{output_idx_list_o}}# [5,]
+    chunk_fwd_o_mod = tl.compile(chunk_o(BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT)(**tuned_config_o), output_idx_list, )
 
+    # bwd
+    BT_BWD=None
+    if TUNE_BWD:
+        BT_BWD, tuned_config_h_2, tuned_config_dh, tuned_config_dqkg, tuned_config_dv,_ = autotune_linearattn_bwd(TUNE_FILE_BWD)
+    else:
+        BT_BWD = {{BT_BWD}}
+        tuned_config_h_2 = {
+            'BK': {{BK_h}},
+            'BV': {{BV_h}},
+            'num_stages': {{num_stages_h}},
+            'num_threads': {{num_threads_h}}
+        }
+        tuned_config_dh = {
+            'BK': {{BK_dh}},
+            'BV': {{BV_dh}},
+            'num_stages': {{num_stages_dh}},
+            'num_threads': {{num_threads_dh}}
+        }
+        tuned_config_dqkg = {
+            'BK': {{BK_dqkg}},
+            'BV': {{BV_dqkg}},
+            'num_stages': {{num_stages_dqkg}},
+            'num_threads': {{num_threads_dqkg}}
+        }
+        tuned_config_dv = {
+            'BK': {{BK_dv}},
+            'BV': {{BV_dv}},
+            'num_stages': {{num_stages_dv}},
+            'num_threads': {{num_threads_dv}}
+        }
+    chunk_fwd_h_mod_2 = tl.compile(chunk_fwd_h(BATCH, HQ,HK, H, N_CTX, D_HEAD, D_HEADV, BT_BWD)(**tuned_config_h_2), {{output_idx_list_h}})
+    chunk_bwd_dh_mod = tl.compile(chunk_bwd_kernel_dh(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT_BWD)(**tuned_config_dh), [5,])
+    chunk_bwd_dqkg_mod = tl.compile(chunk_bwd_dqkg(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT_BWD)( **tuned_config_dqkg), [7,8,9,])
+    chunk_bwd_dv_mod = tl.compile(chunk_bwd_kernel_dv(BATCH, HQ, HK, H, N_CTX, D_HEAD, D_HEADV, BT_BWD)( **tuned_config_dv), [5,])
+
+    _IS_INITIALIZED = True
 
 # --------------- TL_INTERFACE
 class LinearAttention(torch.autograd.Function):
@@ -1180,6 +1239,9 @@ class LinearAttention(torch.autograd.Function):
         D_HEADV = v.shape[-1]
         HK = k.shape[1]
         H = v.shape[1]
+        
+        if not _IS_INITIALIZED:
+            initialize_module()
 
         # decay_mod here
         {{decay_mod_expr | indent(8)}}
@@ -1205,6 +1267,8 @@ class LinearAttention(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, d_o):
+        if not _IS_INITIALIZED:
+            initialize_module()
         d_o = d_o.contiguous()
         global BT_BWD
         BT2 = BT_BWD

@@ -5,6 +5,7 @@ import importlib.util
 import tempfile
 import os
 import hashlib
+import sys
 
 
 class LinearAttentionEngine:
@@ -46,7 +47,19 @@ class LinearAttentionEngine:
                 f.write(tl_code)
                 f.flush()
         # file_path = "/home/aiscuser/cfy/AttentionEngine/attn_script/retention_linear_tlcode1.py"
-        spec = importlib.util.spec_from_file_location("tl_attn", file_path)
-        tl_attn = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(tl_attn)
+        if cache_dir not in sys.path:
+            sys.path.append(cache_dir)
+        module_name = code_hash 
+
+        if module_name in sys.modules:
+            # 如果已经加载过，直接复用，避免重复编译/初始化
+            tl_attn = sys.modules[module_name]
+        else:
+            spec = importlib.util.spec_from_file_location(module_name, file_path)
+            tl_attn = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = tl_attn 
+            spec.loader.exec_module(tl_attn)
+        # spec = importlib.util.spec_from_file_location("tl_attn", file_path)
+        # tl_attn = importlib.util.module_from_spec(spec)
+        # spec.loader.exec_module(tl_attn)
         self.attention = tl_attn.linear_attention
