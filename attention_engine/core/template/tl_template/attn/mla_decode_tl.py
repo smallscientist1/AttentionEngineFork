@@ -12,7 +12,15 @@ import os
 import json
 from typing import Tuple
 
-from autotuner.arch import AttnDevice, H100
+from autotuner.arch import AttnDevice, AttnDeviceAMD, H100
+
+if torch.version.cuda is not None:
+    AttnDeviceDict = AttnDevice
+elif torch.version.hip is not None:
+    AttnDeviceDict = AttnDeviceAMD
+else:
+    raise RuntimeError("Unsupported device type")
+
 current_device = torch.cuda.current_device()
 device_cap = torch.cuda.get_device_capability(current_device)
 try:
