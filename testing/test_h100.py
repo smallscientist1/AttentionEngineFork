@@ -7,6 +7,7 @@ from examples.sigmoid_attn import sigmoid_attention
 from examples.sparse_gqa_decode import sparse_gqa_decode
 from examples.retnet_recurrent import retnet_recurrent
 from examples.reluattn import relu_attention
+from examples.mla_decode import mla_decode
 
 import torch
 import torch.nn.functional as F
@@ -18,15 +19,16 @@ from benchmark.bench_utils import print_debug
 
 def test_attention():
 
-    test_softmaxattention(1, 16, 2048, 128, 128) # amd bug bwd
+    test_softmaxattention(1, 16, 2048, 128, 128) #1 , TODO: fix autotune
     test_softmaxattention(1, 16, 2048, 128, 256) # 1
-    test_softmaxattention_decode(8, 16, 1, 4096, 128, 128)
+    test_softmaxattention_decode(8, 16, 1, 4096, 128, 128) # 1
     test_mamba2(1, 1, 2048, 128, 64, HK=1, HV=80) # 1
     test_gated_retention(8, 32, 2048, 256, 256) # 1
-    test_sigmoid_attention(1, 32, 2048, 128, 128)
-    test_sparse_gqa_decode(8, 32, 8, 2048, 128, 128)
+    test_sigmoid_attention(1, 32, 2048, 128, 128) # 1
+    test_sparse_gqa_decode(8, 32, 8, 2048, 128, 128) # 1
     test_retnet_recurrent(1, 32, 2048, 256, 512) # 1
     test_relu_attention(1, 6, 2048, 64, 64) # 1
+    test_mla_decode(8, 128, 2048, 576, 512, HKV=1)
     print("All tests pass.")
     
 def test_softmaxattention(B, H, S, D, DV, device="cuda", dtype=torch.float16, require_grad=True, use_v2=False):
@@ -747,5 +749,59 @@ def test_retnet_recurrent(B, H, S, D, DV, dtype=torch.bfloat16, require_grad=Tru
             atol=1e-1,
         )
 
+def test_mla_decode(B, HQ, SKV, D, DV, HKV=1, dtype=torch.float16):
+    
+    attention_module = mla_decode(B, HQ, SKV, D, DV, HK=HKV, HV=HKV, dtype=dtype, tune=True)
+    
+    def ref(q, q_pe, kv, k_pe):
+        q = q.squeeze(1)  # [batch_size, heads, dim]
+        q_pe = q_pe.squeeze(1)  # [batch_size, heads, pe_dim]
+        dim = q.shape[-1]
+        pe_dim = q_pe.shape[-1]
+        num_head_groups = q.shape[1] // kv.shape[2]
+        scale = (dim + pe_dim)**0.5
+        q = rearrange(
+            q, 'b (h g) d -> b g h d', g=num_head_groups)  # [batch_size, num_head_groups, groups, dim]
+
+        q_pe = rearrange(
+            q_pe, 'b (h g) d -> b g h d',
+            g=num_head_groups)  # [batch_size, num_head_groups, groups, pe_dim]
+
+        kv = rearrange(kv, 'b n h d -> b h n d')  # [batch_size, groups, seqlen_kv, dim]
+
+        k_pe = rearrange(k_pe, 'b n h d -> b h n d')  # [batch_size, num_head_groups, groups, pe_dim]
+
+        query = torch.concat([q, q_pe], dim=-1)
+        key = torch.concat([kv, k_pe], dim=-1)
+
+        scores = einsum(
+            query, key,
+            'b g h d, b h s d -> b g h s')  # [batch_size, num_head_groups, groups, seqlen_kv]
+
+        attention = F.softmax(
+            scores / scale, dim=-1)  # [batch_size, num_head_groups, groups, seqlen_kv]
+
+        out = einsum(attention, kv,
+                    'b g h s, b h s d -> b g h d')  # [batch_size, num_head_groups, groups, dim]
+        out = rearrange(out, 'b g h d -> b (h g) d')  # [batch_size, heads, dim]
+        out = out.unsqueeze(1)
+        return out
+        
+    
+    q = torch.randn(B, 1, HQ, DV, device="cuda", dtype=dtype)
+    q_pe = torch.randn(B, 1, HQ, D-DV, device="cuda", dtype=dtype)
+    kv = torch.randn(B, SKV, HKV, DV, device="cuda", dtype=dtype)
+    k_pe = torch.randn(B, SKV, HKV, D-DV, device="cuda", dtype=dtype)
+    
+    
+    o = attention_module(q, q_pe, kv, k_pe)
+    o_ref = ref(q, q_pe, kv, k_pe)
+    
+    torch.testing.assert_close(o, o_ref, rtol=1e-2, atol=1e-2)
+    
+    
+    
+    
+    
 if __name__ == "__main__":
     test_attention()

@@ -6,6 +6,21 @@ import torch.nn.functional as F
 
 from math import floor
 
+from autotuner.arch import AttnDevice, AttnDeviceAMD, H100
+
+if torch.version.cuda is not None:
+    AttnDeviceDict = AttnDevice
+elif torch.version.hip is not None:
+    AttnDeviceDict = AttnDeviceAMD
+else:
+    raise RuntimeError("Unsupported device type")
+current_device = torch.cuda.current_device()
+device_cap = torch.cuda.get_device_capability(current_device)
+try:
+    attn_device = AttnDeviceDict[device_cap]()
+except KeyError:
+    attn_device = H100()
+
 # TL_GLOBAL_FUNC = """
 def fast_tanh(A, B):
     return T.call_extern("handle", "fasttanh", T.address_of(A), T.address_of(B))
@@ -75,7 +90,7 @@ def kernel(batch, heads, seq_len, seq_len_kv, dim, dimv,
             sid = bz
 
             T.annotate_layout({
-                Q_shared: tl.layout.make_swizzled_layout(Q_shared),
+                # Q_shared: tl.layout.make_swizzled_layout(Q_shared),
                 scores_shared: tl.layout.make_swizzled_layout(scores_shared),
                 {{swizzle_shared | indent(16)}}
             })
@@ -207,9 +222,17 @@ def kernel(batch, heads, seq_len, seq_len_kv, dim, dimv,
 
     return main
 
+# TODO: tune
+tuned_config = {
+    'block_M': {{block_M}},
+    'block_N': {{block_N}},
+    'num_stages': {{stages}} if attn_device.platform == "CUDA" else 0,
+    'thread_num': {{thread_num}},
+    'shared_fuse': {{shared_fuse}}
+}    
 program = kernel(
     {{BATCH}}, {{HEADS}}, {{SEQ_LEN}}, {{SEQ_LEN_KV}}, {{DIM}}, {{DIMV}},
-    4, {{block_M}}, {{block_N}}, {{stages}}, {{thread_num}}, {{shared_fuse}}
+    4, **tuned_config
 )
 mod = tl.compile(
     program,

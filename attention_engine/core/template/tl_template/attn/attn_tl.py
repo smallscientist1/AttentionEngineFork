@@ -281,12 +281,28 @@ def get_bwd_configs():
         thread_num = [128, 256]
     _configs = list(itertools.product(block_M, block_N, num_stages, thread_num))
     
-    configs = [{
-        'block_M': c[0],
-        'block_N': c[1],
-        'num_stages': c[2],
-        'thread_num': c[3]
-    } for c in _configs]
+    MMA_ATOM_M = attn_device.mma_primitive[0]# 64
+    MMA_ATOM_N = attn_device.mma_primitive[1]# 16
+    MMA_ATOM_TRHEADS = attn_device.threads_per_mma # 128
+    smem_cap = attn_device.smem_cap # 232448
+    reg_cap = attn_device.reg_cap * 4 # 65536 * 4
+    reg_cap_per_thread = attn_device.register_per_thread * 4 # 255 * 4
+    
+    configs = []
+    for block_M, block_N, num_stages, thread_num in _configs:
+        
+        conditions = [
+            ((block_M * block_N) // (MMA_ATOM_M * MMA_ATOM_N)) % (thread_num // MMA_ATOM_TRHEADS) == 0,
+        ]
+        if all(conditions):
+            configs.append(
+                {
+                    'block_M': block_M,
+                    'block_N': block_N,
+                    'num_stages': num_stages,
+                    'thread_num': thread_num
+                }
+            )
     return configs
 
 # TL_KERNEL_BWD = """

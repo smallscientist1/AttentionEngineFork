@@ -1,32 +1,47 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
+from functools import partial
 import torch
 import torch.nn.functional as F
 import tilelang
-from tilelang.autotuner import *
+# from tilelang.autotuner import *
 import tilelang.language as T
 from einops import rearrange, einsum
 import argparse
+import os
+import json
+from typing import Tuple
 
+from autotuner.arch import AttnDevice, H100
+current_device = torch.cuda.current_device()
+device_cap = torch.cuda.get_device_capability(current_device)
+try:
+    attn_device = AttnDevice[device_cap]()
+except KeyError:
+    attn_device = H100()
 
 import itertools
 def get_configs():
     num_splits = [1, 2, 4, 8]
-    block_Ns = [32, 64, 128]
-    block_Ms = [64]
-    _configs = list(itertools.product(num_splits, block_Ns, block_Ms))
+    block_Ns = [32, 64, 128] if attn_device.platform == "CUDA" else [16, 32, 64]
+    block_Ms = [64] if attn_device.platform == "CUDA" else [16, 32, 64]
+    stages = [2,] if attn_device.platform == "CUDA" else [0,]
+    shared_fuse = [True,] if attn_device.platform == "CUDA" else [False,]
+    _configs = list(itertools.product(num_splits, block_Ns, block_Ms, stages, shared_fuse))
     configs = [
         {
             "block_N": c[1], 
             "block_H": c[2],
             "num_split": c[0],
+            "num_stages": c[3],
+            "shared_fuse": c[4],
         } for c in _configs
     ]
     return configs
 
 def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, tune=False):
     
-    def kernel_func(block_N, block_H, num_split):
+    def kernel_func(block_N, block_H, num_split, num_stages, shared_fuse):
         scale = (1.0 / (dim + pe_dim))**0.5 * 1.44269504  # log2(e)
         dtype = "{{tl_dtype}}"
         accum_dtype = "float"
@@ -44,12 +59,15 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, tune=False):
         ):
             with T.Kernel(batch, heads // min(block_H, kv_group_num), threads=256) as (bx, by):
                 Q_shared = T.alloc_shared([block_H, dim], dtype)
+                Q_local = T.alloc_fragment([block_H, dim], dtype)
                 S_shared = T.alloc_shared([block_H, block_N], dtype)
                 Q_pe_shared = T.alloc_shared([block_H, pe_dim], dtype)
+                Q_pe_local = T.alloc_fragment([block_H, pe_dim], dtype)
                 KV_shared = T.alloc_shared([block_N, dim], dtype)
                 K_pe_shared = T.alloc_shared([block_N, pe_dim], dtype)
                 O_shared = T.alloc_shared([block_H, dim], dtype)
                 acc_s = T.alloc_fragment([block_H, block_N], accum_dtype)
+                acc_s_cast = T.alloc_fragment([block_H, block_N], dtype)
                 acc_o = T.alloc_fragment([block_H, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_H], accum_dtype)
                 scores_max_prev = T.alloc_fragment([block_H], accum_dtype)
@@ -63,25 +81,39 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, tune=False):
                     O_shared: tilelang.layout.make_swizzled_layout(O_shared),
                 })
 
-                T.copy(Q[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_shared)
-                T.copy(Q_pe[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_pe_shared)
+                if shared_fuse:
+                    T.copy(Q[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_shared)
+                    T.copy(Q_pe[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_pe_shared)
+                else:
+                    T.copy(Q[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_local)
+                    T.copy(Q_pe[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_pe_local)
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
                 loop_range = T.ceildiv(seqlen_kv, block_N)
-                for k in T.Pipelined(loop_range, num_stages=2):
+                for k in T.Pipelined(loop_range, num_stages=num_stages):
                     T.copy(KV[bx, k * block_N:(k + 1) * block_N, cur_kv_head, :], KV_shared)
                     T.copy(K_pe[bx, k * block_N:(k + 1) * block_N, cur_kv_head, :], K_pe_shared)
                     T.clear(acc_s)
-                    T.gemm(
-                        Q_shared, KV_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
-                    T.gemm(
-                        Q_pe_shared,
-                        K_pe_shared,
-                        acc_s,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullCol)
+                    if shared_fuse:
+                        T.gemm(
+                            Q_shared, KV_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
+                        T.gemm(
+                            Q_pe_shared,
+                            K_pe_shared,
+                            acc_s,
+                            transpose_B=True,
+                            policy=T.GemmWarpPolicy.FullCol)
+                    else:
+                        T.gemm(
+                            Q_local, KV_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                        T.gemm(
+                            Q_pe_local,
+                            K_pe_shared,
+                            acc_s,
+                            transpose_B=True,
+                            policy=T.GemmWarpPolicy.FullRow)
                     T.copy(scores_max, scores_max_prev)
                     T.fill(scores_max, -T.infinity(accum_dtype))
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
@@ -90,16 +122,25 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, tune=False):
                     for i, j in T.Parallel(block_H, block_N):
                         acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
                     T.reduce_sum(acc_s, scores_sum, dim=1)
-                    T.copy(acc_s, S_shared)
+                    if shared_fuse:
+                        T.copy(acc_s, S_shared)
+                    else:
+                        T.copy(acc_s, acc_s_cast)
                     for i in T.Parallel(block_H):
                         logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
                     for i, j in T.Parallel(block_H, dim):
                         acc_o[i, j] *= scores_scale[i]
-                    T.gemm(S_shared, KV_shared, acc_o, policy=T.GemmWarpPolicy.FullCol)
+                    if shared_fuse:
+                        T.gemm(S_shared, KV_shared, acc_o, policy=T.GemmWarpPolicy.FullCol)
+                    else:
+                        T.gemm(acc_s_cast, KV_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
                 for i, j in T.Parallel(block_H, dim):
                     acc_o[i, j] /= logsum[i]
-                T.copy(acc_o, O_shared)
-                T.copy(O_shared, Output[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :])
+                if shared_fuse:
+                    T.copy(acc_o, O_shared)
+                    T.copy(O_shared, Output[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :])
+                else:
+                    T.copy(acc_o, Output[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :])
 
         @T.macro
         def flash_attn_split(
@@ -113,8 +154,10 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, tune=False):
             with T.Kernel(
                     batch, heads // min(block_H, kv_group_num), num_split, threads=256) as (bx, by, bz):
                 Q_shared = T.alloc_shared([block_H, dim], dtype)
+                Q_local = T.alloc_fragment([block_H, dim], dtype)
                 S_shared = T.alloc_shared([block_H, block_N], dtype)
                 Q_pe_shared = T.alloc_shared([block_H, pe_dim], dtype)
+                Q_pe_local = T.alloc_fragment([block_H, pe_dim], dtype)
                 KV_shared = T.alloc_shared([block_N, dim], dtype)
                 K_pe_shared = T.alloc_shared([block_N, pe_dim], dtype)
                 O_shared = T.alloc_shared([block_H, dim], dtype)
@@ -134,27 +177,41 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, tune=False):
                     S_shared: tilelang.layout.make_swizzled_layout(S_shared),
                 })
 
-                T.copy(Q[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_shared)
-                T.copy(Q_pe[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_pe_shared)
+                if shared_fuse:
+                    T.copy(Q[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_shared)
+                    T.copy(Q_pe[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_pe_shared)
+                else:
+                    T.copy(Q[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_local)
+                    T.copy(Q_pe[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_pe_local)
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
                 loop_range = T.ceildiv((seqlen_kv // num_split), block_N)
-                for k in T.Pipelined(loop_range, num_stages=2):
+                for k in T.Pipelined(loop_range, num_stages=num_stages):
                     kv_start = (seqlen_kv // num_split) * bz + k * block_N
                     kv_end = (seqlen_kv // num_split) * bz + (k + 1) * block_N
                     T.copy(KV[bx, kv_start:kv_end, cur_kv_head, :], KV_shared)
                     T.copy(K_pe[bx, kv_start:kv_end, cur_kv_head, :], K_pe_shared)
                     T.clear(acc_s)
-                    T.gemm(
-                        Q_shared, KV_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
-                    T.gemm(
-                        Q_pe_shared,
-                        K_pe_shared,
-                        acc_s,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullCol)
+                    if shared_fuse:
+                        T.gemm(
+                            Q_shared, KV_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
+                        T.gemm(
+                            Q_pe_shared,
+                            K_pe_shared,
+                            acc_s,
+                            transpose_B=True,
+                            policy=T.GemmWarpPolicy.FullCol)
+                    else:
+                        T.gemm(
+                            Q_local, KV_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                        T.gemm(
+                            Q_pe_local,
+                            K_pe_shared,
+                            acc_s,
+                            transpose_B=True,
+                            policy=T.GemmWarpPolicy.FullRow)
                     T.copy(scores_max, scores_max_prev)
                     T.fill(scores_max, -T.infinity(accum_dtype))
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
@@ -163,20 +220,29 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, tune=False):
                     for i, j in T.Parallel(block_H, block_N):
                         acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
                     T.reduce_sum(acc_s, scores_sum, dim=1)
-                    T.copy(acc_s, S_shared)
-                    T.copy(S_shared, acc_s_cast)
+                    if shared_fuse:
+                        T.copy(acc_s, S_shared)
+                        T.copy(S_shared, acc_s_cast)
+                    else:
+                        T.copy(acc_s, acc_s_cast)
                     for i in T.Parallel(block_H):
                         logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
                     for i, j in T.Parallel(block_H, dim):
                         acc_o[i, j] *= scores_scale[i]
-                    T.gemm(acc_s_cast, KV_shared, acc_o, policy=T.GemmWarpPolicy.FullCol)
+                    if shared_fuse:
+                        T.gemm(acc_s_cast, KV_shared, acc_o, policy=T.GemmWarpPolicy.FullCol)
+                    else:
+                        T.gemm(acc_s_cast, KV_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
                 for i, j in T.Parallel(block_H, dim):
                     acc_o[i, j] /= logsum[i]
                 for i in T.Parallel(block_H):
                     logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
                 T.copy(logsum, glse[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, bz, 0])
-                T.copy(acc_o, O_shared)
-                T.copy(O_shared, Output_partial[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, bz, :])
+                if shared_fuse:
+                    T.copy(acc_o, O_shared)
+                    T.copy(O_shared, Output_partial[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, bz, :])
+                else:
+                    T.copy(acc_o, Output_partial[bx, 0, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, bz, :])
 
         @T.macro
         def combine(
@@ -247,19 +313,19 @@ def flashattn(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, tune=False):
         
     if tune:
         configs = get_configs()
-        @autotune(
+        @tilelang.autotune(
             configs=configs,
             warmup=10,
             rep=10,
         )
-        @jit(out_idx=[6,], supply_type=tilelang.TensorSupplyType.Auto, ref_prog=None)
-        def kernel(block_N=None, block_H=None, num_split=None):
-            return kernel_func(block_N, block_H, num_split)
+        @tilelang.jit(out_idx=[6,])
+        def kernel(block_N=None, block_H=None, num_split=None, num_stages=None, shared_fuse=None):
+            return kernel_func(block_N, block_H, num_split, num_stages, shared_fuse)
 
         return kernel()
     else:
-        def kernel(block_N=None, block_H=None, num_split=None):
-            return kernel_func(block_N, block_H, num_split)
+        def kernel(block_N=None, block_H=None, num_split=None, num_stages=None, shared_fuse=None):
+            return kernel_func(block_N, block_H, num_split, num_stages, shared_fuse)
 
         return kernel
 
@@ -305,21 +371,68 @@ def ref_program(q, q_pe, kv, k_pe, glse, Output_partial):
     out = rearrange(out, 'b g h d -> b (h g) d')  # [batch_size, heads, dim]
     return out
 
+def tune(tune_file, kernel_profiler, problem_keys)->Tuple:
+    tuned_config = None
+    tuned_latency = -1
+    pk = problem_keys
+    if not os.path.exists(tune_file):
+        with open(tune_file, "w") as f:
+            json.dump([], f, indent=4)
+        configs = []
+    else:
+        with open(tune_file, "r") as f:
+            configs = json.load(f)
+        # find the config with the same problem size
+        for config in configs:
+            if all(config[k] == v for k, v in pk.items()):
+                tuned_config = config['tuned_config']
+                tuned_latency = config['tuned_latency']
+                return tuned_config, tuned_latency
+    if tuned_config is None:
+        print("tune: ", problem_keys)
+        # TODO: use a seperate process for autotune to avoid cuda context crash
+        result = kernel_profiler(
+            **problem_keys
+        )
+        if result is not None:
+            tuned_config = result.config
+            tuned_latency = result.latency
+        with open(tune_file, "w") as f:
+            configs.append({
+                **pk,
+                'tuned_config': tuned_config,
+                'tuned_latency': tuned_latency
+            })
+            json.dump(configs, f, indent=4)
+    return tuned_config, tuned_latency
+ 
+
 TUNE=True
 BLOCK_N = 64
 BLOCK_H = 64
 num_split = 1
+num_stages = 2 if attn_device.platform == "CUDA" else 0
+shared_fuse = True if attn_device.platform == "CUDA" else False
 
 if TUNE:
-    
-    result = flashattn(
-        {{BATCH}}, {{HEADS}}, {{KV_HEAD_NUM}}, {{KV_CTX}},
-        {{DIM}}, {{PE_DIM}}, tune=True)
-    BLOCK_N, BLOCK_H, num_split = result.config
+    problem_keys = {
+        "batch": {{BATCH}},
+        "heads": {{HEADS}},
+        "kv_head_num": {{KV_HEAD_NUM}},
+        "seqlen_kv": {{KV_CTX}},
+        "dim": {{DIM}},
+        "pe_dim": {{PE_DIM}},
+    }
+    tuned_config, tuned_latency = tune("mla_decode.json", partial(flashattn, tune=True), problem_keys)
+    BLOCK_N = tuned_config["block_N"]
+    BLOCK_H = tuned_config["block_H"]
+    num_split = tuned_config["num_split"]
+    num_stages = tuned_config["num_stages"]
+    shared_fuse = tuned_config["shared_fuse"]
 
 program = flashattn(
     {{BATCH}}, {{HEADS}}, {{KV_HEAD_NUM}}, {{KV_CTX}},
-    {{DIM}}, {{PE_DIM}})(BLOCK_N, BLOCK_H, num_split)
+    {{DIM}}, {{PE_DIM}})(**tuned_config)
 
 mod = tilelang.compile(program, out_idx=[6])
 
