@@ -24,7 +24,7 @@ else:
 current_device = torch.cuda.current_device()
 device_cap = torch.cuda.get_device_capability(current_device)
 try:
-    attn_device = AttnDevice[device_cap]()
+    attn_device = AttnDeviceDict[device_cap]()
 except KeyError:
     attn_device = H100()
 
