@@ -187,19 +187,6 @@ def bench_softmaxattention(B, H, Sq, S, D, DV, device='cuda', dtype=torch.float1
     else:
         ours_bwd_lat = None
     
-    attention_module_v2 = causal_softmax_attention_v2(B, H, S, D, DV)
-    def ours_v2():
-        o = attention_module_v2(query, key, value)
-        return o
-    ours_fwd_lat_v2 = do_bench(ours_v2)
-    if require_grad:
-        o = attention_module_v2(query, key, value)
-        ours_bwd_lat_v2 = do_bench(lambda: o.backward(do, retain_graph=True))
-    else:
-        ours_bwd_lat_v2 = None
-    ours_fwd_lat = min(ours_fwd_lat, ours_fwd_lat_v2)
-    if require_grad:
-        ours_bwd_lat = min(ours_bwd_lat, ours_bwd_lat_v2)
         
     result_dict["MetaAttention"] = (ours_fwd_lat, ours_bwd_lat)
     
@@ -240,48 +227,6 @@ def bench_softmaxattention(B, H, Sq, S, D, DV, device='cuda', dtype=torch.float1
     except Exception as e:
         print(f"Warning: FlashAttention-2 not available: {e}")
 
-    # FlashAttention-3
-    try:
-        from flash_attn_interface import flash_attn_func as flash_attn_func_hopper
-        
-        def fa3(dim_padded=0):
-            if D < dim_padded:
-                query_padded = F.pad(query, (0, dim_padded - D), value=0.)
-                key_padded = F.pad(key, (0, dim_padded - D), value=0.)
-            else:
-                query_padded = query
-                key_padded = key
-            if DV < dim_padded:
-                value_padded = F.pad(value, (0, dim_padded - DV), value=0.)
-            else:
-                value_padded = value
-            o_ref = flash_attn_func_hopper(
-                query_padded, key_padded, value_padded, softmax_scale=(
-                    1 / D)**0.5, causal=True)
-            if DV < dim_padded:
-                o_ref = o_ref[:, :, :, :DV]
-            return o_ref
-        
-        dim_padded_fa3 = list(filter(lambda x: x >= max(D, DV), [64, 128, 192, 256]))
-        assert len(dim_padded_fa3) > 0, "No valid padding size for FlashAttention-3"
-        dim_padded_fa3 = min(dim_padded_fa3)
-        # flash attention 3 specifically supported for D=192 and DV=128, so does not need padding for this case
-        if D == 192 and DV == 128:
-            dim_padded_fa3 = 0
-        
-        fa3_fwd_lat = do_bench(lambda: fa3(dim_padded_fa3))
-        
-        if require_grad:
-            o_ref = fa3(dim_padded_fa3)
-            fa3_bwd_lat = do_bench(lambda: o_ref.backward(do, retain_graph=True))
-        else:
-            fa3_bwd_lat = None
-        
-        result_dict["FlashAttention-3"] = (fa3_fwd_lat, fa3_bwd_lat)
-        
-    except Exception as e:
-        print(f"Warning: FlashAttention-3 not available: {e}")
-    
     return result_dict
 
 def bench_reluattention(B, H, S, D, DV, device='cuda', dtype=torch.float16, require_grad=True):
@@ -298,9 +243,6 @@ def bench_reluattention(B, H, S, D, DV, device='cuda', dtype=torch.float16, requ
     if require_grad:
         o = attention_module(query, key, value)
         bwd_lat = do_bench(lambda: o.backward(do, retain_graph=True))
-    attention_module_v2 = relu_attention_v2(B, H, S, D, DV, dtype=dtype)
-    fwd_lat_v2 = do_bench(lambda: attention_module_v2(query, key, value))
-    fwd_lat = min(fwd_lat, fwd_lat_v2)
     result_dict["MetaAttention"] = (fwd_lat, bwd_lat)
     
     # Pytorch ReLU Attention
@@ -432,31 +374,31 @@ def bench_mamba2_ssm(B, HQ, S, D, DV, HK=None, HV=None, dtype=torch.bfloat16, re
     key.detach_().requires_grad_(require_grad)
     query.detach_().requires_grad_(require_grad)
 
-    # try:
-    from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
-    fwd_lat_ref = do_bench(
-        lambda: mamba_chunk_scan_combined(
-            value,
-            dt_mamba,
-            A_mamba,
-            key,
-            query,
-            chunk_size=64,
+    try:
+        from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
+        fwd_lat_ref = do_bench(
+            lambda: mamba_chunk_scan_combined(
+                value,
+                dt_mamba,
+                A_mamba,
+                key,
+                query,
+                chunk_size=64,
+            )
         )
-    )
-    if require_grad:
-        out_ref = mamba_chunk_scan_combined(
-            value,
-            dt_mamba,
-            A_mamba,
-            key,
-            query,
-            chunk_size=64,
-        )
-        bwd_lat_ref = do_bench(lambda: out_ref.backward(do, retain_graph=True))
-    result_dict["Mamba2SSM"] = (fwd_lat_ref, bwd_lat_ref)
-    # except Exception as e:
-    #     print(f"Warning: mamba2 ssm not available: {e}")
+        if require_grad:
+            out_ref = mamba_chunk_scan_combined(
+                value,
+                dt_mamba,
+                A_mamba,
+                key,
+                query,
+                chunk_size=64,
+            )
+            bwd_lat_ref = do_bench(lambda: out_ref.backward(do, retain_graph=True))
+        result_dict["Mamba2SSM"] = (fwd_lat_ref, bwd_lat_ref)
+    except Exception as e:
+        print(f"Warning: mamba2 ssm not available: {e}")
 
     return result_dict
 
@@ -464,42 +406,40 @@ def bench_mla_decode(B, HQ, SKV, D, DV, HKV=1, dtype=torch.bfloat16):
     
     result_dict = {}
 
-    q = torch.randn(B, 1, HQ, D, dtype=dtype, device="cuda")
-    # To be compatible with flashMLA
-    KV = torch.randn(B*SKV//64,64, HKV, DV, dtype=dtype, device="cuda")
-    k_pe = torch.randn(B*SKV//64,64, HKV, D-DV, dtype=dtype, device="cuda")
-    KV = torch.concat([KV, k_pe], dim=-1).contiguous()
+    q = torch.randn(B, 1, HQ, DV, dtype=dtype, device="cuda")
+    q_pe = torch.randn(B, 1, HQ, D-DV, dtype=dtype, device="cuda")
+    KV = torch.randn(B, SKV, HKV, DV, dtype=dtype, device="cuda")
+    k_pe = torch.randn(B, SKV, HKV, D-DV, dtype=dtype, device="cuda")
     
     # ours
     attention_module = mla_decode(B, HQ, SKV, D, DV, HK=HKV, HV=HKV, dtype=dtype)
-    fwd_lat = do_bench(lambda: attention_module(q, KV))
+    fwd_lat = do_bench(lambda: attention_module(q, q_pe, KV, k_pe))
     result_dict["MetaAttention"] = (fwd_lat, None)
     
     # flashMLA
     try:
-        from flash_mla import flash_mla_with_kvcache, get_mla_metadata
+        from ref.flash_mla_decode_triton import run_flash_mla_triton
         
         cache_seqlens = torch.full((B,), SKV, dtype=torch.int32, device="cuda")
         max_seqlen = cache_seqlens.max().item()
         max_seqlen_pad = triton.cdiv(max_seqlen, 256) * 256
         
-        tile_scheduler_metadata, num_splits = get_mla_metadata(
-            cache_seqlens, 1 * HQ // HKV, HKV
-        )
         block_size = 64
         block_table = torch.arange(
             B * max_seqlen_pad // block_size, dtype=torch.int32, device="cuda"
         ).view(B, max_seqlen_pad // block_size)
         
-        fwd_lat_ref = do_bench(lambda: flash_mla_with_kvcache(
+        q = torch.concat([q, q_pe], dim=-1).contiguous()
+        KV = torch.concat([KV, k_pe], dim=-1).contiguous()
+        # [B, S, H, D] -> [B*S//64, 64, H, D]
+        KV = KV.view(B * SKV // block_size, block_size, HKV, D)
+        fwd_lat_ref = do_bench(lambda: run_flash_mla_triton(
             q,
-            KV,
             block_table,
-            cache_seqlens,
-            DV,
-            tile_scheduler_metadata,
-            num_splits,
-            causal=True)
+            KV,
+            max_seqlen_pad,
+            block_size,
+            B, 1, cache_seqlens, HQ, HKV, D, DV, True, dtype)
         )
 
         result_dict["FlashMLA"] = (fwd_lat_ref, None)

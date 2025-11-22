@@ -649,31 +649,31 @@ def bench_mamba2_ssm(B, HQ, S, D, DV, HK=None, HV=None, dtype=torch.bfloat16, re
     key.detach_().requires_grad_(require_grad)
     query.detach_().requires_grad_(require_grad)
 
-    # try:
-    from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
-    fwd_lat_ref = do_bench(
-        lambda: mamba_chunk_scan_combined(
-            value,
-            dt_mamba,
-            A_mamba,
-            key,
-            query,
-            chunk_size=64,
+    try:
+        from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
+        fwd_lat_ref = do_bench(
+            lambda: mamba_chunk_scan_combined(
+                value,
+                dt_mamba,
+                A_mamba,
+                key,
+                query,
+                chunk_size=64,
+            )
         )
-    )
-    if require_grad:
-        out_ref = mamba_chunk_scan_combined(
-            value,
-            dt_mamba,
-            A_mamba,
-            key,
-            query,
-            chunk_size=64,
-        )
-        bwd_lat_ref = do_bench(lambda: out_ref.backward(do, retain_graph=True))
-    result_dict["Mamba2SSM"] = (fwd_lat_ref, bwd_lat_ref)
-    # except Exception as e:
-    #     print(f"Warning: mamba2 ssm not available: {e}")
+        if require_grad:
+            out_ref = mamba_chunk_scan_combined(
+                value,
+                dt_mamba,
+                A_mamba,
+                key,
+                query,
+                chunk_size=64,
+            )
+            bwd_lat_ref = do_bench(lambda: out_ref.backward(do, retain_graph=True))
+        result_dict["Mamba2SSM"] = (fwd_lat_ref, bwd_lat_ref)
+    except Exception as e:
+        print(f"Warning: mamba2 ssm not available: {e}")
 
     return result_dict
 
