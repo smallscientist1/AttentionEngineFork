@@ -112,7 +112,7 @@ def _mla_attn(
     head_dim_kpe = q_pe.shape[-1]
 
     BLOCK_H = 16
-    BLOCK_N = 64
+    BLOCK_N = 64 if torch.version.cuda is not None else 32 # TODO: adjust for amd
     grid = (
         triton.cdiv(head_num, BLOCK_H),
         batch_size,
@@ -267,8 +267,8 @@ def run_flash_mla_triton(q, block_table, blocked_k, max_seqlen_pad, block_size, 
 
     def flash_mla_triton():
         num_kv_splits = 32
-        o = torch.empty([b * s_q, h_q, dv])
-        attn_logits = torch.empty([b * s_q, h_q, num_kv_splits, dv + 1])
+        o = torch.empty([b * s_q, h_q, dv], device=q.device, dtype=dtype)
+        attn_logits = torch.empty([b * s_q, h_q, num_kv_splits, dv + 1], device=q.device, dtype=dtype)
         mla_decode_triton(
             q_nope.view(-1, h_q, dv), q_pe.view(-1, h_q, d - dv), blocked_k_nope.view(-1, dv),
             blocked_k_pe.view(-1, d - dv), o, block_table, cache_seqlens, attn_logits,
