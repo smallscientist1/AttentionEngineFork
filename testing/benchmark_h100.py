@@ -106,7 +106,7 @@ def bench_fig11():
 
     # (k) DeepSeek MLA
     mla_data = []
-    for b, s in [(B, S) for B in [1,] for S in seqlens]:
+    for b, s in [(B, S) for B in [8,] for S in seqlens]:
         result_dict = bench_attention("mla_attn", b, 128, 1, s, 576, 512, head_k=1, head_v=1)
         mla_data.append((f"BS{b}S1\nKV{s}", result_dict))
     dump_bench_result("mla", mla_data)

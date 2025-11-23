@@ -53,7 +53,7 @@ def bench_fig12():
 
     # (k) DeepSeek MLA
     mla_data = []
-    for b, s in [(B, S) for B in [1,] for S in seqlens]:
+    for b, s in [(B, S) for B in [8,] for S in seqlens]:
         result_dict = bench_attention("mla_attn", b, 128, 1, s, 576, 512, head_k=1, head_v=1)
         mla_data.append((f"BS{b}S1\nKV{s}", result_dict))
     dump_bench_result("mla", mla_data)
@@ -402,8 +402,7 @@ def bench_mamba2_ssm(B, HQ, S, D, DV, HK=None, HV=None, dtype=torch.bfloat16, re
 
     return result_dict
 
-def bench_mla_decode(B, HQ, SKV, D, DV, HKV=1, dtype=torch.bfloat16):
-    
+def bench_mla_decode(B, HQ, SKV, D, DV, HKV=1, dtype=torch.float16):
     result_dict = {}
 
     q = torch.randn(B, 1, HQ, DV, dtype=dtype, device="cuda")
@@ -418,7 +417,7 @@ def bench_mla_decode(B, HQ, SKV, D, DV, HKV=1, dtype=torch.bfloat16):
     
     # flashMLA
     try:
-        from ref.flash_mla_decode_triton import run_flash_mla_triton
+        from ref.flash_mla_decode_triton import flash_mla_triton
         
         cache_seqlens = torch.full((B,), SKV, dtype=torch.int32, device="cuda")
         max_seqlen = cache_seqlens.max().item()
@@ -429,14 +428,13 @@ def bench_mla_decode(B, HQ, SKV, D, DV, HKV=1, dtype=torch.bfloat16):
             B * max_seqlen_pad // block_size, dtype=torch.int32, device="cuda"
         ).view(B, max_seqlen_pad // block_size)
         
-        q = torch.concat([q, q_pe], dim=-1).contiguous()
-        KV = torch.concat([KV, k_pe], dim=-1).contiguous()
         # [B, S, H, D] -> [B*S//64, 64, H, D]
-        KV = KV.view(B * SKV // block_size, block_size, HKV, D)
-        fwd_lat_ref = do_bench(lambda: run_flash_mla_triton(
-            q,
+        KV = KV.view(B * SKV // block_size, block_size, HKV, DV)
+        k_pe = k_pe.view(B * SKV // block_size, block_size, HKV, D - DV)
+        fwd_lat_ref = do_bench(lambda: flash_mla_triton(
+            q, q_pe,
             block_table,
-            KV,
+            KV, k_pe,
             max_seqlen_pad,
             block_size,
             B, 1, cache_seqlens, HQ, HKV, D, DV, True, dtype)
