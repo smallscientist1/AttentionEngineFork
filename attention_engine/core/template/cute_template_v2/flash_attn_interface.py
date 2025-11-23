@@ -445,8 +445,7 @@ if not SKIP_CUDA_BUILD:
     if FORCE_CXX11_ABI:
         torch._C._GLIBCXX_USE_CXX11_ABI = True
     repo_dir = Path(this_dir).parent
-    # TODO: 111
-    cutlass_dir = Path("/cfy/flash-attention/csrc/cutlass") # repo_dir / "csrc" / "cutlass"
+    cutlass_dir = repo_dir / "3rd_parties" / "cutlass_dc4817"
 
     feature_args = (
         []
