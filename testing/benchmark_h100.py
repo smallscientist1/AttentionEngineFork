@@ -545,8 +545,8 @@ def bench_sigmoidattention(B, H, S, D, DV, dtype=torch.float16, require_grad=Tru
             bwd_lat_ref = do_bench(lambda: out_ref.backward(do, retain_graph=True))
             
         result_dict["FlashSigmoid"] = (fwd_lat_ref, bwd_lat_ref)
-    except Exception:
-        print("Warning: flash-sigmoid not available")
+    except Exception as e:
+        print(f"Warning: flash-sigmoid not available: {e}")
         
     # pytorch
     try:
@@ -618,7 +618,7 @@ def bench_reluattention(B, H, S, D, DV, device='cuda', dtype=torch.float16, requ
     if require_grad:
         out_ref = ref_program(query, key, value)
         ref_program_bwd_lat = do_bench(lambda: out_ref.backward(do, retain_graph=True))
-    result_dict["PytorchReLU"] = (ref_program_fwd_lat, ref_program_bwd_lat)
+    result_dict["Torch Inductor"] = (ref_program_fwd_lat, ref_program_bwd_lat)
     
     return result_dict
 
@@ -754,8 +754,8 @@ def bench_retnet_recurrent(B, H, S, D, DV, device="cuda", dtype=torch.bfloat16, 
             )
             bwd_lat_ref = do_bench(lambda: o_ref.backward(do, retain_graph=True))
         result_dict["FlashLinearAttention"] = (fwd_lat_ref, bwd_lat_ref)
-    except Exception:
-        print("Warning: fla.ops.retention not available")
+    except Exception as e:
+        print(f"Warning: fla.ops.retention not available: {e}")
         
     # torch inductor
     try:
@@ -813,7 +813,7 @@ def bench_retention_parallel(B, H, S, D, DV, device="cuda", dtype=torch.float16,
             return o.to(dtype=dtype)
 
         ref_lat = do_bench(lambda: ref_program(q, k, v, mask))
-        result_dict["PytorchRetention"] = (ref_lat, None)
+        result_dict["Torch Inductor"] = (ref_lat, None)
     except Exception as e:
         print(f"Warning: Pytorch Retention benchmark failed: {e}")
     
