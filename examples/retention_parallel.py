@@ -8,6 +8,20 @@ from core import Var
 from core import meta_tensor
 from autotuner.arch import get_attn_device
 
+"""
+Example of retnet Attention
+
+# query: [B, H, q_len, DK]
+# key: [B, H, kv_len, DK]
+# value: [B, H, kv_len, DV]
+
+def retnet_attention(query, key, value):
+    scores = query @ key
+    scores = scores * mask
+    p = scores / scores.abs().sum().clamp(min=1)
+    o = p @ value
+"""
+
 def retention_parallel(B, H, S, D, DV, dtype=torch.float16, tune=False):
     
     def causal_mask(b, h, q_idx, kv_idx):
@@ -16,7 +30,7 @@ def retention_parallel(B, H, S, D, DV, dtype=torch.float16, tune=False):
     softmax_scale = D**0.5
     def score_mod(score, custom_fwd_inputs, b, h, q_idx, kv_idx):
         mask = custom_fwd_inputs.input_tensors["mask"]
-        return score * mask # / softmax_scale
+        return score * mask
 
     class OnlineRetention(OnlineFunc):
         def __init__(self):
@@ -95,3 +109,11 @@ def retention_parallel(B, H, S, D, DV, dtype=torch.float16, tune=False):
     )
     
     return mod
+
+if __name__ == "__main__":
+    # Example usage
+    B, H, S, D, DV = 1, 32, 2048, 256, 512
+    mod = retention_parallel(B, H, S, D, DV)
+
+    print(mod)
+    print(f"AttentionEngine Succuessfully created.")
