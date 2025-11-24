@@ -136,9 +136,10 @@ def plot_figure11(results_dir, output_path="figure11_h100.pdf"):
         for b_item in B:
             b_names.append(b_item[0])
         names = a_names.copy()
-        for b_name in b_names:
-            if b_name not in names:
-                names.append(b_name)
+        # do not combine names
+        # for b_name in b_names:
+        #     if b_name not in names:
+        #         names.append(b_name)
         a_len = len(A[0][1])
         b_len = len(B[0][1])
         new_data = []
@@ -1413,5 +1414,5 @@ def plot_figure11(results_dir, output_path="figure11_h100.pdf"):
     
 
 if __name__ == "__main__":
-    RESULTS_DIR = "/cfy/AttentionEngineFork/results_all20251121"
+    RESULTS_DIR = "/AttentionEngine/results_20251124"
     plot_figure11(RESULTS_DIR, "h100_eval.pdf")
