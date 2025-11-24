@@ -1003,6 +1003,9 @@ def tune(tune_file, kernel_profiler, problem_keys)->Tuple:
     tuned_config = None
     tuned_latency = -1
     pk = problem_keys
+    folder_path = os.path.dirname(tune_file)
+    if folder_path and not os.path.exists(folder_path):
+        os.makedirs(folder_path, exist_ok=True)
     if not os.path.exists(tune_file):
         with open(tune_file, "w") as f:
             json.dump([], f, indent=4)

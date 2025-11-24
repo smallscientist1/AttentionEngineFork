@@ -3,6 +3,7 @@ from .arch_base import Arch
 
 class RTX4090(Arch):
     def __init__(self):
+        self.name = "RTX4090"
         self.reg_cap = 65536  # 32768
         self.smem_cap = 100 * 1024  # 164*1024
         self.compute_max_core = 128

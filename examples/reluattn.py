@@ -6,6 +6,7 @@ from core import CustomIO
 from core import SymbolicArray, SymbolScalar, SymbolicTensor
 from core import Var
 from core import meta_tensor
+from autotuner.arch import get_attn_device
 
 
 def relu_attention(B, H, S, D, DV, dtype=torch.float16, tune=False):
@@ -53,13 +54,14 @@ def relu_attention(B, H, S, D, DV, dtype=torch.float16, tune=False):
         meta_tensor(B, H, S, D, dtype=dtype),
         meta_tensor(B, H, S, DV, dtype=dtype),
     )
+    attn_device = get_attn_device()
 
     mod = AttentionEngine(
         qkv_meta,
         custom_fwd_inputs, score_mod=score_mod, mask_mod=None,
         online_func=OnlineIdentity(),
-        tune=tune, tune_file ="reluattn_tune.json",
-        tune_bwd=tune, tune_file_bwd="reluattn_bwd.json"
+        tune=tune, tune_file =f"tuned_config/{attn_device.name}/reluattn_tune.json",
+        tune_bwd=tune, tune_file_bwd=f"tuned_config/{attn_device.name}/reluattn_bwd.json"
     )
 
     return mod

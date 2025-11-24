@@ -12,6 +12,8 @@ from examples.mamba2 import mamba2
 from examples.mla_decode_v2 import mla_decode
 from examples.sparse_gqa_decode import sparse_gqa_decode
 
+from plot_fig_h100 import plot_figure11
+
 # from attention_engine.benchmark.bench_utils import do_bench
 from tilelang.profiler import do_bench
 
@@ -21,6 +23,14 @@ import math
 import triton
 import pandas as pd
 import os
+from einops import rearrange, einsum, repeat
+from functools import lru_cache
+from typing import Optional
+
+import torch._functorch.config
+
+# Disable the "donated buffer" to enable the use of "retain_graph=True" in torch.compile
+torch._functorch.config.donated_buffer = False
 
 RESULT_DIR = "./results"
 os.makedirs(RESULT_DIR, exist_ok=True)
@@ -33,6 +43,7 @@ def bench_fig11():
     # (a) Softmax Attention (DeepSeek-V2-Lite)
     deepseek_data = []
     for b, s in [(B, S) for B in Batches for S in seqlens]:
+        torch.cuda.empty_cache()
         result_dict = bench_attention("causal_softmax_attn", b, 16, s, s, 192, 128)
         deepseek_data.append((f"BS{b}\nS{s}", result_dict))
     for b, s in [(B, S) for B in Batches for S in seqlens]:
@@ -100,6 +111,7 @@ def bench_fig11():
     # (j) RetNet Recurrent (RetNet-6.7B)
     retnet_recur_data = []
     for b, s in [(B, S) for B in Batches for S in [2048, 4096]]:
+        torch.cuda.empty_cache()
         result_dict = bench_attention("retention_recurrent", b, 32, s, s, 256, 512)
         retnet_recur_data.append((f"BS{b}\nS{s}", result_dict))
     dump_bench_result("retnet_recur", retnet_recur_data)
@@ -350,7 +362,115 @@ def bench_softmaxattention(B, H, Sq, S, D, DV, device='cuda', dtype=torch.float1
         
     except Exception as e:
         print(f"Warning: FlashAttention-3 not available: {e}")
+        
+    # FLex Attention
+    if Sq == S:
+        try:
+            query2 = query.transpose(1, 2).contiguous()
+            key2 = key.transpose(1, 2).contiguous()
+            value2 = value.transpose(1, 2).contiguous()
+            do2 = do.transpose(1, 2).contiguous()
+            query2.detach_().requires_grad_(require_grad)
+            key2.detach_().requires_grad_(require_grad)
+            value2.detach_().requires_grad_(require_grad)
+            from torch.nn.attention.flex_attention import create_block_mask, flex_attention
+            
+            def causal_mask(b, h, q_idx, kv_idx):
+                return q_idx >= kv_idx
+            
+            @lru_cache
+            def create_block_mask_cached(score_mod, B, H, M, N, device="cuda"):
+                block_mask = create_block_mask(score_mod, B, H, M, N, device=device)
+                return block_mask
+
+            block_mask = create_block_mask_cached(
+                causal_mask, 1, 1, S, S, device=query.device)
+            flex_attention = torch.compile(flex_attention)
+            
+            dim_padded_flex = list(filter(lambda x: x >= max(D, DV), [64, 128, 256]))
+            assert (len(dim_padded_flex) > 0)
+            dim_padded_flex = min(dim_padded_flex)
+
+            def flex_ref(dim_padded):
+                if D < dim_padded:
+                    query_padded = F.pad(query2, (0, dim_padded - D), value=0.)
+                    key_padded = F.pad(key2, (0, dim_padded - D), value=0.)
+                else:
+                    query_padded = query2
+                    key_padded = key2
+                if DV < dim_padded:
+                    value_padded = F.pad(value2, (0, dim_padded - DV), value=0.)
+                else:
+                    value_padded = value2
+                o_ref = flex_attention(
+                    query_padded,
+                    key_padded,
+                    value_padded,
+                    block_mask=block_mask)
+                if DV < dim_padded:
+                    o_ref = o_ref[:, :, :, :DV]
+                return o_ref
+            
+            flex_fwd_lat = do_bench(lambda: flex_ref(dim_padded_flex))
+            if require_grad:
+                o_ref = flex_ref(dim_padded_flex)
+                flex_bwd_lat = do_bench(lambda: o_ref.backward(do2, retain_graph=True))
+            else:
+                flex_bwd_lat = None
+            result_dict["FlexAttention"] = (flex_fwd_lat, flex_bwd_lat)
+        except Exception as e:
+            print(f"Warning: Flex Attention not available: {e}")
+        
+    # torch inductor
+    try:
+        query.detach_().requires_grad_(require_grad)
+        key.detach_().requires_grad_(require_grad)
+        value.detach_().requires_grad_(require_grad)
+        if Sq == 1:
+            causal = False
+        else:
+            causal = True
+        @torch.compile
+        def ref(query, key, value, causal=True, softmax_scale=None):
+            dim = query.shape[-1]
+            num_head_groups = query.shape[2] // key.shape[2]
+            if softmax_scale is None:
+                softmax_scale = 1 / dim** 0.5
+
+            query = rearrange(
+                query, 'b s (h g) d -> b s g h d',
+                g=num_head_groups)  # [batch_size, num_head_groups, groups, dim]
+            scores = einsum(query, key,
+            'b s g h d, b t h d -> b g h s t')
+            if causal:
+                seqlenq = query.shape[1]
+                seqlenk = key.shape[1]
+                mask = torch.tril(
+                    torch.ones(
+                        seqlenq, seqlenk, device=scores.device))
+                mask = mask.unsqueeze(0).unsqueeze(0)
+                scores = scores.masked_fill(mask == 0, float('-inf'))
+            attention = F.softmax(
+                scores * softmax_scale, dim=-1)
+
+            out = einsum(attention, value,
+                    'b g h s t, b t h d -> b g h s d')
+            out = rearrange(out, 'b g h s d -> b s (h g) d') 
+            return out
+        
+        ref_fwd_lat = do_bench(lambda: ref(query, key, value, causal=causal))
+        if require_grad:
+            o_ref = ref(query, key, value, causal=causal)
+            ref_bwd_lat = do_bench(lambda: o_ref.backward(do, retain_graph=True))
+        else:
+            ref_bwd_lat = None
+            
+        result_dict["Torch Inductor"] = (ref_fwd_lat, ref_bwd_lat)
     
+    except Exception as e:
+        print(f"Warning: Torch Inductor benchmark failed to compile ref: {e}")
+        
+        
     return result_dict
 
 def bench_sigmoidattention(B, H, S, D, DV, dtype=torch.float16, require_grad=True):
@@ -408,7 +528,44 @@ def bench_sigmoidattention(B, H, S, D, DV, dtype=torch.float16, require_grad=Tru
         result_dict["FlashSigmoid"] = (fwd_lat_ref, bwd_lat_ref)
     except Exception:
         print("Warning: flash-sigmoid not available")
+        
+    # pytorch
+    try:
+        @torch.compile
+        def ref(query, key, value, causal=True, softmax_scale=None):
+            dim = query.shape[-1]
+            num_head_groups = query.shape[2] // key.shape[2]
+            if softmax_scale is None:
+                softmax_scale = 1 / dim** 0.5
+
+            query = rearrange(
+                query, 'b s (h g) d -> b s g h d',
+                g=num_head_groups)  # [batch_size, num_head_groups, groups, dim]
+            scores = einsum(query, key,
+            'b s g h d, b t h d -> b g h s t')
+            if causal:
+                seqlenq = query.shape[1]
+                seqlenk = key.shape[1]
+                mask = torch.tril(
+                    torch.ones(
+                        seqlenq, seqlenk, device=scores.device))
+                mask = mask.unsqueeze(0).unsqueeze(0)
+                scores = scores.masked_fill(mask == 0, float('-inf'))
+            attention = F.softmax(
+                scores * softmax_scale, dim=-1)
+
+            out = einsum(attention, value,
+                    'b g h s t, b t h d -> b g h s d')
+            out = rearrange(out, 'b g h s d -> b s (h g) d') 
+            return out
     
+        torch_fwd_lat = do_bench(lambda: ref(query, key, value))
+        if require_grad:
+            o_ref = ref(query, key, value)
+            torch_bwd_lat = do_bench(lambda: o_ref.backward(do, retain_graph=True))
+        result_dict["Torch Inductor"] = (torch_fwd_lat, torch_bwd_lat)
+    except Exception as e:
+        print(f"Warning: Torch Inductor benchmark failed to compile ref: {e}")
     return result_dict
     
 def bench_reluattention(B, H, S, D, DV, device='cuda', dtype=torch.float16, require_grad=True):
@@ -494,10 +651,37 @@ def bench_gated_retention(B, H, S, D, DV, device='cuda', dtype=torch.bfloat16, r
                 q1, k1, v1, g1, head_first=True
             )
             bwd_lat_ref = do_bench(lambda: out_ref.backward(do, retain_graph=True))
+        else:
+            bwd_lat_ref = None
         result_dict["FlashLinearAttention"] = (fwd_lat_ref, bwd_lat_ref)
 
     except Exception as e:
         print(f"Warning: fla.ops.simple_gla not available: {e}")
+        
+    # torch inductor
+    try:
+        from fla.ops.simple_gla.naive import torch_simple_gla
+        q1.detach_().requires_grad_(require_grad)
+        k1.detach_().requires_grad_(require_grad)
+        v1.detach_().requires_grad_(require_grad)
+        g1.detach_().requires_grad_(require_grad)
+        
+        torch_simple_gla = torch.compile(torch_simple_gla)
+        fwd_lat_ref2 = do_bench(lambda: torch_simple_gla(
+            q1, k1, v1, g1, chunk_size=64
+        ))
+        
+        if require_grad:
+            out_ref2 = torch_simple_gla(
+                q1, k1, v1, g1, chunk_size=64
+            )
+            bwd_lat_ref2 = do_bench(lambda: out_ref2.backward(do, retain_graph=True))
+        else:
+            bwd_lat_ref2 = None
+        result_dict["Torch Inductor"] = (fwd_lat_ref2, bwd_lat_ref2)
+    except Exception as e:
+        print(f"Warning: Torch Inductor benchmark failed: {e}")
+        
 
     return result_dict
    
@@ -553,6 +737,28 @@ def bench_retnet_recurrent(B, H, S, D, DV, device="cuda", dtype=torch.bfloat16, 
         result_dict["FlashLinearAttention"] = (fwd_lat_ref, bwd_lat_ref)
     except Exception:
         print("Warning: fla.ops.retention not available")
+        
+    # torch inductor
+    try:
+        @torch.compile
+        def ref(q, k, v):
+            orig_type = q.dtype
+            q, k, v = q.float(), k.float(), v.float()
+            _, n_heads, seq_len, d_head = q.shape
+            s = (1 - q.new_tensor(2., dtype=torch.float).pow(-5. - q.new_tensor(range(n_heads), dtype=torch.float))).log2()
+            n = q.new_tensor(range(seq_len), dtype=torch.float)
+            n = torch.exp2((n.unsqueeze(-1) - n) * s.view(-1, 1, 1)) * n.unsqueeze(-1).ge(n)
+            s = torch.einsum('bhqd,bhkd,hqk->bhqk', q * d_head ** -0.5, k, n.to(q.dtype))
+            o = torch.einsum('bhqk,bhkd->bhqd', s, v)
+            return o.to(orig_type)
+        
+        fwd_lat_ref2 = do_bench(lambda: ref(q1, k1, v1))
+        if require_grad:
+            o_ref2 = ref(q1, k1, v1)
+            bwd_lat_ref2 = do_bench(lambda: o_ref2.backward(do, retain_graph=True))
+        result_dict["Torch Inductor"] = (fwd_lat_ref2, bwd_lat_ref2)
+    except Exception as e:
+        print(f"Warning: Torch Inductor benchmark failed: {e}")
                 
     
     return result_dict
@@ -671,10 +877,178 @@ def bench_mamba2_ssm(B, HQ, S, D, DV, HK=None, HV=None, dtype=torch.bfloat16, re
                 chunk_size=64,
             )
             bwd_lat_ref = do_bench(lambda: out_ref.backward(do, retain_graph=True))
+        else:
+            bwd_lat_ref = None
         result_dict["Mamba2SSM"] = (fwd_lat_ref, bwd_lat_ref)
     except Exception as e:
         print(f"Warning: mamba2 ssm not available: {e}")
+        
+    # torch inductor
+    try:
+        def chunk_state_ref(B, x, dt, dA_cumsum):
+            """
+            Argument:
+                B: (batch, seqlen, ngroups, headdim)
+                x: (batch, seqlen, nheads, headdim)
+                dt: (batch, nheads, nchunks, chunk_size)
+                dA_cumsum: (batch, nheads, nchunks, chunk_size)
+            Return:
+                states: (batch, nchunks, nheads, headdim, dstate)
+            """
+            # Check constraints.
+            batch, seqlen, nheads, headdim = x.shape
+            dstate = B.shape[-1]
+            _, _, nchunks, chunk_size = dt.shape
+            assert seqlen <= nchunks * chunk_size
+            assert x.shape == (batch, seqlen, nheads, headdim)
+            assert dt.shape == (batch, nheads, nchunks, chunk_size)
+            ngroups = B.shape[2]
+            assert nheads % ngroups == 0
+            assert B.shape == (batch, seqlen, ngroups, dstate)
+            B = repeat(B, "b l g d -> b l (g h) d", h=nheads // ngroups)
+            assert dA_cumsum.shape == (batch, nheads, nchunks, chunk_size)
+            if seqlen < nchunks * chunk_size:
+                x = F.pad(x, (0, 0, 0, 0, 0, nchunks * chunk_size - seqlen))
+                B = F.pad(B, (0, 0, 0, 0, 0, nchunks * chunk_size - seqlen))
+            x = rearrange(x, "b (c l) h p -> b c l h p", l=chunk_size)
+            B = rearrange(B, "b (c l) ... -> b c l ...", l=chunk_size)
+            decay_states = torch.exp((dA_cumsum[:, :, :, -1:] - dA_cumsum))
+            return torch.einsum("bclhn,bhcl,bhcl,bclhp->bchpn", B.to(x.dtype), decay_states.to(x.dtype), dt.to(x.dtype), x)
 
+        def state_passing_ref(states, dA_chunk_cumsum, initial_states=None):
+            """
+            Argument:
+                states: (batch, nchunks, nheads, dim)
+                dA_chunk_cumsum: (batch, nheads, nchunks)
+                initial_states: (batch, nheads, dim)
+            Return:
+                out: (batch, nchunks, nheads, dim)
+                final_states: (batch, nheads, dim)
+            """
+            if initial_states is None:
+                initial_states = torch.zeros_like(states[:, 0])
+            states = torch.cat([rearrange(initial_states, "b h d -> b 1 h d"), states], dim=1)
+            dA_chunk_cumsum = F.pad(dA_chunk_cumsum, (1, 0))
+            dA_chunk_cumsum = torch.cumsum(dA_chunk_cumsum, dim=-1)
+            nchunks = dA_chunk_cumsum.shape[-1]
+            # (batch, nheads, nchunks, nchunks)
+            dt_chunk_segment_sum = dA_chunk_cumsum[:, :, :, None] - dA_chunk_cumsum[:, :, None, :]
+            # (batch, nheads, nchunks, nchunks)
+            decay_chunk = torch.exp(dt_chunk_segment_sum)
+            causal_mask = torch.tril(torch.ones(nchunks, nchunks, device=states.device, dtype=bool), diagonal=0)
+            decay_chunk = decay_chunk.masked_fill(~causal_mask, 0)
+            out = torch.einsum("bhzc,bchd->bzhd", decay_chunk.to(dtype=states.dtype), states)
+            return out[:, :-1], out[:, -1]
+
+        def chunk_scan_ref(B, C, x, dt, dA_cumsum, prev_states, D=None, z=None):
+            """
+            Argument:
+                B: (batch, seqlen, ngroups, dstate)
+                C: (batch, seqlen, ngroups, dstate)
+                x: (batch, seqlen, nheads, headdim)
+                dt: (batch, nheads, nchunks, chunk_size)
+                dA_cumsum: (batch, nheads, nchunks, chunk_size)
+                prev_states: (batch, nchunks, nheads, headdim, dstate)
+                D: (nheads, headdim) or (nheads,)
+                z: (batch, seqlen, nheads, headdim)
+            Return:
+                out: (batch, seqlen, nheads, headdim)
+            """
+            batch, seqlen, nheads, headdim = x.shape
+            _, _, ngroups, dstate = B.shape
+            assert B.shape == (batch, seqlen, ngroups, dstate)
+            _, _, nchunks, chunk_size = dt.shape
+            assert seqlen == nchunks * chunk_size
+            assert C.shape == B.shape
+            B = repeat(B, "b l g d -> b l (g h) d", h=nheads // ngroups)
+            C = repeat(C, "b l g d -> b l (g h) d", h=nheads // ngroups)
+            CB = torch.einsum("bclhn,bcshn->bchls", rearrange(C, "b (c l) h n -> b c l h n", c=nchunks),
+                            rearrange(B, "b (c s) h n -> b c s h n", c=nchunks))
+            # (batch, nheads, nchunks, chunksize, chunksize)
+            dt_segment_sum = dA_cumsum[:, :, :, :, None] - dA_cumsum[:, :, :, None, :]
+            decay = torch.exp(dt_segment_sum)
+            scores_decay = CB * rearrange(decay, "b h c l s -> b c h l s")
+            causal_mask = torch.tril(torch.ones(chunk_size, chunk_size, device=x.device, dtype=bool), diagonal=0)
+            scores_decay = scores_decay.masked_fill(~causal_mask, 0)
+            out = torch.einsum('bchls,bhcs,bcshp->bclhp', scores_decay.to(x.dtype), dt.to(x.dtype),
+                            rearrange(x, "b (c s) h p -> b c s h p", c=nchunks))
+            state_decay_out = torch.exp(rearrange(dA_cumsum, "b h c l -> b c l h 1"))
+            out_prev = torch.einsum('bclhn,bchpn->bclhp', rearrange(C, "b (c l) h n -> b c l h n", c=nchunks),
+                                    prev_states.to(C.dtype)) * state_decay_out
+            out = out + out_prev
+            out = rearrange(out, "b c l h p -> b (c l) h p")
+            if D is not None:
+                if D.dim() == 1:
+                    D = rearrange(D, "h -> h 1")
+                out = out + x * D
+            return out if z is None else out * F.silu(z)
+        
+        @torch.compile
+        def ssd_chunk_scan_combined_ref(x, dt, A, B, C, chunk_size, D=None, z=None, dt_bias=None, dt_softplus=False):
+            """
+            Argument:
+                x: (batch, seqlen, nheads, headdim)
+                dt: (batch, seqlen, nheads)
+                A: (nheads)
+                B: (batch, seqlen, ngroups, dstate)
+                C: (batch, seqlen, ngroups, dstate)
+                D: (nheads, headdim) or (nheads,)
+                z: (batch, seqlen, nheads, headdim)
+                dt_bias: (nheads,)
+            Return:
+                out: (batch, seqlen, nheads, headdim)
+            """
+            batch, seqlen, nheads, headdim = x.shape
+            dstate = B.shape[-1]
+            if seqlen % chunk_size != 0:
+                dt = F.pad(dt, (0, 0, 0, chunk_size - seqlen % chunk_size))
+            dt = rearrange(dt, "b (c l) h -> b h c l", l=chunk_size)
+            dt = dt.float()  # We want high precision for this before cumsum
+            if dt_bias is not None:
+                dt = dt + rearrange(dt_bias, "h -> h 1 1")
+            if dt_softplus:
+                dt = F.softplus(dt)
+            dA = dt * rearrange(A, "h -> h 1 1")
+            dA_cumsum = torch.cumsum(dA, dim=-1)
+            # 1. Compute the state for each chunk
+            states = chunk_state_ref(B, x, dt, dA_cumsum)
+            states_dtype = states.dtype
+            if states.dtype not in [torch.float32, torch.float64]:
+                states = states.to(torch.float32)
+            # 2. Pass the state to all the chunks by weighted cumsum.
+            # state_passing_ref is much less numerically stable
+            states = rearrange(state_passing_ref(rearrange(states, "... p n -> ... (p n)"), dA_cumsum[:, :, :, -1])[0],
+                            "... (p n) -> ... p n", n=dstate)
+            states = states.to(states_dtype)
+            # 3. Compute the output for each chunk
+            out = chunk_scan_ref(B, C, x, dt, dA_cumsum, states, D=D, z=z)
+            return out
+
+        fwd_lat_ref2 = do_bench(
+            lambda: ssd_chunk_scan_combined_ref(
+                value, 
+                dt_mamba,
+                A_mamba,
+                key,
+                query,
+                chunk_size=64,
+            )
+        )
+        if require_grad:
+            out_ref2 = ssd_chunk_scan_combined_ref(
+                value, 
+                dt_mamba,
+                A_mamba,
+                key,
+                query,
+                chunk_size=64,
+            )
+            bwd_lat_ref2 = do_bench(lambda: out_ref2.backward(do, retain_graph=True))
+        else:
+            bwd_lat_ref2 = None
+        result_dict["Torch Inductor"] = (fwd_lat_ref2, bwd_lat_ref2)
+    except Exception as e:
+        print(f"Warning: Torch Inductor benchmark failed: {e}")
     return result_dict
 
 def bench_mla_decode(B, HQ, SKV, D, DV, HKV=1, dtype=torch.bfloat16):
@@ -724,6 +1098,35 @@ def bench_mla_decode(B, HQ, SKV, D, DV, HKV=1, dtype=torch.bfloat16):
     except Exception as e:
         print(f"Warning: flashMLA not available: {e}")
         
+    # triton
+    try:
+        from ref.flash_mla_decode_triton import flash_mla_triton
+        
+        q_nope, q_pe = q[..., :DV].contiguous(), q[..., DV:].contiguous()
+        blocked_k_nope, blocked_k_pe = KV[..., :DV].contiguous(), KV[..., DV:].contiguous()
+        cache_seqlens = torch.full((B,), SKV, dtype=torch.int32, device="cuda")
+        max_seqlen = cache_seqlens.max().item()
+        max_seqlen_pad = triton.cdiv(max_seqlen, 256) * 256
+        
+        block_size = 64
+        block_table = torch.arange(
+            B * max_seqlen_pad // block_size, dtype=torch.int32, device="cuda"
+        ).view(B, max_seqlen_pad // block_size)
+        
+        fwd_lat_ref = do_bench(lambda: flash_mla_triton(
+            q_nope, q_pe,
+            block_table,
+            blocked_k_nope, blocked_k_pe,
+            max_seqlen_pad,
+            block_size,
+            B, 1, cache_seqlens, HQ, HKV, D, DV, True, dtype)
+        )
+        
+        result_dict["FlashMLA Triton"] = (fwd_lat_ref, None)
+    
+    except Exception as e:
+        print(f"Warning: Triton MLA Decode not available: {e}")
+        
     return result_dict
 
 def bench_sparse_gqa_decode(B, HQ, HKV, SKV, D, DV, dtype=torch.float16):
@@ -768,29 +1171,89 @@ def bench_sparse_gqa_decode(B, HQ, HKV, SKV, D, DV, dtype=torch.float16):
     result_dict["MetaAttention"] = (fwd_lat, None)
     
     # triton ref
-    # try:
-    from ref.sparse_gqa_decode_varlen_triton import block_sparse_flash_decode_gqa_mask_triton
-    
-    fwd_lat_ref = do_bench(lambda: block_sparse_flash_decode_gqa_mask_triton(
-        q, key, value, cache_seqlens, SKV, block_mask, block_size), warmup=100
-    )
-    
-    result_dict["SeerAttention"] = (fwd_lat_ref, None)
-    # except Exception as e:
-    #     print(f"Warning: Triton Sparse GQA not available: {e}")
+    try:
+        from ref.sparse_gqa_decode_varlen_triton import block_sparse_flash_decode_gqa_mask_triton
+        
+        fwd_lat_ref = do_bench(lambda: block_sparse_flash_decode_gqa_mask_triton(
+            q, key, value, cache_seqlens, SKV, block_mask, block_size), warmup=100
+        )
+        
+        result_dict["SeerAttention"] = (fwd_lat_ref, None)
+    except Exception as e:
+        print(f"Warning: Triton Sparse GQA not available: {e}")
+        
+    # torch inductor
+    try:
+        sparse_mask = torch.zeros(B, HQ//HKV, HKV, SKV, dtype=torch.bool, device='cuda')
+        # Assign mask values
+        for b in range(B):
+            for h in range(HKV):
+                for idx in range((SKV + block_size - 1) // block_size):
+                    if block_mask[b, h, idx]:
+                        sparse_mask[b, :, h, idx * block_size:(idx + 1) * block_size] = 1
+        @torch.compile
+        def ref_program_torch(query, key, value, sparse_mask, cache_seqlens, max_cache_seqlen, num_blocks,
+                      block_size):
+            query = query.squeeze(1)  # [batch_size, heads, dim]
+            batch, heads, dim = query.shape
+            heads_kv = key.shape[2]
+
+            num_head_groups = query.shape[1] // key.shape[2]
+            scale = dim**0.5
+            key = rearrange(key, 'b n h d -> b h n d')  # [batch_size, heads_kv, seqlen_kv, dim]
+            value = rearrange(value, 'b n h d -> b h n d')  # [batch_size, heads_kv, seqlen_kv, dim]
+
+            query = rearrange(
+                query, 'b (h g) d -> b g h d',
+                g=num_head_groups)  # [batch_size, num_head_groups, heads_kv, dim]
+
+            scores = einsum(
+                query, key,
+                'b g h d, b h s d -> b g h s')  # [batch_size, num_head_groups, heads_kv, seqlen_kv]
+
+            # sparse_mask = torch.zeros_like(scores)
+            # # Assign mask values
+            # for b in range(batch):
+            #     for h in range(heads_kv):
+            #         for idx in range(num_blocks):
+            #             if block_mask[b, h, idx]:
+            #                 sparse_mask[b, :, h, idx * block_size:(idx + 1) * block_size] = 1
+
+            scores = scores.masked_fill(sparse_mask == 0, float('-inf'))
+
+            range_len = torch.arange(scores.shape[-1], device='cuda').unsqueeze(0)
+            cache_seqlens_expanded = cache_seqlens.unsqueeze(1)
+            pad_mask = range_len >= cache_seqlens_expanded
+            pad_mask = pad_mask[:, None, None, :]
+            scores = scores.masked_fill(pad_mask, float('-inf'))
+            attention = F.softmax(
+                scores / scale, dim=-1)  # [batch_size, num_head_groups, heads_kv, seqlen_kv]
+
+            out = einsum(attention, value,
+                        'b g h s, b h s d -> b g h d')  # [batch_size, num_head_groups, heads_kv, dim]
+            out = rearrange(out, 'b g h d -> b (h g) d')  # [batch_size, heads, dim]
+            return out
+        
+        fwd_lat_ref2 = do_bench(lambda: ref_program_torch(
+            q, key, value, sparse_mask, cache_seqlens, SKV,
+            (SKV + block_size - 1) // block_size, block_size
+        ))
+        
+        result_dict["Torch Inductor"] = (fwd_lat_ref2, None)
+    except Exception as e:
+        print(f"Warning: Torch Inductor benchmark failed: {e}")
+
     
     return result_dict
 
 
-def plot_fig():
-    pass
 
 if __name__ == "__main__":
     import time
     start_time = time.time()
     bench_fig11()
     print(f"Benchmarking completed in {time.time() - start_time:.2f} seconds")
-    plot_fig()
+    plot_figure11(RESULT_DIR, "figure11_h100.pdf")
     
 
     

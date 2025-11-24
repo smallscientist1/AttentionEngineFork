@@ -6,6 +6,7 @@ from core import CustomIO
 from core import SymbolicArray, SymbolScalar, SymbolicTensor
 from core import Var
 from core.utils import meta_tensor
+from autotuner.arch import get_attn_device
 
 def sigmoid_attention(B, H, S, D, DV, tune=False):
     
@@ -59,14 +60,14 @@ def sigmoid_attention(B, H, S, D, DV, tune=False):
         meta_tensor(B, H, S, D, dtype=torch.float16),
         meta_tensor(B, H, S, DV, dtype=torch.float16),
     )
-
+    attn_device = get_attn_device()
 
     mod = AttentionEngine(
         qkv_meta,
         custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
         online_func=OnlineIdentity(),
-        tune=tune, tune_file ="sigmoid_tune.json",
-        tune_bwd=tune, tune_file_bwd="sigmoid_bwd.json",
+        tune=tune, tune_file=f"tuned_config/{attn_device.name}/sigmoid_tune.json",
+        tune_bwd=tune, tune_file_bwd=f"tuned_config/{attn_device.name}/sigmoid_bwd.json",
     )
     
     return mod

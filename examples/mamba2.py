@@ -2,6 +2,7 @@ from attn_engine import LinearAttentionEngine
 from core import SymbolicTensor
 from core import CustomIO
 from core import meta_tensor
+from autotuner.arch import get_attn_device
 
 import torch
 import torch.nn.functional as F 
@@ -47,9 +48,10 @@ def mamba2(B, HQ, S, D, DV, HK=None, HV=None, dtype=torch.bfloat16, tune=False):
             "dt": ("batch", "heads", "seq_len")
         }
     )
+    attn_device = get_attn_device()
     mod = LinearAttentionEngine(qkv_meta,
         decay_mod=decay_mod, v_mod=v_mod,
                                 custom_io = custom_io,
-                                tune=tune, tune_filename="mamba2",
+                                tune=tune, tune_filename=f"tuned_config/{attn_device.name}/mamba2",
                                 tune_bwd=tune)
     return mod

@@ -6,6 +6,7 @@ from core import CustomIO
 from core import SymbolicArray, SymbolScalar, SymbolicTensor
 from core import Var
 from core.utils import meta_tensor
+from autotuner.arch import get_attn_device
 
 """
 Example of attention decode with online softmax
@@ -108,6 +109,7 @@ def softmax_attention_decode(B, H, S, KV, D, DV, dtype=torch.float16):
     custom_fwd_inputs = CustomIO({})
 
     online = OnlineSoftmax()
+    attn_device = get_attn_device()
     mod = AttentionEngine(
         qkv_meta,
         custom_fwd_inputs, score_mod=score_mod, mask_mod=None,

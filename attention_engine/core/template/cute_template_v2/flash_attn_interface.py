@@ -31,6 +31,7 @@ import urllib.error
 import torch.utils.cpp_extension
 from torch.utils.cpp_extension import CUDA_HOME
 
+os.environ["TORCH_CUDA_ARCH_LIST"] = "9.0a"
 
 include_path = [
 
@@ -444,9 +445,8 @@ if not SKIP_CUDA_BUILD:
     # https://github.com/pytorch/pytorch/blob/8472c24e3b5b60150096486616d98b7bea01500b/torch/utils/cpp_extension.py#L920
     if FORCE_CXX11_ABI:
         torch._C._GLIBCXX_USE_CXX11_ABI = True
-    repo_dir = Path(this_dir).parent
-    # TODO: 111
-    cutlass_dir = Path("/cfy/flash-attention/csrc/cutlass") # repo_dir / "csrc" / "cutlass"
+    repo_dir = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../../"))
+    cutlass_dir = repo_dir / "3rd_parties" / "cutlass_dc4817"
 
     feature_args = (
         []

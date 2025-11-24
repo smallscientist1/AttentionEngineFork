@@ -6,6 +6,7 @@ from core import CustomIO
 from core import SymbolicArray, SymbolScalar, SymbolicTensor
 from core import Var
 from core import meta_tensor
+from autotuner.arch import get_attn_device
 
 """
 Example of block sparse attention(seer attention)
@@ -92,12 +93,12 @@ def sparse_gqa_decode(B, H, G, S, D, DV, dtype=torch.float16, BLOCK=32):
     })
 
     online = OnlineSoftmax()
-
+    attn_device = get_attn_device()
     mod = AttentionEngine(
         qkv_meta,
         custom_fwd_inputs, score_mod=score_mod, mask_mod=None,
         online_func=online,
-        tune=False, tune_file="sparse_mha_tune.json",
+        tune=False, tune_file=f"tuned_config/{attn_device.name}/sparse_mha_tune.json",
         extern_block_mask=True,
         use_varlen=True,
         infer_mask_block_N=BLOCK,

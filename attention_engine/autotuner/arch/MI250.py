@@ -3,6 +3,7 @@ from .arch_base import Arch
 
 class MI250(Arch):
     def __init__(self):
+        self.name = "MI250"
         self.reg_cap = 65536  # 32768
         self.register_per_thread = 255
         self.smem_cap = 64*1024  # 164*1024

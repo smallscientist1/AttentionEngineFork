@@ -6,6 +6,21 @@ from core import CustomIO
 from core import SymbolicArray, SymbolScalar, SymbolicTensor
 from core import Var
 from core import meta_tensor
+from autotuner.arch import get_attn_device
+
+"""
+Example of retnet Attention
+
+# query: [B, H, q_len, DK]
+# key: [B, H, kv_len, DK]
+# value: [B, H, kv_len, DV]
+
+def retnet_attention(query, key, value):
+    scores = query @ key
+    scores = scores * mask
+    p = scores / scores.abs().sum().clamp(min=1)
+    o = p @ value
+"""
 
 def retention_parallel(B, H, S, D, DV, dtype=torch.float16, tune=False):
     
@@ -15,7 +30,7 @@ def retention_parallel(B, H, S, D, DV, dtype=torch.float16, tune=False):
     softmax_scale = D**0.5
     def score_mod(score, custom_fwd_inputs, b, h, q_idx, kv_idx):
         mask = custom_fwd_inputs.input_tensors["mask"]
-        return score * mask # / softmax_scale
+        return score * mask
 
     class OnlineRetention(OnlineFunc):
         def __init__(self):
@@ -83,13 +98,22 @@ def retention_parallel(B, H, S, D, DV, dtype=torch.float16, tune=False):
     })
 
     online = OnlineRetention()
+    attn_device = get_attn_device()
     mod = AttentionEngine(
         qkv_meta,
         custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
         online_func=online,
         mask_value="0",
-        tune=tune, tune_file="retention_parallel_fwd.json",
+        tune=tune, tune_file=f"tuned_config/{attn_device.name}/retention_parallel_fwd.json",
         # tune_bwd = True, tune_file_bwd = "retention_parallel_bwd.json"
     )
     
     return mod
+
+if __name__ == "__main__":
+    # Example usage
+    B, H, S, D, DV = 1, 32, 2048, 256, 512
+    mod = retention_parallel(B, H, S, D, DV, tune=True)
+
+    print(mod)
+    print(f"AttentionEngine Succuessfully created.")
