@@ -53,7 +53,7 @@ def to_tl_op(type: str, *args: SymbolScalar):
                     target_i += 1
                 if target_i >= len(args[0].shape_idx):
                     print(
-                        f"Error: {args[0].varname} {args[0].shape_idx} {arg.varname} {arg.shape_idx}")
+                        f"Warning: {args[0].varname} {args[0].shape_idx} {arg.varname} {arg.shape_idx}")
                     idx_str_t.append(f"i{i}")
                 else:
                     idx_str_t.append(f"i{target_i}")

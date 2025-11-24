@@ -213,6 +213,7 @@ def lowerFusedVmod(v_mod, custom_io, lower_output: lowerOutput):
     custom_io1 = copy.deepcopy(custom_io)
     new_v = v_mod(vv, custom_io1)
 
+    # TODO: change here to avoid warning
     tl_code, input_vars = generate_tl_from_dag([new_v])
     input_vars.pop("bs")
 
