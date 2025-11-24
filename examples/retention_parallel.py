@@ -113,7 +113,7 @@ def retention_parallel(B, H, S, D, DV, dtype=torch.float16, tune=False):
 if __name__ == "__main__":
     # Example usage
     B, H, S, D, DV = 1, 32, 2048, 256, 512
-    mod = retention_parallel(B, H, S, D, DV)
+    mod = retention_parallel(B, H, S, D, DV, tune=True)
 
     print(mod)
     print(f"AttentionEngine Succuessfully created.")
