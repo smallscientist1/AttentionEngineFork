@@ -17,8 +17,20 @@ import triton
 import pandas as pd
 import os
 
+import time
+from termcolor import cprint
+
 RESULT_DIR = "./results_mi250"
 os.makedirs(RESULT_DIR, exist_ok=True)
+
+def log_section(title):
+    print("\n" + "="*60)
+    cprint(f" {title}", "magenta", attrs=["bold"])
+    print("="*60)
+
+def log_success(msg):
+    cprint(f" ✔ {msg}", "green")
+
 
 def bench_fig12():
     
@@ -26,6 +38,7 @@ def bench_fig12():
     seqlens = [2048, 4096, 8192]
     
     # (a) Softmax Attention (DeepSeek-V2-Lite)
+    log_section("(a) Softmax Attention (DeepSeek-V2-Lite)")
     deepseek_data = []
     for b, s in [(B, S) for B in Batches for S in seqlens]:
         result_dict = bench_attention("causal_softmax_attn", b, 16, s, s, 192, 128)
@@ -33,6 +46,7 @@ def bench_fig12():
     dump_bench_result("deepseek", deepseek_data)
     
     # (c) ReLU Attention (ViT-s/16-style)
+    log_section("(c) ReLU Attention (ViT-s/16-style)")
     vit_data = []
     for b, s in [(B, S) for B in [32,64] for S in [512, 1024, 2048]]:
         result_dict = bench_attention("relu_attn", b, 6, s, s, 64, 64)
@@ -40,6 +54,7 @@ def bench_fig12():
     dump_bench_result("vit", vit_data)
     
     # (g) Mamba2 SSM (Mamba2-2.7B)
+    log_section("(g) Mamba2 SSM (Mamba2-2.7B)")
     mamba2_data = []
     for b, s in [(B, S) for B in Batches for S in seqlens]:
         result_dict = bench_attention("mamba2_ssm", b, 1, s, s, 128, 64, head_v=80)
@@ -47,6 +62,7 @@ def bench_fig12():
     dump_bench_result("mamba2", mamba2_data)
         
     # (j) RetNet Recurrent (RetNet-6.7B)
+    log_section("(j) RetNet Recurrent (RetNet-6.7B)")
     retnet_recur_data = []
     for b, s in [(B, S) for B in Batches for S in [2048, 4096]]:
         result_dict = bench_attention("retention_recurrent", b, 32, s, s, 256, 512)
@@ -54,6 +70,7 @@ def bench_fig12():
     dump_bench_result("retnet_recur", retnet_recur_data)
 
     # (k) DeepSeek MLA
+    log_section("(k) DeepSeek MLA")
     mla_data = []
     for b, s in [(B, S) for B in [8,] for S in seqlens]:
         result_dict = bench_attention("mla_attn", b, 128, 1, s, 576, 512, head_k=1, head_v=1)
@@ -63,67 +80,61 @@ def bench_fig12():
     
 def dump_bench_result(name: str, data: list):
     """
-    将 benchmark 数据导出为 fwd 和 bwd 两个 CSV 文件。
-    行(Index)为方法名 (如 MetaAttention)，列(Columns)为配置 (如 BS1\\nS2048)。
+    export benchmark data to fwd and bwd CSV files.
+    Rows are method names (e.g., MetaAttention), columns are configurations (e.g., BS1\\nS2048).
     """
     print(name, data)
     if not data:
         return
     
-    # 1. 准备容器
-    # 我们使用字典来构建数据，结构为: { method_name: { config_name: value } }
+    # 1. Prepare containers
+    # We use dictionaries to build data, structure: { method_name: { config_name: value } }
     fwd_data_dict = {}
     bwd_data_dict = {}
     
-    # 用于保持列的顺序（即 data 中配置出现的顺序）
+    # To maintain the order of columns (i.e., the order of configurations appearing in data)
     config_order = []
 
-    # 2. 解析数据
+    # 2. Parse data
     for config_name, metrics in data:
         if config_name not in config_order:
             config_order.append(config_name)
             
-        # metrics 可能是 None，或者是个空字典
         if not metrics:
             continue
 
         for method_name, values in metrics.items():
-            # 初始化该方法的字典（如果尚未存在）
             if method_name not in fwd_data_dict:
                 fwd_data_dict[method_name] = {}
             if method_name not in bwd_data_dict:
                 bwd_data_dict[method_name] = {}
             
-            # 处理数值
-            # values 可能是 None，或者是一个元组 (fwd_val, bwd_val)
+
             if values is None:
                 fwd_val, bwd_val = None, None
             else:
-                # 安全解包，防止 tuple 长度不对
+                # Safe unpacking to prevent tuple length issues
                 fwd_val = values[0] if len(values) > 0 else None
                 bwd_val = values[1] if len(values) > 1 else None
             
             fwd_data_dict[method_name][config_name] = fwd_val
             bwd_data_dict[method_name][config_name] = bwd_val
 
-    # 3. 转换为 DataFrame
-    # orient='index' 表示字典的键（Method Name）作为行索引
+    # 3. Convert to DataFrame
+    # orient='index' means dictionary keys (Method Name) are used as row indices
     df_fwd = pd.DataFrame.from_dict(fwd_data_dict, orient='index')
     df_bwd = pd.DataFrame.from_dict(bwd_data_dict, orient='index')
 
-    # 4. 重新排列列顺序
-    # 确保 CSV 的列顺序与 input data list 中的顺序一致
-    # 可能会有某些配置在 data 中存在但在某些 method 中缺失，pandas 会自动填 NaN
-    # 这里取交集以防万一 data 中有重复 key 或者 DataFrame 没生成的列
+    # 4. Reorder columns
+    # Ensure the column order in the CSV matches the order in the input data list
+    # Some configurations may exist in data but be missing in some methods, pandas will automatically fill NaN
+    # Take the intersection here to prevent duplicates in data or missing columns in DataFrame
     valid_cols = [c for c in config_order if c in df_fwd.columns]
     df_fwd = df_fwd[valid_cols]
     
     valid_cols_bwd = [c for c in config_order if c in df_bwd.columns]
     df_bwd = df_bwd[valid_cols_bwd]
 
-    # 5. 导出 CSV
-    # 替换换行符，防止 CSV 格式在某些编辑器中显示混乱（可选，这里保留原样，CSV标准支持换行）
-    # 如果你想把表头的换行去掉，可以取消下面注释:
     df_fwd.columns = df_fwd.columns.astype(str).str.replace('\n', ' ')
     df_bwd.columns = df_bwd.columns.astype(str).str.replace('\n', ' ')
 
@@ -133,8 +144,8 @@ def dump_bench_result(name: str, data: list):
     df_fwd.to_csv(fwd_filename, index_label="Method")
     df_bwd.to_csv(bwd_filename, index_label="Method")
 
-    print(f"已保存: {fwd_filename}")
-    print(f"已保存: {bwd_filename}")
+    print(f"Saved: {fwd_filename}")
+    print(f"Saved: {bwd_filename}")
 
 
 def bench_attention(attn_type:str, Batch:int, head:int, seqlen_q:int, seqlen_kv:int, dim_qk:int, dim_v:int, head_k: int=None, head_v: int=None, require_grad: bool=True):
@@ -452,11 +463,20 @@ def bench_mla_decode(B, HQ, SKV, D, DV, HKV=1, dtype=torch.float16):
 
 
 if __name__ == "__main__":
-    import time
+    print("\n" + "#"*60)
+    cprint("        STARTING BENCHMARK (FIGURE 14 - MI250)", "green", attrs=["bold", "reverse"])
+    print("#"*60 + "\n")
+    
     start_time = time.time()
     bench_fig12()
-    print(f"Benchmarking completed in {time.time() - start_time:.2f} seconds")
+    elapsed = time.time() - start_time
+    
+    print("\n" + "#"*60)
+    cprint(f"        BENCHMARK COMPLETED IN {elapsed:.2f} SECONDS", "green", attrs=["bold", "reverse"])
+    print("#"*60 + "\n")
+    
     plot_figure14(RESULT_DIR, "figure14_mi250.pdf")
+    log_success(f"Figure 14 plotted and saved to figure14_mi250.pdf")
     
 
     
