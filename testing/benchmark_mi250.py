@@ -270,7 +270,7 @@ def bench_reluattention(B, H, S, D, DV, device='cuda', dtype=torch.float16, requ
     if require_grad:
         out_ref = ref_program(query, key, value)
         ref_program_bwd_lat = do_bench(lambda: out_ref.backward(do, retain_graph=True))
-    result_dict["PytorchReLU"] = (ref_program_fwd_lat, ref_program_bwd_lat)
+    result_dict["Torch Inductor"] = (ref_program_fwd_lat, ref_program_bwd_lat)
     
     return result_dict
 
@@ -409,7 +409,7 @@ def bench_mamba2_ssm(B, HQ, S, D, DV, HK=None, HV=None, dtype=torch.bfloat16, re
                 chunk_size=64,
             )
             bwd_lat_ref = do_bench(lambda: out_ref.backward(do, retain_graph=True))
-        result_dict["Mamba2SSM"] = (fwd_lat_ref, bwd_lat_ref)
+        result_dict["Mamba2"] = (fwd_lat_ref, bwd_lat_ref)
     except Exception as e:
         print(f"Warning: mamba2 ssm not available: {e}")
 
@@ -453,10 +453,10 @@ def bench_mla_decode(B, HQ, SKV, D, DV, HKV=1, dtype=torch.float16):
             B, 1, cache_seqlens, HQ, HKV, D, DV, True, dtype)
         )
 
-        result_dict["FlashMLA"] = (fwd_lat_ref, None)
+        result_dict["MLA Triton"] = (fwd_lat_ref, None)
 
     except Exception as e:
-        print(f"Warning: flashMLA not available: {e}")
+        print(f"Warning: MLA Triton not available: {e}")
         
     return result_dict
 

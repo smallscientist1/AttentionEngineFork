@@ -125,6 +125,7 @@ def bench_fig11():
     log_section("(i) Gated Retention (YOCO-13B)")
     yoco_data = []
     for b, s in [(B, S) for B in [8,] for S in [1024, 2048, 4096]]:
+        torch.cuda.empty_cache()
         result_dict = bench_attention("gated_retention", b, 40, s, s, 256, 256)
         yoco_data.append((f"BS{b}\nS{s}", result_dict))
     dump_bench_result("yoco", yoco_data)
@@ -686,12 +687,12 @@ def bench_gated_retention(B, H, S, D, DV, device='cuda', dtype=torch.bfloat16, r
         
         torch_simple_gla = torch.compile(torch_simple_gla)
         fwd_lat_ref2 = do_bench(lambda: torch_simple_gla(
-            q1, k1, v1, g1, chunk_size=64
+            q1, k1, v1, g1, chunk_size=512
         ))
         
         if require_grad:
             out_ref2 = torch_simple_gla(
-                q1, k1, v1, g1, chunk_size=64
+                q1, k1, v1, g1, chunk_size=512
             )
             bwd_lat_ref2 = do_bench(lambda: out_ref2.backward(do, retain_graph=True))
         else:
@@ -899,7 +900,7 @@ def bench_mamba2_ssm(B, HQ, S, D, DV, HK=None, HV=None, dtype=torch.bfloat16, re
             bwd_lat_ref = do_bench(lambda: out_ref.backward(do, retain_graph=True))
         else:
             bwd_lat_ref = None
-        result_dict["Mamba2SSM"] = (fwd_lat_ref, bwd_lat_ref)
+        result_dict["Mamba2"] = (fwd_lat_ref, bwd_lat_ref)
     except Exception as e:
         print(f"Warning: mamba2 ssm not available: {e}")
         
