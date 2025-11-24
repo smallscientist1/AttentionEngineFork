@@ -4,6 +4,8 @@ from examples.retnet_recurrent import retnet_recurrent
 from examples.mamba2 import mamba2
 from examples.mla_decode import mla_decode
 
+from plot_fig_mi250 import plot_figure14
+
 
 # from attention_engine.benchmark.bench_utils import do_bench
 from tilelang.profiler import do_bench
@@ -448,15 +450,13 @@ def bench_mla_decode(B, HQ, SKV, D, DV, HKV=1, dtype=torch.float16):
     return result_dict
 
 
-def plot_fig():
-    pass
 
 if __name__ == "__main__":
     import time
     start_time = time.time()
     bench_fig12()
     print(f"Benchmarking completed in {time.time() - start_time:.2f} seconds")
-    plot_fig()
+    plot_figure14(RESULT_DIR, "figure14_mi250.pdf")
     
 
     

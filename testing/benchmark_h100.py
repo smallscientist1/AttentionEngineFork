@@ -12,6 +12,8 @@ from examples.mamba2 import mamba2
 from examples.mla_decode_v2 import mla_decode
 from examples.sparse_gqa_decode import sparse_gqa_decode
 
+from plot_fig_h100 import plot_figure11
+
 # from attention_engine.benchmark.bench_utils import do_bench
 from tilelang.profiler import do_bench
 
@@ -1245,15 +1247,13 @@ def bench_sparse_gqa_decode(B, HQ, HKV, SKV, D, DV, dtype=torch.float16):
     return result_dict
 
 
-def plot_fig():
-    pass
 
 if __name__ == "__main__":
     import time
     start_time = time.time()
     bench_fig11()
     print(f"Benchmarking completed in {time.time() - start_time:.2f} seconds")
-    plot_fig()
+    plot_figure11(RESULT_DIR, "figure11_h100.pdf")
     
 
     
