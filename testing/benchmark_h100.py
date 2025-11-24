@@ -92,6 +92,7 @@ def bench_fig11():
     log_section("(e) Retention Parallel (RetNet-6.7B)")
     retnet_data = []
     for b, s in [(B, S) for B in Batches for S in [2048, 4096]]:
+        torch.cuda.empty_cache()
         result_dict = bench_attention("retention_parallel", b, 32, s, s, 256, 512)
         retnet_data.append((f"BS{b}\nS{s}", result_dict))
     dump_bench_result("retnet", retnet_data)
@@ -801,17 +802,19 @@ def bench_retention_parallel(B, H, S, D, DV, device="cuda", dtype=torch.float16,
     result_dict["MetaAttention"] = (fwd_lat, None)
     
     # pytorch 
-    
-    @torch.compile
-    def ref_program(q, k, v, mask):
-        qk = torch.einsum('bqhd,bkhd->bhqk', q, k)
-        qkm = qk * mask
-        r = qkm.detach().abs().sum(dim=-1, keepdim=True).clamp(min=1.0)
-        o = torch.einsum('bhqk,bkhd->bqhd', qkm / r, v)
-        return o.to(dtype=dtype)
+    try:
+        @torch.compile
+        def ref_program(q, k, v, mask):
+            qk = torch.einsum('bqhd,bkhd->bhqk', q, k)
+            qkm = qk * mask
+            r = qkm.detach().abs().sum(dim=-1, keepdim=True).clamp(min=1.0)
+            o = torch.einsum('bhqk,bkhd->bqhd', qkm / r, v)
+            return o.to(dtype=dtype)
 
-    ref_lat = do_bench(lambda: ref_program(q, k, v, mask))
-    result_dict["PytorchRetention"] = (ref_lat, None)
+        ref_lat = do_bench(lambda: ref_program(q, k, v, mask))
+        result_dict["PytorchRetention"] = (ref_lat, None)
+    except Exception as e:
+        print(f"Warning: Pytorch Retention benchmark failed: {e}")
     
     return result_dict
 
