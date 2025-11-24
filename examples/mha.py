@@ -6,6 +6,7 @@ from core import CustomIO
 from core import SymbolicArray, SymbolScalar, SymbolicTensor
 from core import Var
 from core.utils import meta_tensor
+from autotuner.arch import get_attn_device
 
 """
 Example of causal attention with online softmax
@@ -90,13 +91,14 @@ def causal_softmax_attention(B, H, S, D, DV, dtype=torch.float16, tune=False):
 
     online = OnlineSoftmax()
 
+    attn_device = get_attn_device()
     mod = AttentionEngine(
         qkv_meta,
         custom_fwd_inputs, score_mod=score_mod, mask_mod=causal_mask,
         online_func=online,
-        tune=tune, tune_file="attn_tl.json",
+        tune=tune, tune_file=f"tuned_config/{attn_device.name}/attn_tl.json",
         tune_bwd=tune,
-        tune_file_bwd="attn_tl_bwd.json",
+        tune_file_bwd=f"tuned_config/{attn_device.name}/attn_tl_bwd.json",
         infer_mask=True,
     )
     

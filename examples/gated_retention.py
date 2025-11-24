@@ -2,6 +2,7 @@ from attn_engine import LinearAttentionEngine
 from core import SymbolicTensor
 from core import CustomIO
 from core.utils import meta_tensor
+from autotuner.arch import get_attn_device
 
 import torch
 import torch.nn.functional as F 
@@ -38,9 +39,10 @@ def gated_retention(B, H, S, D, DV, dtype=torch.bfloat16, tune=False):
         {
         }
     )
+    attn_device = get_attn_device()
     mod = LinearAttentionEngine(qkv_meta, q_mod=q_mod,
                             custom_io = custom_io,
-                            tune=tune, tune_filename="simple_gla",
+                            tune=tune, tune_filename=f"tuned_config/{attn_device.name}/simple_gla",
                             tune_bwd=tune)
 
     return mod

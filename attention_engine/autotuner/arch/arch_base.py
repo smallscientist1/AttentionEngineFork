@@ -1,5 +1,6 @@
 class Arch:
     def __init__(self) -> None:
+        self.name = "base"
         self.reg_cap = 0
         self.smem_cap = 0
         self.compute_max_core = 0
