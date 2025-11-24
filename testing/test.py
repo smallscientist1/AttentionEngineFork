@@ -14,22 +14,61 @@ import torch.nn.functional as F
 from einops import rearrange, einsum, repeat
 import math
 from typing import Optional
+import time
 
 from benchmark.bench_utils import print_debug
 
-def test_attention():
+from termcolor import cprint, colored
 
-    test_softmaxattention(1, 16, 2048, 128, 128) #1 , TODO: fix autotune
-    test_softmaxattention(1, 16, 2048, 128, 256) # 1
-    test_softmaxattention_decode(8, 16, 1, 4096, 128, 128) # 1
-    test_mamba2(1, 1, 2048, 128, 64, HK=1, HV=80) # 1
-    test_gated_retention(8, 32, 2048, 256, 256) # 1
-    test_sigmoid_attention(1, 32, 2048, 128, 128) # 1
-    test_sparse_gqa_decode(8, 32, 8, 2048, 128, 128) # 1
-    test_retnet_recurrent(1, 32, 2048, 256, 512) # 1
-    test_relu_attention(1, 6, 2048, 64, 64) # 1
-    test_mla_decode(8, 128, 2048, 576, 512, HKV=1)
-    print("All tests pass.")
+def run_test_with_info(func, *args, **kwargs):
+    func_name = func.__name__
+    
+    # blue
+    cprint(f"➤ [START] Testing: {func_name}", "cyan", attrs=["bold"])
+    
+    start_time = time.perf_counter()
+    try:
+        func(*args, **kwargs)
+        end_time = time.perf_counter()
+        duration = end_time - start_time
+        
+        # green
+        print(colored(f"✔ [PASS] {func_name}", "green", attrs=["bold"]) + 
+              colored(f" ({duration:.4f}s)", "yellow"))
+              
+    except Exception as e:
+        # red
+        cprint(f"✘ [FAIL] {func_name} failed!", "red", attrs=["bold"])
+        cprint(f"  Error: {str(e)}", "red")
+        raise e
+    finally:
+        print("-" * 60)
+
+def test_attention():
+    total_start = time.perf_counter()
+    
+    cprint("\n" + "="*60, "magenta", attrs=["bold"])
+    cprint("      STARTING TEST SUITE", "magenta", attrs=["bold"])
+    cprint("="*60 + "\n", "magenta", attrs=["bold"])
+
+    run_test_with_info(test_softmaxattention, 1, 16, 2048, 128, 128) #1 , TODO: fix autotune
+    run_test_with_info(test_softmaxattention, 1, 16, 2048, 128, 256) # 1
+    run_test_with_info(test_softmaxattention_decode, 8, 16, 1, 4096, 128, 128) # 1
+    run_test_with_info(test_mamba2, 1, 1, 2048, 128, 64, HK=1, HV=80) # 1
+    run_test_with_info(test_gated_retention, 8, 32, 2048, 256, 256) # 1
+    run_test_with_info(test_sigmoid_attention, 1, 32, 2048, 128, 128) # 1
+    run_test_with_info(test_sparse_gqa_decode, 8, 32, 8, 2048, 128, 128) # 1
+    run_test_with_info(test_retnet_recurrent, 1, 32, 2048, 256, 512) # 1
+    run_test_with_info(test_relu_attention, 1, 6, 2048, 64, 64) # 1
+    run_test_with_info(test_mla_decode, 8, 128, 2048, 576, 512, HKV=1)
+    
+    total_end = time.perf_counter()
+    total_time = total_end - total_start
+    
+    cprint("\n" + "="*60, "green", attrs=["bold"])
+    cprint("      ALL TESTS PASSED SUCCESSFULLY", "green", attrs=["bold"])
+    cprint(f"      Total Time: {total_time:.4f}s", "green", attrs=["bold"])
+    cprint("="*60, "green", attrs=["bold"])
     
 def test_softmaxattention(B, H, S, D, DV, device="cuda", dtype=torch.float16, require_grad=True, use_v2=False):
     if use_v2:

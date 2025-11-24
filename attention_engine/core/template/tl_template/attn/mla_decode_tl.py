@@ -434,7 +434,7 @@ if TUNE:
         "dim": {{DIM}},
         "pe_dim": {{PE_DIM}},
     }
-    tuned_config, tuned_latency = tune("mla_decode.json", partial(flashattn, tune=True), problem_keys)
+    tuned_config, tuned_latency = tune(f"tuned_config/{attn_device.name}/mla_decode.json", partial(flashattn, tune=True), problem_keys)
     BLOCK_N = tuned_config["block_N"]
     BLOCK_H = tuned_config["block_H"]
     num_split = tuned_config["num_split"]
