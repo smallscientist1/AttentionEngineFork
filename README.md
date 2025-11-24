@@ -45,9 +45,10 @@ We only provide the Dockerfile for NVIDIA GPU, and the Dockerfile for AMD GPU wi
 
 ### For NVIDIA GPU
 ```bash
+# clone the repo or use the archive we provided
 git clone https://github.com/smallscientist1/AttentionEngineFork.git AttentionEngine --recursive -b ppopp_AE
 cd AttentionEngine/docker
-# may take about 40?? minites
+# take about 50 minutes
 docker build -t metaattn_cuda -f Dockerfile.cu128 .
 
 docker run -it --gpus all --name metaattn-AE --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 -v $(pwd)/..:/AttentionEngine metaattn_cuda
@@ -57,8 +58,23 @@ cd /AttentionEngine
 
 ### For AMD GPU
 ```bash
-# may take about 40?? minites
+git clone https://github.com/smallscientist1/AttentionEngineFork.git AttentionEngine --recursive -b ppopp_AE
+cd AttentionEngine/docker
+# take about 80 minites on a 32-core machine
 docker build -t metaattn_rocm -f Dockerfile.rocm .
+
+docker run -it \
+  --device=/dev/kfd \
+  --device=/dev/dri \
+  --group-add video \
+  --ipc=host \
+  --shm-size 8G \
+  --cap-add=SYS_PTRACE \
+  --security-opt seccomp=unconfined \
+  -v $(pwd)/..:/AttentionEngine \
+  metaattn_rocm
+
+cd /AttentionEngine
 ```
 
 ## Running Example
@@ -100,7 +116,7 @@ Baseline libraries (e.g., FlashAttention, FlashLinearAttention) are frequently u
 
 Run the following command:
 ```bash
-# may take about 50? minutes
+# take about 90 minutes
 python testing/benchmark_h100.py
 ```
 The figure will be saved as `./figure11_h100.pdf`.
@@ -112,7 +128,7 @@ The figure will be saved as `./figure11_h100.pdf`.
 
 Run the following command:
 ```bash
-# may take about 50? minutes
+# take about 20 minutes
 python testing/benchmark_mi250.py
 ```
 The figure will be saved as `./figure14_mi250.pdf`.
