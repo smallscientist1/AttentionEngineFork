@@ -41,8 +41,6 @@ To reproduce the results in the paper, specific hardware is required:
 
 To ease the process of installing all the dependencies, baseline software, and MetaAttention code, we provide a Dockerfile and a simple guideline to build a Docker image with all of above installed.
 
-We only provide the Dockerfile for NVIDIA GPU, and the Dockerfile for AMD GPU will be provided upon request.
-
 ### For NVIDIA GPU
 ```bash
 # clone the repo or use the archive we provided
