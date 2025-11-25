@@ -165,7 +165,7 @@ def test_mamba2(B, HQ, S, D, DV, HK=None, HV=None, dtype=torch.bfloat16, require
     if require_grad:
         do = 0.1 * torch.randn(B, S, HV,
                                      DV, dtype=dtype, device="cuda")
-    A_mamba = 1.5 * torch.randn(HV, dtype=dtype, device="cuda") - 4.0
+    A_mamba = 1.5 * torch.rand(HV, dtype=dtype, device="cuda") - 4.0
     # initialize dt
     accum_dtype = torch.float32
     dt_mamba = 0.7 * torch.rand(B, S, HV, dtype=accum_dtype, device="cuda")
@@ -347,6 +347,8 @@ def test_mamba2(B, HQ, S, D, DV, HK=None, HV=None, dtype=torch.bfloat16, require
     dt_mamba.detach_().requires_grad_(require_grad)
     key.detach_().requires_grad_(require_grad)
     query.detach_().requires_grad_(require_grad)
+    
+    query.grad = key.grad = value.grad = None
 
     out_ref = ssd_chunk_scan_combined_ref(
         value,

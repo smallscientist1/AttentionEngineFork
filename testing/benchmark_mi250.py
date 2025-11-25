@@ -396,7 +396,7 @@ def bench_mamba2_ssm(B, HQ, S, D, DV, HK=None, HV=None, dtype=torch.bfloat16, re
                 A_mamba,
                 key,
                 query,
-                chunk_size=64,
+                chunk_size=32,
             )
         )
         if require_grad:
@@ -406,7 +406,7 @@ def bench_mamba2_ssm(B, HQ, S, D, DV, HK=None, HV=None, dtype=torch.bfloat16, re
                 A_mamba,
                 key,
                 query,
-                chunk_size=64,
+                chunk_size=32,
             )
             bwd_lat_ref = do_bench(lambda: out_ref.backward(do, retain_graph=True))
         result_dict["Mamba2"] = (fwd_lat_ref, bwd_lat_ref)
