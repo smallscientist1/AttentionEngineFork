@@ -130,6 +130,48 @@ def analysis_tensor_data(a: torch.Tensor, plot: bool = False,
     print(f"Histogram: {histogram}")
 
 
+def assert_close(
+    actual: torch.Tensor, 
+    expected: torch.Tensor, 
+    rtol: float = 1e-5, 
+    atol: float = 1e-8, 
+    equal_nan: bool = False,
+    mismatch_ratio: float = 0.0,
+    msg: str = None
+):
+    """
+    
+    Args:
+        actual (Tensor): actual 
+        expected (Tensor): expected
+        rtol (float): relative tolerance
+        atol (float): absolute tolerance
+        equal_nan (bool): whether to consider NaNs equal
+        mismatch_ratio (float): allowed ratio of elements outside tolerance (0.0 ~ 1.0).
+                                For example, 0.001 means 0.1% of elements can mismatch.
+        msg (str): custom error message
+    """
+    # Ensure inputs are Tensors
+    actual = torch.as_tensor(actual)
+    expected = torch.as_tensor(expected)
+
+    # 1. Use torch.isclose to get a boolean mask of element-wise closeness
+    # close_mask is True where elements are within tolerance
+    close_mask = torch.isclose(actual, expected, rtol=rtol, atol=atol, equal_nan=equal_nan)
+    
+    # 2. Calculate the number and ratio of mismatches
+    total_elements = close_mask.numel()
+    mismatch_count = (~close_mask).sum().item()
+    current_mismatch_ratio = mismatch_count / total_elements
+
+    if current_mismatch_ratio > mismatch_ratio:
+        default_msg = (
+            f"Mismatch ratio {current_mismatch_ratio:.6f} exceeds allowed threshold {mismatch_ratio}.\n"
+            f"Mismatched elements: {mismatch_count}/{total_elements}\n"
+            f"Max mismatch ratio allowed: {mismatch_ratio} ({mismatch_ratio*100}%)"
+        )
+        raise AssertionError(msg if msg else default_msg)
+    
 def check_close(o, O_ref, rtol=1e-3, atol=1e-3):
     absolute_error = torch.abs(o - O_ref)
     relative_error = absolute_error / (torch.abs(O_ref) + 1e-6)

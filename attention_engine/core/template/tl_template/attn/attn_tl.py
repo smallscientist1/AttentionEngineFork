@@ -275,8 +275,8 @@ def get_bwd_configs():
         num_stages = [2,]
         thread_num = [128, 256]
     else:
-        block_M = [32, 64, 128]
-        block_N = [32, 64, 128]
+        block_M = [32, 64] if {{DIMV}} >= 128 else [32, 64, 128] # TODO: fix
+        block_N = [32] if {{DIMV}} >= 128 else [32, 64, 128]
         num_stages = [0,]
         thread_num = [128, 256]
     _configs = list(itertools.product(block_M, block_N, num_stages, thread_num))
