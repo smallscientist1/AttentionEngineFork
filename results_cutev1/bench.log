@@ -1,0 +1,123 @@
+deepseek [('BS1\nS2048', {}), ('BS1\nS4096', {}), ('BS1\nS8192', {}), ('BS8\nS2048', {}), ('BS8\nS4096', {}), ('BS8\nS8192', {}), ('BS1S1\nKV2048', {}), ('BS1S1\nKV4096', {}), ('BS1S1\nKV8192', {}), ('BS8S1\nKV2048', {}), ('BS8S1\nKV4096', {}), ('BS8S1\nKV8192', {})]
+已保存: ./results/deepseek_fwd.csv
+已保存: ./results/deepseek_bwd.csv
+llama [('BS1\nS2048', {}), ('BS1\nS4096', {}), ('BS1\nS8192', {}), ('BS8\nS2048', {}), ('BS8\nS4096', {}), ('BS8\nS8192', {})]
+已保存: ./results/llama_fwd.csv
+已保存: ./results/llama_bwd.csv
+
+
+torch.__version__  = 2.7.0a0+ecf3bae40a.nv25.02
+
+
+
+
+torch.__version__  = 2.7.0a0+ecf3bae40a.nv25.02
+
+
+
+
+torch.__version__  = 2.7.0a0+ecf3bae40a.nv25.02
+
+
+
+
+torch.__version__  = 2.7.0a0+ecf3bae40a.nv25.02
+
+
+
+
+torch.__version__  = 2.7.0a0+ecf3bae40a.nv25.02
+
+
+
+
+torch.__version__  = 2.7.0a0+ecf3bae40a.nv25.02
+
+
+vit [('BS32\nS512', {'MetaAttention': (0.046458423137664795, 1.214369773864746), 'PytorchReLU': (0.3337472975254059, 1.759563684463501)}), ('BS32\nS1024', {'MetaAttention': (0.11070675402879715, 1.3095118999481201), 'PytorchReLU': (1.0385463237762451, 1.5593111515045166)}), ('BS32\nS2048', {'MetaAttention': (0.34680110216140747, 1.6772879362106323), 'PytorchReLU': (3.6713650226593018, 5.4179534912109375)}), ('BS64\nS512', {'MetaAttention': (0.0731537789106369, 1.5032107830047607), 'PytorchReLU': (0.6276716589927673, 1.6710010766983032)}), ('BS64\nS1024', {'MetaAttention': (0.2097035050392151, 1.5507582426071167), 'PytorchReLU': (2.0428760051727295, 3.0545895099639893)}), ('BS64\nS2048', {'MetaAttention': (0.6936126351356506, 3.1476523876190186), 'PytorchReLU': (7.310606956481934, 10.770310401916504)})]
+已保存: ./results/vit_fwd.csv
+已保存: ./results/vit_bwd.csv
+dit [('BS1\nS2048', {}), ('BS1\nS4096', {}), ('BS1\nS8192', {}), ('BS8\nS2048', {}), ('BS8\nS4096', {}), ('BS8\nS8192', {})]
+已保存: ./results/dit_fwd.csv
+已保存: ./results/dit_bwd.csv
+Warning: Undefined attention type retention_parallel, skipping benchmark.
+Warning: Undefined attention type retention_parallel, skipping benchmark.
+Warning: Undefined attention type retention_parallel, skipping benchmark.
+Warning: Undefined attention type retention_parallel, skipping benchmark.
+retnet [('BS1\nS2048', {}), ('BS1\nS4096', {}), ('BS8\nS2048', {}), ('BS8\nS4096', {})]
+已保存: ./results/retnet_fwd.csv
+已保存: ./results/retnet_bwd.csv
+
+
+torch.__version__  = 2.7.0a0+ecf3bae40a.nv25.02
+
+
+
+
+torch.__version__  = 2.7.0a0+ecf3bae40a.nv25.02
+
+
+
+
+torch.__version__  = 2.7.0a0+ecf3bae40a.nv25.02
+
+
+
+
+torch.__version__  = 2.7.0a0+ecf3bae40a.nv25.02
+
+
+
+
+torch.__version__  = 2.7.0a0+ecf3bae40a.nv25.02
+
+
+
+
+torch.__version__  = 2.7.0a0+ecf3bae40a.nv25.02
+
+
+sigmoid_attn [('BS1\nS2048', {'MetaAttention': (0.10057760775089264, 1.4374034404754639), 'FlashSigmoid': (0.13786043226718903, 1.2815418243408203)}), ('BS1\nS4096', {'MetaAttention': (0.27731260657310486, 1.5339194536209106), 'FlashSigmoid': (0.4064856171607971, 1.3990358114242554)}), ('BS1\nS8192', {'MetaAttention': (0.9658642411231995, 3.768930435180664), 'FlashSigmoid': (1.4368267059326172, 4.693101406097412)}), ('BS8\nS2048', {'MetaAttention': (0.5417746901512146, 2.516874074935913), 'FlashSigmoid': (0.7775036692619324, 3.0950961112976074)}), ('BS8\nS4096', {'MetaAttention': (1.8098193407058716, 8.130629539489746), 'FlashSigmoid': (2.8801097869873047, 9.707599639892578)}), ('BS8\nS8192', {'MetaAttention': (7.214372634887695, 29.77703285217285), 'FlashSigmoid': (10.963699340820312, 34.99073791503906)})]
+已保存: ./results/sigmoid_attn_fwd.csv
+已保存: ./results/sigmoid_attn_bwd.csv
+Warning: Undefined attention type gated_retention, skipping benchmark.
+Warning: Undefined attention type gated_retention, skipping benchmark.
+Warning: Undefined attention type gated_retention, skipping benchmark.
+rfa [('BS64\nS1024', {}), ('BS64\nS2048', {}), ('BS64\nS4096', {})]
+已保存: ./results/rfa_fwd.csv
+已保存: ./results/rfa_bwd.csv
+Warning: Undefined attention type mamba2_ssm, skipping benchmark.
+Warning: Undefined attention type mamba2_ssm, skipping benchmark.
+Warning: Undefined attention type mamba2_ssm, skipping benchmark.
+Warning: Undefined attention type mamba2_ssm, skipping benchmark.
+Warning: Undefined attention type mamba2_ssm, skipping benchmark.
+Warning: Undefined attention type mamba2_ssm, skipping benchmark.
+mamba2 [('BS1\nS2048', {}), ('BS1\nS4096', {}), ('BS1\nS8192', {}), ('BS8\nS2048', {}), ('BS8\nS4096', {}), ('BS8\nS8192', {})]
+已保存: ./results/mamba2_fwd.csv
+已保存: ./results/mamba2_bwd.csv
+Warning: Undefined attention type gated_retention, skipping benchmark.
+Warning: Undefined attention type gated_retention, skipping benchmark.
+Warning: Undefined attention type gated_retention, skipping benchmark.
+yoco [('BS8\nS1024', {}), ('BS8\nS2048', {}), ('BS8\nS4096', {})]
+已保存: ./results/yoco_fwd.csv
+已保存: ./results/yoco_bwd.csv
+Warning: Undefined attention type retention_recurrent, skipping benchmark.
+Warning: Undefined attention type retention_recurrent, skipping benchmark.
+Warning: Undefined attention type retention_recurrent, skipping benchmark.
+Warning: Undefined attention type retention_recurrent, skipping benchmark.
+retnet_recur [('BS1\nS2048', {}), ('BS1\nS4096', {}), ('BS8\nS2048', {}), ('BS8\nS4096', {})]
+已保存: ./results/retnet_recur_fwd.csv
+已保存: ./results/retnet_recur_bwd.csv
+Warning: Undefined attention type mla_attn, skipping benchmark.
+Warning: Undefined attention type mla_attn, skipping benchmark.
+Warning: Undefined attention type mla_attn, skipping benchmark.
+mla [('BS1S1\nKV2048', {}), ('BS1S1\nKV4096', {}), ('BS1S1\nKV8192', {})]
+已保存: ./results/mla_fwd.csv
+已保存: ./results/mla_bwd.csv
+Warning: Undefined attention type sparse_gqa, skipping benchmark.
+Warning: Undefined attention type sparse_gqa, skipping benchmark.
+Warning: Undefined attention type sparse_gqa, skipping benchmark.
+sparse_gqa [('BS1S1\nKV2048', {}), ('BS1S1\nKV4096', {}), ('BS1S1\nKV8192', {})]
+已保存: ./results/sparse_gqa_fwd.csv
+已保存: ./results/sparse_gqa_bwd.csv
+Benchmarking completed in 245.53 seconds

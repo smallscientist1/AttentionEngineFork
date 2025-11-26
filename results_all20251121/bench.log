@@ -1,0 +1,146 @@
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor lse already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor lse already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor lse already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor lse already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor lse already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor lse already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+deepseek [('BS1\nS2048', {'MetaAttention': (0.06363621354103088, 0.7825427651405334), 'FlashAttention-2': (0.17082449793815613, 1.982348084449768), 'FlashAttention-3': (0.06010911241173744, 1.286479115486145)}), ('BS1\nS4096', {'MetaAttention': (0.14868208765983582, 1.071226954460144), 'FlashAttention-2': (0.4753130376338959, 1.9931285381317139), 'FlashAttention-3': (0.1485179364681244, 1.324363350868225)}), ('BS1\nS8192', {'MetaAttention': (0.5204684138298035, 2.2193145751953125), 'FlashAttention-2': (1.5002182722091675, 4.6552324295043945), 'FlashAttention-3': (0.5216105580329895, 2.253067970275879)}), ('BS8\nS2048', {'MetaAttention': (0.31353721022605896, 1.5771604776382446), 'FlashAttention-2': (0.876796305179596, 3.2290241718292236), 'FlashAttention-3': (0.31375473737716675, 1.585477352142334)}), ('BS8\nS4096', {'MetaAttention': (1.1323846578598022, 4.687607765197754), 'FlashAttention-2': (2.876896858215332, 10.006186485290527), 'FlashAttention-3': (1.1220614910125732, 4.991439342498779)}), ('BS8\nS8192', {'MetaAttention': (4.034876346588135, 17.115619659423828), 'FlashAttention-2': (10.376959800720215, 37.758880615234375), 'FlashAttention-3': (4.388730525970459, 16.936620712280273)}), ('BS1S1\nKV2048', {'MetaAttention': (0.03664220869541168, None), 'FlashAttention-2': (0.09119779616594315, None), 'FlashAttention-3': (0.03639162704348564, None)}), ('BS1S1\nKV4096', {'MetaAttention': (0.06065621227025986, None), 'FlashAttention-2': (0.09196759015321732, None), 'FlashAttention-3': (0.060465071350336075, None)}), ('BS1S1\nKV8192', {'MetaAttention': (0.1092342734336853, None), 'FlashAttention-2': (0.11657553911209106, None), 'FlashAttention-3': (0.10767146944999695, None)}), ('BS8S1\nKV2048', {'MetaAttention': (0.07435477524995804, None), 'FlashAttention-2': (0.20429661870002747, None), 'FlashAttention-3': (0.07428677380084991, None)}), ('BS8S1\nKV4096', {'MetaAttention': (0.12673766911029816, None), 'FlashAttention-2': (0.380913645029068, None), 'FlashAttention-3': (0.12647677958011627, None)}), ('BS8S1\nKV8192', {'MetaAttention': (0.23204682767391205, None), 'FlashAttention-2': (0.7310706377029419, None), 'FlashAttention-3': (0.2323044240474701, None)})]
+已保存: ./results/deepseek_fwd.csv
+已保存: ./results/deepseek_bwd.csv
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+llama [('BS1\nS2048', {'MetaAttention': (0.07941164821386337, 1.2389158010482788), 'FlashAttention-2': (0.16981418430805206, 1.4431161880493164), 'FlashAttention-3': (0.0788845419883728, 1.3396817445755005)}), ('BS1\nS4096', {'MetaAttention': (0.22755219042301178, 1.107330322265625), 'FlashAttention-2': (0.4769487977027893, 1.6967813968658447), 'FlashAttention-3': (0.22409659624099731, 1.371578335762024)}), ('BS1\nS8192', {'MetaAttention': (0.8406132459640503, 2.6258034706115723), 'FlashAttention-2': (1.6847403049468994, 4.762807369232178), 'FlashAttention-3': (0.8623244166374207, 2.7033278942108154)}), ('BS8\nS2048', {'MetaAttention': (0.5067589282989502, 2.0111920833587646), 'FlashAttention-2': (0.8926554322242737, 3.13755202293396), 'FlashAttention-3': (0.4922912120819092, 2.014315366744995)}), ('BS8\nS4096', {'MetaAttention': (1.8656562566757202, 6.0835700035095215), 'FlashAttention-2': (3.2126410007476807, 10.171584129333496), 'FlashAttention-3': (1.9021916389465332, 6.101469993591309)}), ('BS8\nS8192', {'MetaAttention': (7.329000473022461, 20.679391860961914), 'FlashAttention-2': (11.946354866027832, 41.71836853027344), 'FlashAttention-3': (8.94272232055664, 21.231536865234375)})]
+已保存: ./results/llama_fwd.csv
+已保存: ./results/llama_bwd.csv
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+vit [('BS32\nS512', {'MetaAttention': (0.04891957715153694, 1.5760895013809204), 'PytorchReLU': (0.327932208776474, 1.9240705966949463)}), ('BS32\nS1024', {'MetaAttention': (0.11108843237161636, 1.5022289752960205), 'PytorchReLU': (1.035666584968567, 1.8398982286453247)}), ('BS32\nS2048', {'MetaAttention': (0.3425973653793335, 1.6960166692733765), 'PytorchReLU': (3.6669745445251465, 5.416026592254639)}), ('BS64\nS512', {'MetaAttention': (0.0729493647813797, 1.515291452407837), 'PytorchReLU': (0.623080849647522, 1.8561991453170776)}), ('BS64\nS1024', {'MetaAttention': (0.210723876953125, 1.1767399311065674), 'PytorchReLU': (2.0399932861328125, 3.051767587661743)}), ('BS64\nS2048', {'MetaAttention': (0.6842267513275146, 3.2900800704956055), 'PytorchReLU': (7.3093438148498535, 10.773969650268555)})]
+已保存: ./results/vit_fwd.csv
+已保存: ./results/vit_bwd.csv
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+dit [('BS1\nS2048', {'MetaAttention': (0.06311148405075073, 1.0104507207870483), 'FlashAttention-2': (0.20758892595767975, 1.477303385734558), 'FlashAttention-3': (0.23803910613059998, 0.7328853011131287)}), ('BS1\nS4096', {'MetaAttention': (0.1566643863916397, 1.0135555267333984), 'FlashAttention-2': (0.477483868598938, 1.458001971244812), 'FlashAttention-3': (0.2456880658864975, 1.328104019165039)}), ('BS1\nS8192', {'MetaAttention': (0.4780465066432953, 2.3686258792877197), 'FlashAttention-2': (1.503088355064392, 4.121975421905518), 'FlashAttention-3': (0.6688987016677856, 2.406512498855591)}), ('BS8\nS2048', {'MetaAttention': (0.28537341952323914, 1.654434084892273), 'FlashAttention-2': (0.9022247791290283, 2.7126498222351074), 'FlashAttention-3': (0.5254843235015869, 1.7870949506759644)}), ('BS8\nS4096', {'MetaAttention': (1.0354628562927246, 5.111281871795654), 'FlashAttention-2': (2.8993008136749268, 8.781722068786621), 'FlashAttention-3': (1.5451669692993164, 5.4409661293029785)}), ('BS8\nS8192', {'MetaAttention': (3.8940138816833496, 17.987173080444336), 'FlashAttention-2': (10.58674144744873, 33.02647399902344), 'FlashAttention-3': (5.56024694442749, 18.278533935546875)})]
+已保存: ./results/dit_fwd.csv
+已保存: ./results/dit_bwd.csv
+retnet [('BS1\nS2048', {'MetaAttention': (0.5984508991241455, None), 'PytorchRetention': (0.5972278118133545, None)}), ('BS1\nS4096', {'MetaAttention': (2.006600856781006, None), 'PytorchRetention': (2.4768173694610596, None)}), ('BS8\nS2048', {'MetaAttention': (4.117623805999756, None), 'PytorchRetention': (6.159392833709717, None)}), ('BS8\nS4096', {'MetaAttention': (14.649983406066895, None), 'PytorchRetention': (24.134830474853516, None)})]
+已保存: ./results/retnet_fwd.csv
+已保存: ./results/retnet_bwd.csv
+/usr/local/lib/python3.12/dist-packages/fla/ops/simple_gla/chunk.py:256: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/simple_gla/chunk.py:256: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/simple_gla/chunk.py:256: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/simple_gla/chunk.py:256: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/simple_gla/chunk.py:256: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/simple_gla/chunk.py:256: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/retention/chunk.py:56: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/retention/chunk.py:56: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/retention/chunk.py:56: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/retention/chunk.py:56: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+sigmoid_attn [('BS1\nS2048', {'MetaAttention': (0.1003601998090744, 1.3539817333221436), 'FlashSigmoid': (0.1362757384777069, 0.4774059057235718)}), ('BS1\nS4096', {'MetaAttention': (0.27979597449302673, 1.304405927658081), 'FlashSigmoid': (0.4069598317146301, 1.4061373472213745)}), ('BS1\nS8192', {'MetaAttention': (0.941930890083313, 3.786874771118164), 'FlashSigmoid': (1.4489918947219849, 4.6865057945251465)}), ('BS8\nS2048', {'MetaAttention': (0.5257553458213806, 2.5824038982391357), 'FlashSigmoid': (0.7812045216560364, 3.0263967514038086)}), ('BS8\nS4096', {'MetaAttention': (1.8886696100234985, 8.324752807617188), 'FlashSigmoid': (2.831129789352417, 9.746240615844727)}), ('BS8\nS8192', {'MetaAttention': (7.208264350891113, 30.058143615722656), 'FlashSigmoid': (10.881248474121094, 35.08059310913086)})]
+已保存: ./results/sigmoid_attn_fwd.csv
+已保存: ./results/sigmoid_attn_bwd.csv
+rfa [('BS64\nS1024', {'MetaAttention': (0.4701034128665924, 2.1627187728881836), 'FlashLinearAttention': (0.9730380773544312, 2.2905545234680176)}), ('BS64\nS2048', {'MetaAttention': (0.9051184058189392, 3.4614288806915283), 'FlashLinearAttention': (1.8863935470581055, 4.46451473236084)}), ('BS64\nS4096', {'MetaAttention': (1.819040060043335, 6.900658130645752), 'FlashLinearAttention': (3.7546424865722656, 8.882563591003418)})]
+已保存: ./results/rfa_fwd.csv
+已保存: ./results/rfa_bwd.csv
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+mamba2 [('BS1\nS2048', {'MetaAttention': (0.1917967051267624, 2.5197722911834717), 'Mamba2SSM': (0.7095621228218079, 3.6903631687164307)}), ('BS1\nS4096', {'MetaAttention': (0.21314722299575806, 1.0182440280914307), 'Mamba2SSM': (0.6963244080543518, 6.080754280090332)}), ('BS1\nS8192', {'MetaAttention': (0.3812163174152374, 2.735826015472412), 'Mamba2SSM': (1.2119100093841553, 6.733082294464111)}), ('BS8\nS2048', {'MetaAttention': (0.6117362976074219, 3.356416940689087), 'Mamba2SSM': (1.2033298015594482, 5.058854103088379)}), ('BS8\nS4096', {'MetaAttention': (1.1943732500076294, 6.538644313812256), 'Mamba2SSM': (2.5883679389953613, 8.18538761138916)}), ('BS8\nS8192', {'MetaAttention': (2.345082998275757, 13.065773963928223), 'Mamba2SSM': (5.600826263427734, 16.80520248413086)})]
+已保存: ./results/mamba2_fwd.csv
+已保存: ./results/mamba2_bwd.csv
+yoco [('BS8\nS1024', {'MetaAttention': (0.6783695220947266, 2.622565507888794), 'FlashLinearAttention': (1.6284615993499756, 4.978102207183838)}), ('BS8\nS2048', {'MetaAttention': (1.2957874536514282, 5.199045181274414), 'FlashLinearAttention': (3.2227187156677246, 9.87756061553955)}), ('BS8\nS4096', {'MetaAttention': (2.577777862548828, 10.231989860534668), 'FlashLinearAttention': (6.4559125900268555, 19.850881576538086)})]
+已保存: ./results/yoco_fwd.csv
+已保存: ./results/yoco_bwd.csv
+Warning: fla.ops.retention not available
+retnet_recur [('BS1\nS2048', {'MetaAttention': (0.2637239992618561, 2.022495985031128), 'FlashLinearAttention': (0.7672903537750244, 1.7297834157943726)}), ('BS1\nS4096', {'MetaAttention': (0.631963849067688, 1.7155410051345825), 'FlashLinearAttention': (1.317358136177063, 3.379934549331665)}), ('BS8\nS2048', {'MetaAttention': (2.452239990234375, 6.577610969543457), 'FlashLinearAttention': (4.400468349456787, 13.590391159057617)}), ('BS8\nS4096', {'MetaAttention': (4.871572017669678, 12.70738697052002)})]
+已保存: ./results/retnet_recur_fwd.csv
+已保存: ./results/retnet_recur_bwd.csv
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7515) Potential Performance Loss: wgmma.mma_async instructions are serialized due to non wgmma instructions defining accumulator registers of a wgmma between start and end of the pipeline stage in the function 'main_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7515) Potential Performance Loss: wgmma.mma_async instructions are serialized due to non wgmma instructions defining accumulator registers of a wgmma between start and end of the pipeline stage in the function 'main_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7515) Potential Performance Loss: wgmma.mma_async instructions are serialized due to non wgmma instructions defining accumulator registers of a wgmma between start and end of the pipeline stage in the function 'main_kernel'
+mla [('BS1S1\nKV2048', {'MetaAttention': (0.0262265857309103, None), 'FlashMLA': (0.02583354152739048, None)}), ('BS1S1\nKV4096', {'MetaAttention': (0.03166118264198303, None), 'FlashMLA': (0.03161614388227463, None)}), ('BS1S1\nKV8192', {'MetaAttention': (0.04032834246754646, None), 'FlashMLA': (0.04023013636469841, None)})]
+已保存: ./results/mla_fwd.csv
+已保存: ./results/mla_bwd.csv
+sparse_gqa [('BS8S1\nKV2048', {'MetaAttention': (0.04008521884679794, None), 'SeerAttention': (0.15205760300159454, None)}), ('BS8S1\nKV4096', {'MetaAttention': (0.06465225666761398, None), 'SeerAttention': (0.14751940965652466, None)}), ('BS8S1\nKV8192', {'MetaAttention': (0.1132400780916214, None), 'SeerAttention': (0.16217584908008575, None)})]
+已保存: ./results/sparse_gqa_fwd.csv
+已保存: ./results/sparse_gqa_bwd.csv
+Benchmarking completed in 4962.45 seconds

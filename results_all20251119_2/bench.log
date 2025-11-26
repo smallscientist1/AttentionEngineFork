@@ -1,0 +1,156 @@
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor lse already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor lse already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor lse already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor lse already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor lse already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor lse already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function 'flash_bwd_kernel'
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+WARNING:root:Tensor r already exists in fragment memory
+/usr/local/lib/python3.12/dist-packages/fla/ops/simple_gla/chunk.py:256: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/simple_gla/chunk.py:256: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/simple_gla/chunk.py:256: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+deepseek [('BS1\nS2048', {'MetaAttention': (0.08329427242279053, 1.1696592569351196), 'FlashAttention-2': (0.16958476603031158, 1.8184993267059326), 'FlashAttention-3': (0.060525160282850266, 1.2133550643920898)}), ('BS1\nS4096', {'MetaAttention': (0.22481930255889893, 1.47878098487854), 'FlashAttention-2': (0.4726857841014862, 1.9075597524642944), 'FlashAttention-3': (0.15077678859233856, 1.3152997493743896)}), ('BS1\nS8192', {'MetaAttention': (0.7578722238540649, 4.661729335784912), 'FlashAttention-2': (1.4675368070602417, 4.630387306213379), 'FlashAttention-3': (0.520280122756958, 2.2656209468841553)}), ('BS8\nS2048', {'MetaAttention': (0.4189704954624176, 2.894106149673462), 'FlashAttention-2': (0.8655421733856201, 3.242999792098999), 'FlashAttention-3': (0.3225284814834595, 1.5772655010223389)}), ('BS8\nS4096', {'MetaAttention': (1.4844486713409424, 9.777024269104004), 'FlashAttention-2': (2.8522934913635254, 10.013446807861328), 'FlashAttention-3': (1.1369750499725342, 5.281951904296875)}), ('BS8\nS8192', {'MetaAttention': (5.6317338943481445, 36.882286071777344), 'FlashAttention-2': (10.436420440673828, 36.04589080810547), 'FlashAttention-3': (4.560642242431641, 17.303123474121094)}), ('BS1S1\nKV2048', {'MetaAttention': (0.1114315539598465, None), 'FlashAttention-2': (0.08184795081615448, None), 'FlashAttention-3': (0.036105602979660034, None)}), ('BS1S1\nKV4096', {'MetaAttention': (0.11259600520133972, None), 'FlashAttention-2': (0.08107277005910873, None), 'FlashAttention-3': (0.06058681011199951, None)}), ('BS1S1\nKV8192', {'MetaAttention': (0.11650830507278442, None), 'FlashAttention-2': (0.12117128819227219, None), 'FlashAttention-3': (0.10769451409578323, None)}), ('BS8S1\nKV2048', {'MetaAttention': (0.11639304459095001, None), 'FlashAttention-2': (0.20640498399734497, None), 'FlashAttention-3': (0.07416537404060364, None)}), ('BS8S1\nKV4096', {'MetaAttention': (0.16974328458309174, None), 'FlashAttention-2': (0.38037076592445374, None), 'FlashAttention-3': (0.12651528418064117, None)}), ('BS8S1\nKV8192', {'MetaAttention': (0.2769142687320709, None), 'FlashAttention-2': (0.7316615581512451, None), 'FlashAttention-3': (0.23236572742462158, None)})]
+已保存: ./results/deepseek_fwd.csv
+已保存: ./results/deepseek_bwd.csv
+Warning: FlashAttention-3 not available
+Warning: FlashAttention-3 not available
+Warning: FlashAttention-3 not available
+Warning: FlashAttention-3 not available
+Warning: FlashAttention-3 not available
+Warning: FlashAttention-3 not available
+llama [('BS1\nS2048', {'MetaAttention': (0.11810244619846344, 1.4095737934112549), 'FlashAttention-2': (0.16494227945804596, 1.4925907850265503)}), ('BS1\nS4096', {'MetaAttention': (0.34454262256622314, 1.408881425857544), 'FlashAttention-2': (0.47884780168533325, 1.4336751699447632)}), ('BS1\nS8192', {'MetaAttention': (1.2449215650558472, 4.931055545806885), 'FlashAttention-2': (1.7055755853652954, 4.754976272583008)}), ('BS8\nS2048', {'MetaAttention': (0.7397010922431946, 2.752967596054077), 'FlashAttention-2': (0.8887892365455627, 3.123739242553711)}), ('BS8\nS4096', {'MetaAttention': (2.5573270320892334, 8.894559860229492), 'FlashAttention-2': (3.1665220260620117, 10.089468002319336)}), ('BS8\nS8192', {'MetaAttention': (9.709454536437988, 31.93172264099121), 'FlashAttention-2': (12.044768333435059, 39.11870574951172)})]
+已保存: ./results/llama_fwd.csv
+已保存: ./results/llama_bwd.csv
+vit [('BS32\nS512', {'MetaAttention': (0.048334747552871704, 1.3162810802459717), 'PytorchReLU': (0.3279060125350952, 1.6656808853149414)}), ('BS32\nS1024', {'MetaAttention': (0.12435935437679291, 1.1955492496490479), 'PytorchReLU': (1.038316011428833, 1.623591423034668)}), ('BS32\nS2048', {'MetaAttention': (0.40131905674934387, 1.6658166646957397), 'PytorchReLU': (3.66296124458313, 5.409074783325195)}), ('BS64\nS512', {'MetaAttention': (0.08546601980924606, 1.533959984779358), 'PytorchReLU': (0.6267463564872742, 1.733803391456604)}), ('BS64\nS1024', {'MetaAttention': (0.23404648900032043, 1.5358448028564453), 'PytorchReLU': (2.0402886867523193, 3.0535008907318115)}), ('BS64\nS2048', {'MetaAttention': (0.7905233502388, 3.2412123680114746), 'PytorchReLU': (7.3019890785217285, 10.767794609069824)})]
+已保存: ./results/vit_fwd.csv
+已保存: ./results/vit_bwd.csv
+Warning: FlashAttention-3 not available
+Warning: FlashAttention-3 not available
+Warning: FlashAttention-3 not available
+Warning: FlashAttention-3 not available
+Warning: FlashAttention-3 not available
+Warning: FlashAttention-3 not available
+dit [('BS1\nS2048', {'MetaAttention': (0.08481244742870331, 1.4451355934143066), 'FlashAttention-2': (0.22954772412776947, 1.7179821729660034)}), ('BS1\nS4096', {'MetaAttention': (0.220320925116539, 1.5655373334884644), 'FlashAttention-2': (0.4808378219604492, 1.8435170650482178)}), ('BS1\nS8192', {'MetaAttention': (0.6834936738014221, 3.955322504043579), 'FlashAttention-2': (1.4963531494140625, 4.1393513679504395)}), ('BS8\nS2048', {'MetaAttention': (0.3938029110431671, 2.368407726287842), 'FlashAttention-2': (0.8913171291351318, 2.6970064640045166)}), ('BS8\nS4096', {'MetaAttention': (1.3243002891540527, 8.352468490600586), 'FlashAttention-2': (2.9016175270080566, 8.788291931152344)}), ('BS8\nS8192', {'MetaAttention': (4.982658863067627, 29.86653709411621), 'FlashAttention-2': (10.433472633361816, 31.883211135864258)})]
+已保存: ./results/dit_fwd.csv
+已保存: ./results/dit_bwd.csv
+retnet [('BS1\nS2048', {'MetaAttention': (0.5952335596084595, None), 'PytorchRetention': (0.6023165583610535, None)}), ('BS1\nS4096', {'MetaAttention': (2.0110878944396973, None), 'PytorchRetention': (2.516420364379883, None)}), ('BS8\nS2048', {'MetaAttention': (4.148135185241699, None), 'PytorchRetention': (6.164179801940918, None)}), ('BS8\nS4096', {'MetaAttention': (14.747380256652832, None), 'PytorchRetention': (24.154993057250977, None)})]
+已保存: ./results/retnet_fwd.csv
+已保存: ./results/retnet_bwd.csv
+sigmoid_attn [('BS1\nS2048', {'MetaAttention': (0.10110290348529816, 1.1397205591201782), 'FlashSigmoid': (0.13723263144493103, 1.161757469177246)}), ('BS1\nS4096', {'MetaAttention': (0.29537737369537354, 1.405454158782959), 'FlashSigmoid': (0.4065724313259125, 1.4019653797149658)}), ('BS1\nS8192', {'MetaAttention': (1.0698823928833008, 3.694422721862793), 'FlashSigmoid': (1.4380295276641846, 4.632965087890625)}), ('BS8\nS2048', {'MetaAttention': (0.6331729888916016, 2.516857385635376), 'FlashSigmoid': (0.7570217847824097, 3.0432915687561035)}), ('BS8\nS4096', {'MetaAttention': (2.2314069271087646, 8.183356285095215), 'FlashSigmoid': (2.7786593437194824, 9.729735374450684)}), ('BS8\nS8192', {'MetaAttention': (8.51202392578125, 29.76898193359375), 'FlashSigmoid': (10.269301414489746, 40.27587127685547)})]
+已保存: ./results/sigmoid_attn_fwd.csv
+已保存: ./results/sigmoid_attn_bwd.csv
+rfa [('BS64\nS1024', {'MetaAttention': (0.47143903374671936, 2.18599009513855), 'FlashLinearAttention': (0.9760717153549194, 2.2888641357421875)}), ('BS64\nS2048', {'MetaAttention': (0.9043879508972168, 3.4575881958007812), 'FlashLinearAttention': (1.8866842985153198, 4.467279434204102)}), ('BS64\nS4096', {'MetaAttention': (1.818640112876892, 6.858235836029053), 'FlashLinearAttention': (3.756896495819092, 8.901548385620117)})]
+已保存: ./results/rfa_fwd.csv
+已保存: ./results/rfa_bwd.csv
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+/usr/local/lib/python3.12/dist-packages/fla/ops/simple_gla/chunk.py:256: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/simple_gla/chunk.py:256: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/simple_gla/chunk.py:256: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/simple_gla/chunk.py:256: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/retention/chunk.py:56: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/retention/chunk.py:56: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/retention/chunk.py:56: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/retention/chunk.py:56: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/fla/ops/retention/chunk.py:56: UserWarning: head_first is deprecated and will be removed in a future version. Please use head_first=False for now instead.
+  warnings.warn(
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: bs ['BT', 'BT2'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+Error: b_k ['BT', 'BK'] dt ['batch', 'heads', 'seq_len']
+mamba2 [('BS1\nS2048', {'MetaAttention': (0.18172906339168549, 2.8500616550445557), 'Mamba2SSM': (0.7124933004379272, 3.9609034061431885)}), ('BS1\nS4096', {'MetaAttention': (0.20852898061275482, 2.2751340866088867), 'Mamba2SSM': (1.1531814336776733, 7.403141975402832)}), ('BS1\nS8192', {'MetaAttention': (0.377890944480896, 2.851405382156372), 'Mamba2SSM': (1.2681183815002441, 6.853466510772705)}), ('BS8\nS2048', {'MetaAttention': (0.6123228073120117, 3.3946750164031982), 'Mamba2SSM': (1.20559823513031, 3.8384134769439697)}), ('BS8\nS4096', {'MetaAttention': (1.1885895729064941, 6.560217380523682), 'Mamba2SSM': (2.5812737941741943, 8.321942329406738)}), ('BS8\nS8192', {'MetaAttention': (2.3691723346710205, 12.948150634765625), 'Mamba2SSM': (5.719372749328613, 16.973478317260742)})]
+已保存: ./results/mamba2_fwd.csv
+已保存: ./results/mamba2_bwd.csv
+yoco [('BS8\nS1024', {'MetaAttention': (0.6727669835090637, 2.6469364166259766), 'FlashLinearAttention': (1.6311815977096558, 4.9850382804870605)}), ('BS8\nS2048', {'MetaAttention': (1.3353841304779053, 5.19551420211792), 'FlashLinearAttention': (3.2215490341186523, 9.86561107635498)}), ('BS8\nS4096', {'MetaAttention': (2.6550099849700928, 10.280718803405762), 'FlashLinearAttention': (6.462092399597168, 19.797975540161133)})]
+已保存: ./results/yoco_fwd.csv
+已保存: ./results/yoco_bwd.csv
+retnet_recur [('BS1\nS2048', {'MetaAttention': (0.2724260687828064, 2.2592732906341553), 'FlashLinearAttention': (0.7807053327560425, 2.03877592086792)}), ('BS1\nS4096', {'MetaAttention': (0.6268172264099121, 2.3845722675323486), 'FlashLinearAttention': (1.3375046253204346, 3.451070547103882)}), ('BS8\nS2048', {'MetaAttention': (2.455118179321289, 6.502871036529541), 'FlashLinearAttention': (4.431272506713867, 13.552433967590332)}), ('BS8\nS4096', {'MetaAttention': (4.842146873474121, 12.732209205627441), 'FlashLinearAttention': (8.50600528717041, 27.076223373413086)})]
+已保存: ./results/retnet_recur_fwd.csv
+已保存: ./results/retnet_recur_bwd.csv
+mla [('BS1S1\nKV2048', {'MetaAttention': (0.026649953797459602, None), 'FlashMLA': (0.027631787583231926, None)}), ('BS1S1\nKV4096', {'MetaAttention': (0.032165758311748505, None), 'FlashMLA': (0.03277399763464928, None)}), ('BS1S1\nKV8192', {'MetaAttention': (0.04096555337309837, None), 'FlashMLA': (0.041486434638500214, None)})]
+已保存: ./results/mla_fwd.csv
+已保存: ./results/mla_bwd.csv
+Warning: Undefined attention type sparse_gqa, skipping benchmark.
+Warning: Undefined attention type sparse_gqa, skipping benchmark.
+Warning: Undefined attention type sparse_gqa, skipping benchmark.
+sparse_gqa [('BS1S1\nKV2048', {}), ('BS1S1\nKV4096', {}), ('BS1S1\nKV8192', {})]
+已保存: ./results/sparse_gqa_fwd.csv
+已保存: ./results/sparse_gqa_bwd.csv
+Benchmarking completed in 3759.53 seconds
