@@ -80,6 +80,8 @@ def bench_softmaxattention(B, H, Sq, S, D, DV, device='cuda', dtype=torch.float1
         print(f"Warning: FlashAttention-2 not available: {e}")
 
     # aiter
+    # jit 编译，第一次运行会 ModuleNotFoundError: No module named 'aiter.jit.mha_fwd_fp16_nbias_mask_lse_ndropout'
+    # 重跑即可
     try:
         import aiter
         from aiter import flash_attn_func
@@ -100,7 +102,8 @@ def bench_softmaxattention(B, H, Sq, S, D, DV, device='cuda', dtype=torch.float1
                 value_padded,
                 causal=True,
                 softmax_scale=(
-                    1 / D)**0.5)
+                    1 / D)**0.5,
+                return_lse=True)[0]
             if DV < dim_padded:
                 o_ref = o_ref[:, :, :, :DV]
             return o_ref
