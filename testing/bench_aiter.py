@@ -100,8 +100,7 @@ def bench_softmaxattention(B, H, Sq, S, D, DV, device='cuda', dtype=torch.float1
                 value_padded,
                 causal=True,
                 softmax_scale=(
-                    1 / D)**0.5,
-                causal=True)
+                    1 / D)**0.5)
             if DV < dim_padded:
                 o_ref = o_ref[:, :, :, :DV]
             return o_ref
