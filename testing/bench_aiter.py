@@ -121,10 +121,10 @@ def bench_softmaxattention(B, H, Sq, S, D, DV, device='cuda', dtype=torch.float1
 
 if __name__ == "__main__":
     B_list = [1, 8]
-    H = 8
+    H = 16
     S_list = [2048, 4096, 8192]
-    D = 64
-    DV = 64
+    D = 192
+    DV = 128
 
     results = []
     for B in B_list:
